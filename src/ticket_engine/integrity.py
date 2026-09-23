@@ -17,7 +17,6 @@ Checks implemented:
 - Check 6: ticket must be done with every acceptance box ticked (ADR 0001 §2.6).
 - Check 7: new test functions run against base source must fail on base; any new test passing on base -> hold, listing the tests (ADR 0001 §2.7). Silent if no new tests.
 - Auto-merge: no producing a merge hold regardless of other checks (ADR 0001 §3).
-- Denylist scan: added lines checked against PEOPLE_DENYLIST -> fail naming file:line, never echoing secret (ADR 0002).
 - Verdict precedence: when both fail and hold reasons exist, verdict is fail (ADR 0001).
 """
 from __future__ import annotations
@@ -151,33 +150,6 @@ def parse_ratchet_value(content: str | None) -> float | int | dict[str, float | 
 
     return len([line for line in stripped.splitlines() if line.strip()])
 
-
-def parse_denylist(raw: Sequence[str] | str | None) -> list[str]:
-    """Parse people denylist into clean list of string entries."""
-    if not raw:
-        return []
-    if isinstance(raw, (list, tuple, set)):
-        return [str(e).strip() for e in raw if str(e).strip()]
-
-    raw_str = str(raw).strip()
-    if not raw_str:
-        return []
-
-    if raw_str.startswith("[") and raw_str.endswith("]"):
-        try:
-            items = json.loads(raw_str)
-            if isinstance(items, list):
-                return [str(e).strip() for e in items if str(e).strip()]
-        except json.JSONDecodeError:
-            pass
-
-    entries: list[str] = []
-    for line in raw_str.splitlines():
-        for part in line.split(","):
-            part_str = part.strip()
-            if part_str:
-                entries.append(part_str)
-    return entries
 
 
 def get_diff_changed_paths(
@@ -616,7 +588,6 @@ class IntegrityCore:
         labels: Sequence[str] | None = None,
         commit_messages: Sequence[str] | None = None,
         pr_text: str | None = None,
-        denylist: Sequence[str] | str | None = None,
         base_test_results: BaseTestResults | Mapping[str, Any] | None = None,
     ) -> IntegrityVerdict:
         cfg = config or IntegrityConfig()
@@ -764,21 +735,7 @@ class IntegrityCore:
             is_failing = True
             reasons.extend(unticked_reasons)
 
-        # 7. Denylist scan
-        denylist_entries = parse_denylist(denylist)
-        if denylist_entries:
-            added_lines = get_diff_added_lines_with_locations(pr_diff, base_tree)
-            for fpath, lnum, line_str in added_lines:
-                line_lower = line_str.lower()
-                for entry in denylist_entries:
-                    if entry.lower() in line_lower:
-                        is_failing = True
-                        reasons.append(
-                            f"Denylist fail: People denylist violation in '{fpath}' at line {lnum}"
-                        )
-                        break
-
-        # 8. Check test results if provided
+        # 7. Check test results if provided
         if test_results is not None:
             failed = (
                 isinstance(test_results, Mapping) and test_results.get("passed") is False
@@ -826,7 +783,7 @@ class IntegrityCore:
         if is_holding:
             return IntegrityVerdict(verdict=Verdict.HOLD, reasons=reasons)
 
-        pass_reasons = ["All integrity checks passed (checks 1-7, denylist)"]
+        pass_reasons = ["All integrity checks passed (checks 1-7)"]
         for r in reasons:
             if r.startswith("Check 7 pass"):
                 pass_reasons.append(r)

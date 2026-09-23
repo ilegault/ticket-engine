@@ -857,7 +857,7 @@ def run_new(
 # The three secrets every target repo must have.  The core schedules
 # SetSecretOp for any that are missing; the adapter supplies the values from
 # secrets.env -- values are never handled by the core (ADR 0002).
-REQUIRED_SECRETS: tuple[str, ...] = ("JULES_API_KEY", "PIPELINE_TOKEN", "PEOPLE_DENYLIST")
+REQUIRED_SECRETS: tuple[str, ...] = ("JULES_API_KEY", "PIPELINE_TOKEN")
 
 # Labels created on the target repo so the dispatcher can tag PRs.
 _REQUIRED_LABELS: tuple[dict, ...] = (

@@ -145,20 +145,6 @@ def test_fixture_automerge_no_holds():
     assert any("auto-merge" in r.lower() for r in verdict.reasons)
 
 
-def test_fixture_denylist_match_fails():
-    base_tree, pr_diff, ticket_content = _load_fixture("denylist_match")
-    core = IntegrityCore()
-    verdict = core.evaluate(
-        base_tree=base_tree,
-        pr_diff=pr_diff,
-        ticket=ticket_content,
-        denylist=["Jane Doe"],
-    )
-    assert verdict.verdict == Verdict.FAIL
-    assert any("src/app.py" in r and "line 2" in r for r in verdict.reasons)
-    # Ensure secret is not in reasons
-    assert "Jane Doe" not in " ".join(verdict.reasons)
-
 
 def test_fixture_fail_and_hold_fails():
     base_tree, pr_diff, ticket_content = _load_fixture("fail_and_hold")

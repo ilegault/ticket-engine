@@ -328,7 +328,6 @@ def run_integrity_gate(
     labels: list[str] | None = None,
     commit_messages: list[str] | None = None,
     pr_text: str | None = None,
-    denylist: list[str] | str | None = None,
     config: IntegrityConfig | None = None,
     base_test_results: BaseTestResults | None = None,
 ) -> int:
@@ -339,8 +338,6 @@ def run_integrity_gate(
         src_paths=repo_cfg.source_paths,
         ratchet_files=repo_cfg.ratchet_paths,
     )
-    actual_denylist = denylist if denylist is not None else os.environ.get("PEOPLE_DENYLIST")
-
     base_tree = get_base_tree_from_git(
         repo_path, base_ref, tuple(cfg.test_paths), tuple(cfg.ratchet_files)
     )
@@ -383,7 +380,6 @@ def run_integrity_gate(
         labels=labels,
         commit_messages=actual_commit_messages,
         pr_text=pr_text,
-        denylist=actual_denylist,
         base_test_results=actual_base_results,
     )
 
@@ -486,12 +482,6 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="Commit message to evaluate for escape hatch tags",
     )
-    parser.add_argument(
-        "--denylist",
-        default=None,
-        help="Explicit denylist string or entries",
-    )
-
     args = parser.parse_args(argv)
 
     event_path = os.environ.get("GITHUB_EVENT_PATH")
@@ -543,7 +533,6 @@ def main(argv: list[str] | None = None) -> int:
         labels=all_labels if all_labels else None,
         commit_messages=args.commit_message if args.commit_message else None,
         pr_text=pr_text,
-        denylist=args.denylist,
     )
 
 

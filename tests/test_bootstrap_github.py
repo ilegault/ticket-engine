@@ -79,7 +79,6 @@ def test_existing_secret_not_rescheduled():
     scheduled_names = {op.name for op in secret_ops}
     assert "JULES_API_KEY" not in scheduled_names
     assert "PIPELINE_TOKEN" in scheduled_names
-    assert "PEOPLE_DENYLIST" in scheduled_names
 
 
 def test_all_secrets_present_zero_secret_ops():
@@ -95,8 +94,8 @@ def test_set_secret_op_carries_name_only_not_value():
         assert not hasattr(op, "value")
 
 
-def test_required_secrets_are_the_three_expected_keys():
-    assert set(REQUIRED_SECRETS) == {"JULES_API_KEY", "PIPELINE_TOKEN", "PEOPLE_DENYLIST"}
+def test_required_secrets_are_the_two_expected_keys():
+    assert set(REQUIRED_SECRETS) == {"JULES_API_KEY", "PIPELINE_TOKEN"}
 
 
 
