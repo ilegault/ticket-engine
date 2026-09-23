@@ -1,0 +1,45 @@
+name: Morning Report
+
+# Runs daily at 12:00 UTC (7 am Central) and on demand.
+# Rewrites a single pinned issue in the engine repo with the day's summary.
+#
+# WHY THIS EXISTS
+# ---------------
+# Phase 1 Spec §Reporting (User Stories 49-50) and Ticket 08 AC 1: the developer
+# needs one place per morning that shows what happened overnight and what needs them.
+# A scheduled workflow here runs the pure render function against live GitHub data
+# and updates the pinned issue.
+
+on:
+  schedule:
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+
+jobs:
+  morning-report:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - name: Checkout engine repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ticket-engine
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Run morning report
+        env:
+          PIPELINE_TOKEN: ${{ secrets.PIPELINE_TOKEN }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          ENGINE_REPO: ${{ github.repository }}
+        run: |
+          python scripts/run_morning_report.py
