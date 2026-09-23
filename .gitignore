@@ -1,0 +1,42 @@
+# PyCharm / JetBrains IDE
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables / secrets
+.env
+
+# Logs and temp files
+*.log
+~$*
+.pytest_cache/
+roster.json
+requests.json
+*.bad
+
+# OS
+.DS_Store
+Thumbs.db
+
+build/
+dist/
+
+# Planning scratch that must NOT reach a reviewer.
+# .scratch/ is deliberately NOT here: ticket files travel with the branch, so a
+# draft PR is a complete handoff. See docs/agents/issue-tracker.md
+.claude/
+.agents
+run_agent*.ps1
+run_agent*.bat
+.agents/skills/pbot-ticket/SKILL.md
+
+# The request index store is not in use; if it ever runs, its file is local state.
+requests.json
