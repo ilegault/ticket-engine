@@ -11,10 +11,12 @@ runner partition is testable reproducibly with static snapshots.
 """
 from __future__ import annotations
 
+import datetime
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from ticket_engine.config import RepoConfig
 from ticket_engine.parser import ParseFinding, Ticket
 
 logger = logging.getLogger(__name__)
@@ -32,6 +34,11 @@ class WorldSnapshot:
     claims: set[str] | Sequence[str] = field(default_factory=set)
     open_prs: Sequence[object] = field(default_factory=list)
     concurrency_limit: int = 2
+    config: RepoConfig = field(default_factory=RepoConfig)
+    jules_sessions_count_24h: int = 0
+    repo_starts_last_24h: int = 0
+    paused: bool = False
+    now: datetime.datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -40,6 +47,20 @@ class DispatchResult:
     actions: list[object]
     skipped_windows_tickets: list[Ticket]
     findings: list[ParseFinding]
+
+
+def is_ticket_claimed(ticket: Ticket, claims: set[str] | Sequence[str]) -> bool:
+    """Check if a ticket is already claimed by any claim branch or identifier."""
+    num_str_2 = f"{ticket.number:02d}"
+    num_str = str(ticket.number)
+    for c in claims:
+        c_str = str(c).strip()
+        parts = c_str.split("/")
+        if parts[-1] in (num_str_2, num_str):
+            return True
+        if c_str in (num_str_2, num_str):
+            return True
+    return False
 
 
 class DispatchCore:
@@ -81,12 +102,52 @@ class DispatchCore:
         skipped_windows: list[Ticket] = []
         actions: list[object] = []
 
+        cfg = snapshot.config
+        concurrency = cfg.concurrency if snapshot.config else snapshot.concurrency_limit
+
+        # 1. Check if repo is paused
+        if snapshot.paused:
+            return DispatchResult(
+                frontier=frontier,
+                actions=[],
+                skipped_windows_tickets=[t for t in frontier if t.runner == "windows"],
+                findings=all_findings,
+            )
+
+        # 2. Check quota reserve: never start when fewer than reserve remain
+        remaining_quota = cfg.jules_limit - snapshot.jules_sessions_count_24h
+        if remaining_quota < cfg.jules_reserve:
+            return DispatchResult(
+                frontier=frontier,
+                actions=[],
+                skipped_windows_tickets=[t for t in frontier if t.runner == "windows"],
+                findings=all_findings,
+            )
+
+        # 3. Check daily cap
+        if snapshot.repo_starts_last_24h >= cfg.daily_cap:
+            return DispatchResult(
+                frontier=frontier,
+                actions=[],
+                skipped_windows_tickets=[t for t in frontier if t.runner == "windows"],
+                findings=all_findings,
+            )
+
+        # 4. Check available slots
         in_flight_count = len(snapshot.claims) + len(snapshot.open_prs)
-        available_slots = max(0, snapshot.concurrency_limit - in_flight_count)
+        available_slots = max(0, concurrency - in_flight_count)
+
+        # Also bound by remaining daily cap and remaining quota above reserve
+        remaining_cap = max(0, cfg.daily_cap - snapshot.repo_starts_last_24h)
+        remaining_quota_starts = max(0, remaining_quota - cfg.jules_reserve + 1)
+        available_slots = min(available_slots, remaining_cap, remaining_quota_starts)
 
         for ticket in frontier:
             if ticket.runner == "windows":
                 skipped_windows.append(ticket)
+            elif is_ticket_claimed(ticket, snapshot.claims):
+                # Claim collision: ticket already claimed, skip it
+                continue
             else:
                 if len(actions) < available_slots:
                     actions.append(StartTicketAction(ticket=ticket, runner=ticket.runner))

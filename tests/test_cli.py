@@ -12,8 +12,9 @@ modifications or making live API calls.
 from __future__ import annotations
 
 import pathlib
+from unittest.mock import MagicMock, patch
 
-from ticket_engine.cli import run_dispatch_dry_run
+from ticket_engine.cli import main, run_dispatch_dry_run
 
 
 def test_cli_dry_run_prints_frontier_actions_skipped_and_findings(tmp_path: pathlib.Path, capsys):
@@ -72,3 +73,29 @@ def test_cli_dry_run_prints_frontier_actions_skipped_and_findings(tmp_path: path
     assert "02: Windows Task" in captured
     assert "Parse findings:" in captured
     assert "04-legacy-task.md" in captured
+
+
+def test_cli_live_dispatch_with_env_tokens(tmp_path: pathlib.Path, monkeypatch, capsys):
+    issues_dir = tmp_path / ".scratch" / "test-effort" / "issues"
+    issues_dir.mkdir(parents=True)
+    (issues_dir / "01-test.md").write_text(
+        """# 01: Test Ticket
+**Status:** ready-for-agent
+**Blocked by:** None
+""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("PIPELINE_TOKEN", "mock_pipeline_token")
+    monkeypatch.setenv("JULES_API_KEY", "mock_jules_key")
+
+    with patch("ticket_engine.cli.LiveDispatcher") as mock_disp_cls:
+        mock_disp_instance = MagicMock()
+        mock_disp_instance.dispatch.return_value = []
+        mock_disp_cls.return_value = mock_disp_instance
+
+        exit_code = main([str(tmp_path)])
+        assert exit_code == 0
+        mock_disp_cls.assert_called_once()
+        mock_disp_instance.dispatch.assert_called_once()
