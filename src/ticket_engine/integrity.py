@@ -753,7 +753,7 @@ class IntegrityCore:
         self, ticket: Ticket | str | pathlib.Path
     ) -> tuple[Ticket, str]:
         if isinstance(ticket, Ticket):
-            raw = ticket.raw_text
+            raw = getattr(ticket, "raw_text", "")
             if not raw and ticket.path and ticket.path.is_file():
                 raw = ticket.path.read_text(encoding="utf-8")
             return ticket, raw

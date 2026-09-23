@@ -51,6 +51,7 @@ class Ticket:
     findings: list[ParseFinding] = field(default_factory=list)
     path: pathlib.Path | None = None
     effort: str = ""
+    raw_text: str = ""
 
     def is_done(self) -> bool:
         if self.status != "done":
@@ -164,4 +165,5 @@ class TicketParser:
             findings=findings,
             path=path,
             effort=effort,
+            raw_text=content,
         )
