@@ -50,6 +50,7 @@ class Ticket:
     auto_merge: bool = True
     findings: list[ParseFinding] = field(default_factory=list)
     path: pathlib.Path | None = None
+    effort: str = ""
 
     def is_done(self) -> bool:
         if self.status != "done":
@@ -144,6 +145,14 @@ class TicketParser:
         else:
             auto_merge = True
 
+        effort = ""
+        if path is not None:
+            parts = path.parts
+            if ".scratch" in parts:
+                idx = parts.index(".scratch")
+                if idx + 1 < len(parts):
+                    effort = parts[idx + 1]
+
         return Ticket(
             number=number,
             title=title,
@@ -154,4 +163,5 @@ class TicketParser:
             auto_merge=auto_merge,
             findings=findings,
             path=path,
+            effort=effort,
         )

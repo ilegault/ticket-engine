@@ -1,0 +1,8 @@
+{
+  "id": "sessions/123456789",
+  "title": "phase-1-06: Live dispatch through Jules",
+  "automationMode": "AUTO_CREATE_PR",
+  "state": "RUNNING",
+  "createTime": "2026-09-22T20:00:00Z",
+  "updateTime": "2026-09-22T20:00:00Z"
+}
