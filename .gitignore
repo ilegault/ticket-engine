@@ -33,7 +33,8 @@ dist/
 # .scratch/ is deliberately NOT here: ticket files travel with the branch, so a
 # draft PR is a complete handoff. See docs/agents/issue-tracker.md
 .claude/
-.agents
+.agents/*
+!.agents/skills/
 run_agent*.ps1
 run_agent*.bat
 .agents/skills/pbot-ticket/SKILL.md
