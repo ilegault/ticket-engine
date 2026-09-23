@@ -12,6 +12,7 @@ dependencies = []
 
 [project.scripts]
 dispatch = "ticket_engine.cli:main"
+integrity-gate = "ticket_engine.integrity_runner:main"
 
 [tool.ruff]
 line-length = 100
@@ -19,3 +20,5 @@ target-version = "py312"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
+norecursedirs = ["fixtures", ".venv", ".git"]

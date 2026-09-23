@@ -1,0 +1,7 @@
+diff --git a/tests/test_math.py b/tests/test_math.py
+--- a/tests/test_math.py
++++ b/tests/test_math.py
+@@ -3,3 +3,0 @@
+-
+-def test_sub():
+-    assert 2 - 1 == 1
