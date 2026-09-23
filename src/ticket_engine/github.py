@@ -11,6 +11,7 @@ mandate that:
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import urllib.error
@@ -162,3 +163,94 @@ class GitHubClient:
             "context": context,
         }
         return self._request("POST", endpoint, payload)
+
+    def get_file_contents(
+        self, repo: str, path: str, ref: str | None = None
+    ) -> dict[str, Any]:
+        """Fetch content and SHA of a file in the repository."""
+        endpoint = f"/repos/{repo}/contents/{path.lstrip('/')}"
+        if ref:
+            endpoint += f"?ref={ref}"
+        data = self._request("GET", endpoint)
+        if isinstance(data, dict):
+            raw_content = data.get("content", "")
+            encoding = data.get("encoding", "")
+            if encoding == "base64" and raw_content:
+                # Remove newlines before decoding
+                clean_b64 = raw_content.replace("\n", "").replace("\r", "")
+                decoded = base64.b64decode(clean_b64).decode("utf-8")
+            else:
+                decoded = raw_content
+            return {
+                "content": decoded,
+                "sha": data.get("sha", ""),
+            }
+        return {"content": "", "sha": ""}
+
+    def commit_file_change(
+        self,
+        repo: str,
+        path: str,
+        content: str,
+        message: str,
+        branch: str,
+        sha: str | None = None,
+    ) -> dict[str, Any]:
+        """Commit an updated or new file to a branch via Contents API."""
+        endpoint = f"/repos/{repo}/contents/{path.lstrip('/')}"
+        encoded_content = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        payload: dict[str, Any] = {
+            "message": message,
+            "content": encoded_content,
+            "branch": branch,
+        }
+        if sha:
+            payload["sha"] = sha
+        return self._request("PUT", endpoint, payload)
+
+    def convert_pr_to_draft(self, repo: str, pr_number: int) -> dict[str, Any]:
+        """Convert an existing pull request to a draft PR."""
+        endpoint = f"/repos/{repo}/pulls/{pr_number}"
+        return self._request("PATCH", endpoint, {"draft": True})
+
+    def add_issue_labels(
+        self, repo: str, issue_number: int, labels: list[str]
+    ) -> list[str]:
+        """Add labels to an issue or pull request."""
+        endpoint = f"/repos/{repo}/issues/{issue_number}/labels"
+        res = self._request("POST", endpoint, {"labels": labels})
+        if isinstance(res, list):
+            return [str(item.get("name", "")) for item in res if isinstance(item, dict)]
+        return labels
+
+    def delete_branch(self, repo: str, branch: str) -> bool:
+        """Delete a branch/ref via Git refs API."""
+        if branch.startswith("refs/"):
+            ref_path = branch.removeprefix("refs/")
+        elif branch.startswith(("heads/", "claim/")):
+            ref_path = branch if branch.startswith("heads/") else f"heads/{branch}"
+        else:
+            ref_path = f"heads/{branch}"
+
+        endpoint = f"/repos/{repo}/git/refs/{ref_path}"
+        try:
+            self._request("DELETE", endpoint)
+            return True
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return False
+            raise
+
+    def set_repo_variable(self, repo: str, name: str, value: str) -> bool:
+        """Set or update an Actions repository variable."""
+        patch_endpoint = f"/repos/{repo}/actions/variables/{name}"
+        try:
+            self._request("PATCH", patch_endpoint, {"name": name, "value": value})
+            return True
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                post_endpoint = f"/repos/{repo}/actions/variables"
+                self._request("POST", post_endpoint, {"name": name, "value": value})
+                return True
+            raise
+
