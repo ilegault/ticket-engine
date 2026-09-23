@@ -9,3 +9,7 @@ for autonomous overnight agent execution across target repos.
 from __future__ import annotations
 
 __version__ = "0.1.0"
+
+from ticket_engine.prompt import assemble_prompt, load_ticket_skill
+
+__all__ = ["__version__", "assemble_prompt", "load_ticket_skill"]
