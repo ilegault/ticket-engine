@@ -7,19 +7,26 @@ that unattended auto-merges require an integrity gate running after target repo
 gates. An agent rewarded for a green build could otherwise weaken or mute tests.
 The integrity core is pure (no I/O, no network, no clock reads) so every verdict
 is testable reproducibly with static snapshots and fixtures.
-Slice 1 implements:
-- Check 1: no newly skipped or xfailed tests (naming the test).
-- Check 2: no deleted test functions and no test file losing assertions (naming what was lost).
-- Check 6: ticket must be done with every acceptance box ticked.
-- Auto-merge: no producing a merge hold.
+
+Checks implemented:
+- Check 1: no newly skipped or xfailed tests (naming the test) (ADR 0001 §2.1).
+- Check 2: no deleted test functions and no test file losing assertions (naming what was lost) (ADR 0001 §2.2).
+- Check 3: any ratchet file with a higher value than on base -> fail (ADR 0001 §2.3).
+- Check 4: PR touching .github/, gate scripts, docs/adr/, AGENTS.md, CONTEXT.md -> hold, naming paths (ADR 0001 §2.4).
+- Check 5: tests-first escape hatch used (label, commit/PR tag) -> hold (ADR 0001 §2.5).
+- Check 6: ticket must be done with every acceptance box ticked (ADR 0001 §2.6).
+- Auto-merge: no producing a merge hold regardless of other checks (ADR 0001 §3).
+- Denylist scan: added lines checked against PEOPLE_DENYLIST -> fail naming file:line, never echoing secret (ADR 0002).
+- Verdict precedence: when both fail and hold reasons exist, verdict is fail (ADR 0001).
 """
 from __future__ import annotations
 
 import ast
+import json
 import logging
 import pathlib
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -54,6 +61,10 @@ class IntegrityVerdict:
 class IntegrityConfig:
     test_paths: list[str] = field(default_factory=lambda: ["tests"])
     src_paths: list[str] = field(default_factory=lambda: ["src"])
+    ratchet_files: list[str] = field(default_factory=list)
+    gate_paths: list[str] = field(
+        default_factory=lambda: ["scripts/check_tests_first.py"]
+    )
 
 
 @dataclass(frozen=True)
@@ -72,6 +83,220 @@ _HUNK_HEADER_RE = re.compile(
     r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? \+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@"
 )
 _ACCEPTANCE_BOX_RE = re.compile(r"^[-*]\s*\[([ xX])\]\s*(.+)$")
+_ESCAPE_TAG_RE = re.compile(
+    r"\[(?:no-test-needed|tests-exempt|skip-test-gate)(?::\s*([^\]]+))?\]",
+    re.IGNORECASE,
+)
+_EXEMPT_LABELS = {"tests-exempt", "skip-test-gate", "no-test-needed"}
+
+
+def parse_ratchet_value(content: str | None) -> float | int | dict[str, float | int] | None:
+    """Parse ratchet values from content.
+
+    Supports:
+    - Pure numbers (integer or float)
+    - Key-value lines (key: value or key=value) or JSON objects
+    - Non-empty line counts for list baselines
+    """
+    if content is None:
+        return None
+    stripped = content.strip()
+    if not stripped:
+        return 0
+
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            data = json.loads(stripped)
+            if isinstance(data, dict):
+                return {k: float(v) for k, v in data.items() if isinstance(v, (int, float))}
+        except json.JSONDecodeError:
+            pass
+
+    try:
+        val = float(stripped)
+        return int(val) if val.is_integer() else val
+    except ValueError:
+        pass
+
+    kv: dict[str, float | int] = {}
+    is_kv = True
+    for line in stripped.splitlines():
+        l_str = line.strip()
+        if not l_str or l_str.startswith("#"):
+            continue
+        if ":" in l_str or "=" in l_str:
+            sep = ":" if ":" in l_str else "="
+            k, v = l_str.split(sep, 1)
+            try:
+                num = float(v.strip())
+                kv[k.strip()] = int(num) if num.is_integer() else num
+            except ValueError:
+                is_kv = False
+                break
+        else:
+            is_kv = False
+            break
+
+    if is_kv and kv:
+        return kv
+
+    return len([line for line in stripped.splitlines() if line.strip()])
+
+
+def parse_denylist(raw: Sequence[str] | str | None) -> list[str]:
+    """Parse people denylist into clean list of string entries."""
+    if not raw:
+        return []
+    if isinstance(raw, (list, tuple, set)):
+        return [str(e).strip() for e in raw if str(e).strip()]
+
+    raw_str = str(raw).strip()
+    if not raw_str:
+        return []
+
+    if raw_str.startswith("[") and raw_str.endswith("]"):
+        try:
+            items = json.loads(raw_str)
+            if isinstance(items, list):
+                return [str(e).strip() for e in items if str(e).strip()]
+        except json.JSONDecodeError:
+            pass
+
+    entries: list[str] = []
+    for line in raw_str.splitlines():
+        for part in line.split(","):
+            part_str = part.strip()
+            if part_str:
+                entries.append(part_str)
+    return entries
+
+
+def get_diff_changed_paths(
+    pr_diff: str | Mapping[str, str], base_tree: Mapping[str, str]
+) -> set[str]:
+    """Extract all file paths touched by the PR."""
+    changed_paths: set[str] = set()
+    if isinstance(pr_diff, Mapping):
+        for p, content in pr_diff.items():
+            if p not in base_tree or base_tree[p] != content:
+                changed_paths.add(p.replace("\\", "/"))
+        for p in base_tree:
+            if p not in pr_diff:
+                changed_paths.add(p.replace("\\", "/"))
+        return changed_paths
+
+    for line in pr_diff.splitlines():
+        if line.startswith("diff --git "):
+            m = _DIFF_FILE_HEADER_RE.match(line)
+            if m:
+                old_p = m.group("old").strip()
+                new_p = m.group("new").strip()
+                if old_p and old_p != "/dev/null":
+                    changed_paths.add(old_p.replace("\\", "/"))
+                if new_p and new_p != "/dev/null":
+                    changed_paths.add(new_p.replace("\\", "/"))
+        elif line.startswith("--- "):
+            p = line[4:].strip().removeprefix("a/")
+            if p and p != "/dev/null":
+                changed_paths.add(p.replace("\\", "/"))
+        elif line.startswith("+++ "):
+            p = line[4:].strip().removeprefix("b/")
+            if p and p != "/dev/null":
+                changed_paths.add(p.replace("\\", "/"))
+    return changed_paths
+
+
+def get_diff_added_lines_with_locations(
+    pr_diff: str | Mapping[str, str], base_tree: Mapping[str, str]
+) -> list[tuple[str, int, str]]:
+    """Return list of (file_path, line_number, added_line_text)."""
+    added_lines: list[tuple[str, int, str]] = []
+    if isinstance(pr_diff, Mapping):
+        import difflib
+
+        for p, content in pr_diff.items():
+            norm_p = p.replace("\\", "/")
+            base_content = base_tree.get(p)
+            if base_content is None:
+                for idx, line in enumerate(content.splitlines(), start=1):
+                    added_lines.append((norm_p, idx, line))
+            elif base_content != content:
+                cur_line = 0
+                diff = difflib.unified_diff(
+                    base_content.splitlines(keepends=True),
+                    content.splitlines(keepends=True),
+                )
+                for dl in diff:
+                    m = _HUNK_HEADER_RE.match(dl)
+                    if m:
+                        cur_line = int(m.group("new_start"))
+                    elif dl.startswith("+") and not dl.startswith("+++"):
+                        added_lines.append((norm_p, cur_line, dl[1:].rstrip("\r\n")))
+                        cur_line += 1
+                    elif dl.startswith(" "):
+                        cur_line += 1
+        return added_lines
+
+    # Unified diff string
+    file_chunks: list[str] = []
+    lines = pr_diff.splitlines(keepends=True)
+    current_chunk: list[str] = []
+    for line in lines:
+        if line.startswith("diff --git ") and current_chunk:
+            file_chunks.append("".join(current_chunk))
+            current_chunk = [line]
+        else:
+            current_chunk.append(line)
+    if current_chunk:
+        file_chunks.append("".join(current_chunk))
+
+    for chunk in file_chunks:
+        chunk_lines = chunk.splitlines()
+        target_path: str | None = None
+        for cl in chunk_lines:
+            if cl.startswith("+++ "):
+                p = cl[4:].strip().removeprefix("b/")
+                if p != "/dev/null":
+                    target_path = p.replace("\\", "/")
+            elif cl.startswith("--- ") and not target_path:
+                p = cl[4:].strip().removeprefix("a/")
+                if p != "/dev/null":
+                    target_path = p.replace("\\", "/")
+        if not target_path:
+            continue
+
+        cur_new_line = 0
+        for cl in chunk_lines:
+            if cl.startswith("@@ "):
+                m = _HUNK_HEADER_RE.match(cl)
+                if m:
+                    cur_new_line = int(m.group("new_start"))
+            elif cl.startswith("+") and not cl.startswith("+++"):
+                added_lines.append((target_path, cur_new_line, cl[1:]))
+                cur_new_line += 1
+            elif cl.startswith(" "):
+                cur_new_line += 1
+
+    return added_lines
+
+
+def is_protected_path(path: str, gate_paths: Sequence[str]) -> bool:
+    """Check if a path is protected by governance rules (ADR 0001 §2.4)."""
+    norm = path.replace("\\", "/").strip().lstrip("/")
+    if norm.startswith(".github/") or norm == ".github":
+        return True
+    if norm.startswith("docs/adr/") or norm == "docs/adr":
+        return True
+    if norm == "AGENTS.md" or norm.endswith("/AGENTS.md"):
+        return True
+    if norm == "CONTEXT.md" or norm.endswith("/CONTEXT.md"):
+        return True
+    for gp in gate_paths:
+        gp_norm = gp.replace("\\", "/").strip().lstrip("/")
+        if norm == gp_norm or norm.startswith(gp_norm.rstrip("/") + "/"):
+            return True
+    return False
+
 
 
 def parse_and_apply_diff(
@@ -334,6 +559,10 @@ class IntegrityCore:
         ticket: Ticket | str | pathlib.Path,
         config: IntegrityConfig | None = None,
         test_results: Any = None,
+        labels: Sequence[str] | None = None,
+        commit_messages: Sequence[str] | None = None,
+        pr_text: str | None = None,
+        denylist: Sequence[str] | str | None = None,
     ) -> IntegrityVerdict:
         cfg = config or IntegrityConfig()
         reasons: list[str] = []
@@ -401,7 +630,73 @@ class IntegrityCore:
                     f"Check 2 fail: Test file '{path}' has fewer assertions than on base (lost {lost} assertion(s): {h_count} < {b_visitor.assertion_count})"
                 )
 
-        # 3. Check 6: ticket file done and all acceptance boxes ticked
+        # 3. Check 3: ratchet files
+        for rpath in cfg.ratchet_files:
+            rpath_norm = rpath.replace("\\", "/")
+            head_content = head_tree.get(rpath_norm)
+            base_content = base_tree.get(rpath_norm)
+            if head_content is not None:
+                h_val = parse_ratchet_value(head_content)
+                b_val = parse_ratchet_value(base_content) if base_content is not None else 0
+                if isinstance(h_val, (int, float)) and isinstance(b_val, (int, float)):
+                    if h_val > b_val:
+                        is_failing = True
+                        reasons.append(
+                            f"Check 3 fail: Ratchet file '{rpath_norm}' has higher value than on base ({h_val} > {b_val})"
+                        )
+                elif isinstance(h_val, dict) and isinstance(b_val, dict):
+                    for k, h_num in h_val.items():
+                        b_num = b_val.get(k, 0)
+                        if h_num > b_num:
+                            is_failing = True
+                            reasons.append(
+                                f"Check 3 fail: Ratchet file '{rpath_norm}' metric '{k}' increased from {b_num} to {h_num}"
+                            )
+                elif isinstance(h_val, (int, float)) and b_val is None and h_val > 0:
+                    is_failing = True
+                    reasons.append(
+                        f"Check 3 fail: Ratchet file '{rpath_norm}' has higher value than on base ({h_val} > 0)"
+                    )
+
+        # 4. Check 4: protected governance or gate paths
+        changed_paths = get_diff_changed_paths(pr_diff, base_tree)
+        protected_touched = [
+            p for p in sorted(changed_paths) if is_protected_path(p, cfg.gate_paths)
+        ]
+        if protected_touched:
+            is_holding = True
+            reasons.append(
+                f"Check 4 hold: PR modifies protected governance or gate path(s): {', '.join(protected_touched)}"
+            )
+
+        # 5. Check 5: tests-first escape hatch used
+        escape_reasons: list[str] = []
+        if labels:
+            for lbl in labels:
+                if lbl.strip().lower() in _EXEMPT_LABELS:
+                    escape_reasons.append(f"PR label '{lbl.strip()}'")
+
+        texts_to_scan = list(commit_messages or [])
+        if pr_text:
+            texts_to_scan.append(pr_text)
+        for text in texts_to_scan:
+            for match in _ESCAPE_TAG_RE.finditer(text):
+                tag_reason = match.group(1)
+                full_tag = match.group(0)
+                if tag_reason and tag_reason.strip():
+                    escape_reasons.append(
+                        f"Annotation {full_tag} with reason: '{tag_reason.strip()}'"
+                    )
+                else:
+                    escape_reasons.append(f"Annotation {full_tag}")
+
+        if escape_reasons:
+            is_holding = True
+            reasons.append(
+                f"Check 5 hold: Tests-first escape hatch used ({', '.join(escape_reasons)})"
+            )
+
+        # 6. Check 6: ticket file done and all acceptance boxes ticked
         ticket_obj, ticket_raw_text = self._resolve_ticket(ticket)
         if not ticket_obj.is_done():
             is_failing = True
@@ -414,7 +709,21 @@ class IntegrityCore:
             is_failing = True
             reasons.extend(unticked_reasons)
 
-        # 4. Check test results if provided
+        # 7. Denylist scan
+        denylist_entries = parse_denylist(denylist)
+        if denylist_entries:
+            added_lines = get_diff_added_lines_with_locations(pr_diff, base_tree)
+            for fpath, lnum, line_str in added_lines:
+                line_lower = line_str.lower()
+                for entry in denylist_entries:
+                    if entry.lower() in line_lower:
+                        is_failing = True
+                        reasons.append(
+                            f"Denylist fail: People denylist violation in '{fpath}' at line {lnum}"
+                        )
+                        break
+
+        # 8. Check test results if provided
         if test_results is not None:
             failed = (
                 isinstance(test_results, Mapping) and test_results.get("passed") is False
@@ -423,7 +732,7 @@ class IntegrityCore:
                 is_failing = True
                 reasons.append("Check fail: Test execution results indicate test failure")
 
-        # 5. Check auto-merge flag (ADR 0001 §3)
+        # 9. Check auto-merge flag (ADR 0001 §3)
         if not ticket_obj.auto_merge:
             is_holding = True
             reasons.append(
@@ -437,14 +746,14 @@ class IntegrityCore:
 
         return IntegrityVerdict(
             verdict=Verdict.PASS,
-            reasons=["All integrity checks passed (checks 1, 2, 6)"],
+            reasons=["All integrity checks passed (checks 1-6, denylist)"],
         )
 
     def _resolve_ticket(
         self, ticket: Ticket | str | pathlib.Path
     ) -> tuple[Ticket, str]:
         if isinstance(ticket, Ticket):
-            raw = ticket.raw_text
+            raw = getattr(ticket, "raw_text", "")
             if not raw and ticket.path and ticket.path.is_file():
                 raw = ticket.path.read_text(encoding="utf-8")
             return ticket, raw
