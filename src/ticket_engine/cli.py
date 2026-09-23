@@ -1,14 +1,16 @@
-"""Command line interface for ticket-engine dispatch.
+"""Command line interface for ticket-engine dispatch and local worker.
 
 WHY THIS EXISTS
 ---------------
-Phase 1 Spec §Implementation Decisions and Ticket 01/06 Acceptance Criteria
+Phase 1 Spec §Implementation Decisions and Ticket 01/06/09 Acceptance Criteria
 require:
 1. `dispatch --dry-run <path-to-clone>`: dry-run mode inspecting frontier, actions,
    skipped windows tickets, and parse findings without taking live actions.
 2. `dispatch [path]`: live dispatch mode connecting GitHub and Jules APIs using
    `PIPELINE_TOKEN` and `JULES_API_KEY` to claim frontier tickets and start Jules sessions.
-3. Privacy invariant (ADR 0002): Never prints secrets or prompts to stdout/stderr.
+3. `work-windows`: local worker command that finds Runner: windows frontier tickets
+   across the developer's local clones, claims one, and works it with the Antigravity CLI.
+4. Privacy invariant (ADR 0002): Never prints secrets or prompts to stdout/stderr.
 """
 from __future__ import annotations
 
@@ -129,6 +131,29 @@ def run_live_dispatch_cli(
     return 0
 
 
+def run_work_windows(config_path: str | None, pipeline_token: str | None) -> int:
+    """Entry point for the work-windows command."""
+    from ticket_engine.agy import AgyDriver
+    from ticket_engine.local_config import load_local_config
+    from ticket_engine.local_worker import LocalWorker
+
+    local_cfg = load_local_config(config_path)
+    token = pipeline_token or os.environ.get("PIPELINE_TOKEN", "")
+    if not token:
+        print("Error: PIPELINE_TOKEN required (--token or env var)", file=sys.stderr)
+        return 1
+
+    github_client = GitHubClient(token=token)
+    agy_driver = AgyDriver()
+
+    worker = LocalWorker(
+        config=local_cfg,
+        github_client=github_client,
+        agy_driver=agy_driver,
+    )
+    return worker.run()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="ticket-engine dispatcher",
@@ -197,6 +222,33 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     return run_dispatch_dry_run(target_path, concurrency_limit=args.concurrency)
+
+
+def local_worker_main(argv: list[str] | None = None) -> int:
+    """Entry point for the work-windows command.
+
+    Finds Runner: windows frontier tickets across the developer's local clones
+    (listed in ~/.ticket-engine-local.toml), claims one, and works it with the
+    Antigravity CLI.
+    """
+    parser = argparse.ArgumentParser(
+        prog="work-windows",
+        description="Run the local worker for Runner: windows tickets.",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        metavar="PATH",
+        help="Path to local worker config TOML (default: ~/.ticket-engine-local.toml)",
+    )
+    parser.add_argument(
+        "--token",
+        default=os.environ.get("PIPELINE_TOKEN"),
+        help="GitHub pipeline token (or PIPELINE_TOKEN env var)",
+    )
+
+    args = parser.parse_args(argv)
+    return run_work_windows(config_path=args.config, pipeline_token=args.token)
 
 
 if __name__ == "__main__":
