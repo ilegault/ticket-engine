@@ -50,6 +50,7 @@ class Ticket:
     auto_merge: bool = True
     findings: list[ParseFinding] = field(default_factory=list)
     path: pathlib.Path | None = None
+    raw_text: str = ""
 
     def is_done(self) -> bool:
         if self.status != "done":
@@ -154,4 +155,5 @@ class TicketParser:
             auto_merge=auto_merge,
             findings=findings,
             path=path,
+            raw_text=content,
         )
