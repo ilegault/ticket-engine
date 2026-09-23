@@ -1,0 +1,55 @@
+name: Integrity Gate
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: "Python version"
+        required: false
+        default: "3.12"
+        type: string
+      base-ref:
+        description: "Base git ref (e.g. origin/master)"
+        required: false
+        default: ""
+        type: string
+    secrets:
+      PIPELINE_TOKEN:
+        description: "GitHub token for PR comment and status updates"
+        required: false
+
+jobs:
+  integrity:
+    name: Integrity Gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install ticket-engine
+        run: |
+          pip install --upgrade pip
+          pip install .
+
+      - name: Run Integrity Gate
+        env:
+          PIPELINE_TOKEN: ${{ secrets.PIPELINE_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_BASE_REF: ${{ inputs.base-ref || github.base_ref }}
+        run: |
+          integrity-gate \
+            --base-ref "${{ inputs.base-ref || github.base_ref || 'origin/master' }}" \
+            --repo "${{ github.repository }}" \
+            --pr-number "${{ github.event.pull_request.number }}" \
+            --sha "${{ github.event.pull_request.head.sha || github.sha }}"
