@@ -2,30 +2,41 @@
 
 WHY THIS EXISTS
 ---------------
-Phase 1 Spec §Implementation Decisions (Adapters) and Ticket 03 Acceptance Criterion 5
+Phase 1 Spec §Implementation Decisions (Adapters), Ticket 03 AC 5, and Ticket 05 AC 2
 require running the pure integrity core in a git / GitHub Actions environment.
-This adapter queries git for base tree files, diffs, and the PR's ticket file,
-invokes the pure IntegrityCore, formats the verdict report, writes GitHub step
-summaries, and updates PR comments and commit statuses via the GitHubClient.
-All I/O is kept in this adapter layer.
+Check 7 (running new tests against the base branch's source code) executes in this adapter
+layer to keep the core pure. This adapter queries git for base tree files, diffs, and
+the PR's ticket file, swaps source paths to base_ref to run newly added tests with the repo's
+configured test command, measures check runtime, invokes the pure IntegrityCore, formats the
+verdict report, writes GitHub step summaries, and updates PR comments and commit statuses via
+the GitHubClient. All I/O is kept in this adapter layer.
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import os
 import pathlib
+import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
+import time
 import urllib.error
+from collections.abc import Sequence
 from typing import Any
 
+from ticket_engine.config import load_repo_config
 from ticket_engine.github import INTEGRITY_COMMENT_MARKER, GitHubClient
 from ticket_engine.integrity import (
+    BaseTestResults,
     IntegrityConfig,
     IntegrityCore,
     IntegrityVerdict,
+    find_new_test_functions,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,6 +72,7 @@ def get_base_tree_from_git(
             ["git", "ls-tree", "-r", "--name-only", base_ref],
             cwd=repo_path,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             check=False,
         )
@@ -76,6 +88,7 @@ def get_base_tree_from_git(
                     ["git", "show", f"{base_ref}:{path_str}"],
                     cwd=repo_path,
                     capture_output=True,
+                    stdin=subprocess.DEVNULL,
                     text=True,
                     check=False,
                 )
@@ -88,6 +101,7 @@ def get_base_tree_from_git(
                 ["git", "show", f"{base_ref}:{rf_norm}"],
                 cwd=repo_path,
                 capture_output=True,
+                stdin=subprocess.DEVNULL,
                 text=True,
                 check=False,
             )
@@ -106,6 +120,7 @@ def get_git_commit_messages(repo_path: pathlib.Path, base_ref: str) -> list[str]
             ["git", "log", "--pretty=%B", f"{base_ref}..HEAD"],
             cwd=repo_path,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             check=False,
         )
@@ -124,6 +139,7 @@ def get_pr_diff_from_git(repo_path: pathlib.Path, base_ref: str) -> str:
             ["git", "diff", f"{base_ref}...HEAD"],
             cwd=repo_path,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             check=False,
         )
@@ -141,6 +157,7 @@ def find_ticket_content_from_git(repo_path: pathlib.Path, base_ref: str) -> str:
             ["git", "diff", "--name-only", f"{base_ref}...HEAD"],
             cwd=repo_path,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             check=False,
         )
@@ -162,6 +179,142 @@ def find_ticket_content_from_git(repo_path: pathlib.Path, base_ref: str) -> str:
     return ""
 
 
+@contextlib.contextmanager
+def temporary_base_source(
+    repo_path: pathlib.Path,
+    base_ref: str,
+    source_paths: Sequence[str] = ("src",),
+):
+    """Context manager temporarily swapping source paths to base_ref."""
+    with tempfile.TemporaryDirectory() as temp_backup_dir:
+        backup_root = pathlib.Path(temp_backup_dir)
+        backed_up: list[tuple[pathlib.Path, pathlib.Path, bool]] = []
+
+        # 1. Back up current source paths and clear them
+        for sp in source_paths:
+            src_full = (repo_path / sp).resolve()
+            if src_full.exists():
+                dest = backup_root / sp
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if src_full.is_dir():
+                    shutil.copytree(src_full, dest)
+                    shutil.rmtree(src_full)
+                    backed_up.append((src_full, dest, True))
+                else:
+                    shutil.copy2(src_full, dest)
+                    src_full.unlink()
+                    backed_up.append((src_full, dest, False))
+
+        # 2. Checkout base_ref version of source paths from git
+        for sp in source_paths:
+            norm_sp = sp.replace("\\", "/").rstrip("/")
+            ls_res = subprocess.run(
+                ["git", "ls-tree", "-r", "--name-only", base_ref, "--", norm_sp],
+                cwd=repo_path,
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                check=False,
+            )
+            if ls_res.returncode == 0 and ls_res.stdout.strip():
+                subprocess.run(
+                    ["git", "checkout", base_ref, "--", norm_sp],
+                    cwd=repo_path,
+                    capture_output=True,
+                    stdin=subprocess.DEVNULL,
+                    check=False,
+                )
+
+        try:
+            yield
+        finally:
+            # 3. Clean up any files checked out from base_ref
+            for sp in source_paths:
+                src_full = (repo_path / sp).resolve()
+                if src_full.exists():
+                    if src_full.is_dir():
+                        shutil.rmtree(src_full)
+                    else:
+                        src_full.unlink()
+
+            # 4. Restore backed up source paths
+            for orig, dest, is_dir in backed_up:
+                orig.parent.mkdir(parents=True, exist_ok=True)
+                if is_dir:
+                    shutil.copytree(dest, orig)
+                else:
+                    shutil.copy2(dest, orig)
+
+            # 5. Clean git index if needed
+            for sp in source_paths:
+                subprocess.run(
+                    ["git", "reset", "HEAD", "--", sp.replace("\\", "/")],
+                    cwd=repo_path,
+                    capture_output=True,
+                    stdin=subprocess.DEVNULL,
+                    check=False,
+                )
+
+
+def execute_new_tests_on_base(
+    repo_path: pathlib.Path,
+    base_ref: str,
+    new_tests: Sequence[str],
+    test_command: str = "pytest",
+    source_paths: Sequence[str] = ("src",),
+) -> BaseTestResults:
+    """Run new test functions against the base branch's source code."""
+    if not new_tests:
+        return BaseTestResults(new_tests=[], passed_tests=[], failed_tests=[], runtime_seconds=0.0)
+
+    passed: list[str] = []
+    failed: list[str] = []
+
+    base_cmd_parts = shlex.split(test_command)
+    if not base_cmd_parts:
+        base_cmd_parts = ["pytest"]
+
+    cmd_name = base_cmd_parts[0]
+    if cmd_name == "pytest" and not shutil.which("pytest"):
+        cmd_prefix = [sys.executable, "-m", "pytest"] + base_cmd_parts[1:]
+    elif cmd_name == "python" and not shutil.which("python"):
+        cmd_prefix = [sys.executable] + base_cmd_parts[1:]
+    else:
+        cmd_prefix = list(base_cmd_parts)
+
+    t_start = time.perf_counter()
+
+    with temporary_base_source(repo_path, base_ref, source_paths):
+        for test_node in new_tests:
+            run_cmd = cmd_prefix + [test_node]
+            try:
+                proc = subprocess.run(
+                    run_cmd,
+                    cwd=repo_path,
+                    capture_output=True,
+                    stdin=subprocess.DEVNULL,
+                    text=True,
+                    check=False,
+                )
+                if proc.returncode == 0:
+                    passed.append(test_node)
+                else:
+                    failed.append(test_node)
+            except (subprocess.SubprocessError, OSError) as exc:
+                logger.warning("Error running test %s on base: %s", test_node, exc)
+                failed.append(test_node)
+
+    t_end = time.perf_counter()
+    duration = max(0.0, t_end - t_start)
+
+    return BaseTestResults(
+        new_tests=list(new_tests),
+        passed_tests=passed,
+        failed_tests=failed,
+        runtime_seconds=duration,
+    )
+
+
 def run_integrity_gate(
     repo_path: pathlib.Path,
     base_ref: str = "origin/master",
@@ -177,9 +330,15 @@ def run_integrity_gate(
     pr_text: str | None = None,
     denylist: list[str] | str | None = None,
     config: IntegrityConfig | None = None,
+    base_test_results: BaseTestResults | None = None,
 ) -> int:
     """Execute integrity gate checks and report verdict."""
-    cfg = config or IntegrityConfig()
+    repo_cfg = load_repo_config(repo_path)
+    cfg = config or IntegrityConfig(
+        test_paths=repo_cfg.test_paths,
+        src_paths=repo_cfg.source_paths,
+        ratchet_files=repo_cfg.ratchet_paths,
+    )
     actual_denylist = denylist if denylist is not None else os.environ.get("PEOPLE_DENYLIST")
 
     base_tree = get_base_tree_from_git(
@@ -198,6 +357,22 @@ def run_integrity_gate(
         else get_git_commit_messages(repo_path, base_ref)
     )
 
+    # Check 7: Run new tests against base source
+    if base_test_results is None:
+        new_tests = find_new_test_functions(base_tree, pr_diff, cfg.test_paths)
+        if new_tests:
+            actual_base_results = execute_new_tests_on_base(
+                repo_path=repo_path,
+                base_ref=base_ref,
+                new_tests=new_tests,
+                test_command=repo_cfg.test_command,
+                source_paths=cfg.src_paths,
+            )
+        else:
+            actual_base_results = None
+    else:
+        actual_base_results = base_test_results
+
     core = IntegrityCore()
     verdict = core.evaluate(
         base_tree=base_tree,
@@ -209,6 +384,7 @@ def run_integrity_gate(
         commit_messages=actual_commit_messages,
         pr_text=pr_text,
         denylist=actual_denylist,
+        base_test_results=actual_base_results,
     )
 
     comment_body = format_verdict_comment(verdict)

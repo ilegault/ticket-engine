@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pathlib
 
-from ticket_engine.integrity import IntegrityCore, Verdict
+from ticket_engine.integrity import BaseTestResults, IntegrityCore, Verdict
 
 _FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures" / "integrity"
 
@@ -171,4 +171,43 @@ def test_fixture_fail_and_hold_fails():
     assert verdict.verdict == Verdict.FAIL
     assert any("Check 2 fail" in r for r in verdict.reasons)
     assert any("Check 4 hold" in r for r in verdict.reasons)
+
+
+def test_fixture_check7_fails_on_base_passes():
+    base_tree, pr_diff, ticket_content = _load_fixture("check7_fails_on_base")
+    core = IntegrityCore()
+    verdict = core.evaluate(
+        base_tree=base_tree,
+        pr_diff=pr_diff,
+        ticket=ticket_content,
+        base_test_results=BaseTestResults(
+            new_tests=["tests/test_calc.py::test_multiply"],
+            passed_tests=[],
+            failed_tests=["tests/test_calc.py::test_multiply"],
+            runtime_seconds=0.18,
+        ),
+    )
+    assert verdict.verdict == Verdict.PASS
+    assert any("Check 7 pass" in r and "0.18s" in r for r in verdict.reasons)
+
+
+def test_fixture_check7_passes_on_base_holds():
+    base_tree, pr_diff, ticket_content = _load_fixture("check7_passes_on_base")
+    core = IntegrityCore()
+    verdict = core.evaluate(
+        base_tree=base_tree,
+        pr_diff=pr_diff,
+        ticket=ticket_content,
+        base_test_results=BaseTestResults(
+            new_tests=["tests/test_calc.py::test_add_char"],
+            passed_tests=["tests/test_calc.py::test_add_char"],
+            failed_tests=[],
+            runtime_seconds=0.12,
+        ),
+    )
+    assert verdict.verdict == Verdict.HOLD
+    assert any(
+        "Check 7 hold" in r and "tests/test_calc.py::test_add_char" in r for r in verdict.reasons
+    )
+
 
