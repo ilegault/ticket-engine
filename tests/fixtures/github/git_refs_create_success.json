@@ -1,0 +1,10 @@
+{
+  "ref": "refs/heads/claim/phase-1/06",
+  "node_id": "MDM6UmVmMTI5NjI2OTo6cmVmcy9oZWFkcy9jbGFpbS9waGFzZS0xLzA2",
+  "url": "https://api.github.com/repos/ilegault/ticket-engine/git/refs/heads/claim/phase-1/06",
+  "object": {
+    "sha": "75fbea6cad021b9719ba895edb1fba0952ef1e84",
+    "type": "commit",
+    "url": "https://api.github.com/repos/ilegault/ticket-engine/git/commits/75fbea6cad021b9719ba895edb1fba0952ef1e84"
+  }
+}

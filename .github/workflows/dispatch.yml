@@ -1,0 +1,43 @@
+name: Dispatch
+
+on:
+  workflow_call:
+    secrets:
+      PIPELINE_TOKEN:
+        required: true
+      JULES_API_KEY:
+        required: true
+  push:
+    branches: [master, main]
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PIPELINE_TOKEN || secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ticket-engine
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . || pip install git+https://github.com/ilegault/ticket-engine.git@master
+
+      - name: Run ticket dispatcher
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PIPELINE_TOKEN: ${{ secrets.PIPELINE_TOKEN }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          TICKET_ENGINE_PAUSED: ${{ vars.TICKET_ENGINE_PAUSED }}
+        run: |
+          dispatch .

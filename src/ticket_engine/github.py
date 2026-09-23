@@ -2,11 +2,12 @@
 
 WHY THIS EXISTS
 ---------------
-Phase 1 Spec §Implementation Decisions (Adapters) and Ticket 03 Acceptance Criterion 5
-require posting the integrity verdict and reasons to the target repo's PR as an
-updated (not duplicated) comment and updating the commit check status.
-This thin adapter isolates all GitHub REST I/O using Python standard library
-`urllib.request`. It keeps cores pure and is fully fakeable in tests.
+Phase 1 Spec §Implementation Decisions (Adapters) and Ticket 06 Acceptance Criteria 1 & 7
+mandate that:
+1. The GitHub adapter creates a claim branch `claim/<effort>/<NN>` via the Git refs API.
+2. An already-exists response (HTTP 422) means "claimed" and the ticket is skipped.
+3. This adapter isolates all GitHub REST I/O using Python standard library
+   `urllib.request`. It keeps cores pure and is fully fakeable in tests.
 """
 from __future__ import annotations
 
@@ -36,7 +37,7 @@ class GitHubClient:
         headers = {
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {self.token}",
-            "User-Agent": "ticket-engine-integrity-gate",
+            "User-Agent": "ticket-engine",
             "X-GitHub-Api-Version": "2022-11-28",
         }
         if data is not None:
@@ -54,13 +55,82 @@ class GitHubClient:
             logger.error("GitHub API HTTPError %s %s: %s", exc.code, exc.reason, err_body)
             raise
 
+    def create_claim_branch(
+        self, repo: str, effort: str, ticket_number: int, sha: str
+    ) -> bool:
+        """Create a claim branch `claim/<effort>/<NN>` via Git refs API.
+
+        Returns True if the branch was created successfully.
+        Returns False if the branch already exists (HTTP 422), meaning claimed.
+        """
+        ref_name = f"refs/heads/claim/{effort}/{ticket_number:02d}"
+        endpoint = f"/repos/{repo}/git/refs"
+        payload = {
+            "ref": ref_name,
+            "sha": sha,
+        }
+
+        try:
+            self._request("POST", endpoint, payload)
+            return True
+        except urllib.error.HTTPError as exc:
+            if exc.code == 422:
+                # Reference already exists -> already claimed
+                logger.info("Claim branch %s already exists for repo %s", ref_name, repo)
+                return False
+            raise
+
+    def get_default_branch_sha(self, repo: str, default_branch: str = "master") -> str:
+        """Fetch the latest commit SHA of the default branch."""
+        endpoint = f"/repos/{repo}/git/ref/heads/{default_branch}"
+        data = self._request("GET", endpoint)
+        if isinstance(data, dict) and "object" in data and "sha" in data["object"]:
+            return str(data["object"]["sha"])
+        msg = f"Failed to resolve SHA for branch '{default_branch}' on repo '{repo}'"
+        raise ValueError(msg)
+
+    def get_repo_variable(self, repo: str, name: str) -> str | None:
+        """Fetch an Actions variable from the repo, returning None if not found."""
+        endpoint = f"/repos/{repo}/actions/variables/{name}"
+        try:
+            data = self._request("GET", endpoint)
+            if isinstance(data, dict):
+                return data.get("value")
+            return None
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            raise
+
+    def list_claim_branches(self, repo: str) -> list[str]:
+        """List active claim branch names for the repo."""
+        endpoint = f"/repos/{repo}/git/matching-refs/heads/claim/"
+        try:
+            refs = self._request("GET", endpoint)
+            if isinstance(refs, list):
+                result = []
+                for item in refs:
+                    if isinstance(item, dict) and "ref" in item:
+                        # strip refs/heads/
+                        ref_str = str(item["ref"]).removeprefix("refs/heads/")
+                        result.append(ref_str)
+                return result
+            return []
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return []
+            raise
+
     def post_or_update_pr_comment(
         self, repo: str, pr_number: int, body: str
     ) -> dict[str, Any]:
         """Post a new comment or update existing integrity gate comment on PR."""
-        marked_body = f"{INTEGRITY_COMMENT_MARKER}\n{body}" if INTEGRITY_COMMENT_MARKER not in body else body
+        marked_body = (
+            f"{INTEGRITY_COMMENT_MARKER}\n{body}"
+            if INTEGRITY_COMMENT_MARKER not in body
+            else body
+        )
 
-        # Fetch existing comments
         endpoint = f"/repos/{repo}/issues/{pr_number}/comments"
         comments = self._request("GET", endpoint) or []
 
@@ -71,11 +141,9 @@ class GitHubClient:
                 break
 
         if existing_comment_id is not None:
-            # Update comment
             patch_endpoint = f"/repos/{repo}/issues/comments/{existing_comment_id}"
             return self._request("PATCH", patch_endpoint, {"body": marked_body})
         else:
-            # Create comment
             return self._request("POST", endpoint, {"body": marked_body})
 
     def set_commit_status(

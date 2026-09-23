@@ -1,0 +1,25 @@
+{
+  "sessions": [
+    {
+      "id": "sessions/1001",
+      "title": "phase-1-01: Engine skeleton",
+      "automationMode": "AUTO_CREATE_PR",
+      "state": "COMPLETED",
+      "createTime": "2026-09-22T12:00:00Z"
+    },
+    {
+      "id": "sessions/1002",
+      "title": "phase-1-02: Ticket skill",
+      "automationMode": "AUTO_CREATE_PR",
+      "state": "COMPLETED",
+      "createTime": "2026-09-22T14:30:00Z"
+    },
+    {
+      "id": "sessions/1003",
+      "title": "phase-1-06: Live dispatch",
+      "automationMode": "AUTO_CREATE_PR",
+      "state": "RUNNING",
+      "createTime": "2026-09-22T20:00:00Z"
+    }
+  ]
+}
