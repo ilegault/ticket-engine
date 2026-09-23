@@ -1,0 +1,17 @@
+# engine-repos.toml — engine-level list of target repos to include in the morning report.
+#
+# WHY THIS EXISTS
+# ---------------
+# Ticket 08 AC: "Target repos to report on come from an engine-level list in the engine repo."
+# The morning-report workflow reads this file to know which repos to gather data from.
+# Adding a new repo here is the only change needed to include it in the report.
+#
+# Format: repos is a list of "owner/repo" strings.
+
+repos = [
+    "ilegault/slackbot",
+]
+
+# Roll in after adoption (ticket 13 / 15):
+# "ilegault/tds-t8",
+# "ilegault/rbl",

@@ -57,6 +57,16 @@ class OpenPR:
 
 
 @dataclass(frozen=True)
+class MergedPR:
+    """A recently merged pull request, used by the morning report renderer."""
+
+    number: int
+    title: str
+    ticket_number: int = 0
+    merged_at: datetime.datetime | None = None
+
+
+@dataclass(frozen=True)
 class StartTicketAction:
     ticket: Ticket
     runner: str = "any"
@@ -97,6 +107,9 @@ class WorldSnapshot:
     now: datetime.datetime | None = None
     escalations: Sequence[datetime.datetime | object] = field(default_factory=list)
     jules_sessions: Sequence[dict[str, Any] | object] = field(default_factory=list)
+    # Morning report fields: set by the live reporter, ignored by the dispatch core.
+    repo_name: str = ""
+    merged_prs: Sequence[MergedPR | object] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
