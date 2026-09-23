@@ -13,6 +13,7 @@ dependencies = []
 [project.scripts]
 dispatch = "ticket_engine.cli:main"
 integrity-gate = "ticket_engine.integrity_runner:main"
+work-windows = "ticket_engine.cli:local_worker_main"
 
 [tool.ruff]
 line-length = 100

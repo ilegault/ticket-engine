@@ -275,9 +275,9 @@ def execute_new_tests_on_base(
         base_cmd_parts = ["pytest"]
 
     cmd_name = base_cmd_parts[0]
-    if cmd_name == "pytest" and not shutil.which("pytest"):
+    if cmd_name == "pytest":
         cmd_prefix = [sys.executable, "-m", "pytest"] + base_cmd_parts[1:]
-    elif cmd_name == "python" and not shutil.which("python"):
+    elif cmd_name == "python":
         cmd_prefix = [sys.executable] + base_cmd_parts[1:]
     else:
         cmd_prefix = list(base_cmd_parts)
