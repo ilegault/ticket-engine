@@ -640,12 +640,18 @@ def _collect_skill_files(repo_dir: pathlib.Path) -> dict[str, str]:
 
 
 def _collect_public_files(repo_dir: pathlib.Path) -> dict[str, str]:
-    """Collect all public (non-.git) text files for PII scanning."""
-    skip_dirs = {".git", ".venv", "__pycache__", "node_modules"}
+    """Collect public text source files for PII scanning.
+
+    Excludes secrets files (.env), build/dist artifacts, binaries and archives.
+    Only files that could reasonably end up in a public git repo as readable
+    source are scanned.
+    """
+    skip_dirs = {".git", ".venv", "__pycache__", "node_modules", "dist", "build"}
     skip_extensions = {
         ".pyc", ".pyo", ".so", ".dll", ".exe", ".bin",
         ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
         ".woff", ".ttf", ".woff2", ".eot",
+        ".zip", ".pyz", ".pkg", ".pyd", ".pem", ".crt", ".key",
     }
     files: dict[str, str] = {}
     for p in repo_dir.rglob("*"):
@@ -654,6 +660,9 @@ def _collect_public_files(repo_dir: pathlib.Path) -> dict[str, str]:
         if any(part in skip_dirs for part in p.parts):
             continue
         if p.suffix in skip_extensions:
+            continue
+        # Skip .env files (secrets files, never public source)
+        if p.name == ".env" or p.name.startswith(".env."):
             continue
         try:
             rel = p.relative_to(repo_dir).as_posix()

@@ -137,8 +137,8 @@ and ticket skills).
 
 **Secrets file** — `secrets.env` on the developer's machine, outside every repo.
 The bootstrap reads it and writes each value into the target repo's GitHub
-secrets. The engine carries only `secrets.env.example`, which names the keys and
-holds no values.
+secrets. The required keys are `JULES_API_KEY`, `PIPELINE_TOKEN`, and
+`PEOPLE_DENYLIST`.
 
 **People denylist** — real names, Slack IDs and emails that must never appear in a
 public file. Stored only as a GitHub secret; never committed. Tickets and docs

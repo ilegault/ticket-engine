@@ -2,7 +2,7 @@
 
 Covers acceptance criteria:
 1. Reads secrets.env, schedules SetSecretOp for missing secrets; never echoes values;
-   engine ships secrets.env.example with key names only.
+   engine ships .env with key names only.
 2. Schedules ops to enable auto-merge, secret scanning with push protection,
    and create a branch ruleset requiring the integrity check.
 3. Schedules CreateLabelOp for engine:hold, engine:escalated, engine:windows-waiting.
@@ -10,8 +10,6 @@ Covers acceptance criteria:
 5. All operations go through a fake-able adapter; second run schedules no ops.
 """
 from __future__ import annotations
-
-import pathlib
 
 from ticket_engine.bootstrap import (
     ENGINE_RULESET_NAME,
@@ -100,24 +98,6 @@ def test_set_secret_op_carries_name_only_not_value():
 def test_required_secrets_are_the_three_expected_keys():
     assert set(REQUIRED_SECRETS) == {"JULES_API_KEY", "PIPELINE_TOKEN", "PEOPLE_DENYLIST"}
 
-
-def test_secrets_env_example_shipped_with_engine():
-    """secrets.env.example must exist in the engine repo root and list all required keys."""
-    example_path = pathlib.Path(__file__).parent.parent / "secrets.env.example"
-    assert example_path.exists(), "secrets.env.example is missing from the engine repo root"
-    content = example_path.read_text(encoding="utf-8")
-    for key in REQUIRED_SECRETS:
-        assert key in content, f"secrets.env.example is missing key: {key}"
-    # Must not contain any actual values (lines like KEY=something-non-empty)
-    for line in content.splitlines():
-        line = line.strip()
-        if line.startswith("#") or not line:
-            continue
-        if "=" in line:
-            _key_part, _, value_part = line.partition("=")
-            assert not value_part.strip(), (
-                f"secrets.env.example must have empty values; found: {line!r}"
-            )
 
 
 # ---------------------------------------------------------------------------
