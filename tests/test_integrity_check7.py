@@ -21,10 +21,9 @@ from ticket_engine.integrity_runner import run_integrity_gate
 
 
 def _init_git_repo(repo_dir: pathlib.Path) -> None:
-    _sub = dict(check=True, capture_output=True, stdin=subprocess.DEVNULL)
-    subprocess.run(["git", "init", "-b", "master"], cwd=repo_dir, **_sub)
-    subprocess.run(["git", "config", "user.name", "Test Agent"], cwd=repo_dir, **_sub)
-    subprocess.run(["git", "config", "user.email", "agent@example.com"], cwd=repo_dir, **_sub)
+    subprocess.run(["git", "init", "-b", "master"], cwd=repo_dir, check=True, capture_output=True, stdin=subprocess.DEVNULL)
+    subprocess.run(["git", "config", "user.name", "Test Agent"], cwd=repo_dir, check=True, capture_output=True, stdin=subprocess.DEVNULL)
+    subprocess.run(["git", "config", "user.email", "agent@example.com"], cwd=repo_dir, check=True, capture_output=True, stdin=subprocess.DEVNULL)
 
 
 def test_tiny_fixture_project_new_test_fails_on_base_passes(tmp_path: pathlib.Path):
