@@ -14,7 +14,12 @@ import datetime
 
 from ticket_engine.config import RepoConfig
 from ticket_engine.dispatch import (
+    Claim,
     DispatchCore,
+    EscalatePRAction,
+    OpenPR,
+    PauseRepoAction,
+    ReleaseClaimAction,
     StartTicketAction,
     WorldSnapshot,
 )
@@ -150,3 +155,147 @@ def test_scenario_claim_collision_skips_claimed_ticket():
     # Ticket 1 is skipped because it is already claimed; ticket 2 is started
     assert len(result.actions) == 1
     assert result.actions[0].ticket.number == 2
+
+
+def test_scenario_second_vs_third_ci_failure():
+    core = DispatchCore()
+    ticket = make_ticket(1)
+
+    # 1. Second failure on PR: dispatcher gives worker fix attempts, does NOT escalate
+    pr_two_failures = OpenPR(
+        number=101,
+        branch="ticket/phase-1-01-feat",
+        ticket_number=1,
+        failed_ci_count=2,
+    )
+    snapshot_two = WorldSnapshot(
+        tickets=[ticket],
+        open_prs=[pr_two_failures],
+        config=RepoConfig(concurrency=2),
+    )
+    result_two = core.evaluate(snapshot_two)
+    escalate_actions_two = [a for a in result_two.actions if isinstance(a, EscalatePRAction)]
+    assert len(escalate_actions_two) == 0
+
+    # 2. Third failure on PR: dispatcher escalates
+    pr_three_failures = OpenPR(
+        number=101,
+        branch="ticket/phase-1-01-feat",
+        ticket_number=1,
+        failed_ci_count=3,
+        ci_log_excerpt="AssertionError: failed",
+    )
+    snapshot_three = WorldSnapshot(
+        tickets=[ticket],
+        open_prs=[pr_three_failures],
+        config=RepoConfig(concurrency=2),
+    )
+    result_three = core.evaluate(snapshot_three)
+    escalate_actions_three = [a for a in result_three.actions if isinstance(a, EscalatePRAction)]
+    assert len(escalate_actions_three) == 1
+    assert escalate_actions_three[0].pr_number == 101
+    assert escalate_actions_three[0].ticket.number == 1
+
+
+def test_scenario_two_escalations_in_and_outside_24_hours():
+    core = DispatchCore()
+    now = datetime.datetime(2026, 9, 22, 12, 0, 0, tzinfo=datetime.UTC)
+    config = RepoConfig(circuit_breaker_escalations_limit=2, circuit_breaker_window_hours=24)
+    ticket = make_ticket(1)
+
+    # 1. Two escalations outside 24h (e.g. 26 hours ago and 25 hours ago): does NOT pause
+    snapshot_outside = WorldSnapshot(
+        tickets=[ticket],
+        config=config,
+        now=now,
+        escalations=[
+            now - datetime.timedelta(hours=26),
+            now - datetime.timedelta(hours=25),
+        ],
+    )
+    result_outside = core.evaluate(snapshot_outside)
+    pause_actions_outside = [a for a in result_outside.actions if isinstance(a, PauseRepoAction)]
+    assert len(pause_actions_outside) == 0
+    # Eligible ticket can start
+    assert len(result_outside.actions) == 1
+    assert isinstance(result_outside.actions[0], StartTicketAction)
+
+    # 2. Two escalations inside 24h (e.g. 10 hours ago and 1 hour ago): trips circuit breaker and pauses
+    snapshot_inside = WorldSnapshot(
+        tickets=[ticket],
+        config=config,
+        now=now,
+        escalations=[
+            now - datetime.timedelta(hours=10),
+            now - datetime.timedelta(hours=1),
+        ],
+    )
+    result_inside = core.evaluate(snapshot_inside)
+    pause_actions_inside = [a for a in result_inside.actions if isinstance(a, PauseRepoAction)]
+    assert len(pause_actions_inside) == 1
+    # Paused repo starts nothing
+    start_actions_inside = [a for a in result_inside.actions if isinstance(a, StartTicketAction)]
+    assert len(start_actions_inside) == 0
+
+
+def test_scenario_stale_claim_13_hour_quiet_released_and_11_hour_quiet_kept():
+    core = DispatchCore()
+    now = datetime.datetime(2026, 9, 22, 12, 0, 0, tzinfo=datetime.UTC)
+    config = RepoConfig(stale_claim_hours=12)
+
+    # Ticket 1 has claim with last commit 13 hours ago (stale)
+    claim_13h = Claim(
+        ref="claim/phase-1/01",
+        ticket_number=1,
+        effort="phase-1",
+        last_commit_time=now - datetime.timedelta(hours=13),
+        has_live_session=False,
+    )
+    # Ticket 2 has claim with last commit 11 hours ago (active, not stale)
+    claim_11h = Claim(
+        ref="claim/phase-1/02",
+        ticket_number=2,
+        effort="phase-1",
+        last_commit_time=now - datetime.timedelta(hours=11),
+        has_live_session=False,
+    )
+    # Ticket 3 has claim with last commit 15 hours ago BUT has a live Jules session -> NOT stale
+    claim_with_live_session = Claim(
+        ref="claim/phase-1/03",
+        ticket_number=3,
+        effort="phase-1",
+        last_commit_time=now - datetime.timedelta(hours=15),
+        has_live_session=True,
+    )
+
+    tickets = [make_ticket(1), make_ticket(2), make_ticket(3)]
+    snapshot = WorldSnapshot(
+        tickets=tickets,
+        claims=[claim_13h, claim_11h, claim_with_live_session],
+        config=config,
+        now=now,
+    )
+
+    result = core.evaluate(snapshot)
+    release_actions = [a for a in result.actions if isinstance(a, ReleaseClaimAction)]
+    assert len(release_actions) == 1
+    assert release_actions[0].ticket_number == 1
+    assert release_actions[0].claim_ref == "claim/phase-1/01"
+
+
+def test_scenario_held_or_escalated_blocker_keeps_dependents_off_frontier_independent_dispatched():
+    core = DispatchCore()
+    tickets = [
+        make_ticket(1, status="blocked"),  # escalated ticket
+        make_ticket(2, status="ready-for-agent", blocked_by=[1]),  # dependent on escalated
+        make_ticket(3, status="ready-for-agent", blocked_by=[]),  # independent ticket
+    ]
+    snapshot = WorldSnapshot(
+        tickets=tickets,
+        config=RepoConfig(concurrency=2),
+    )
+    result = core.evaluate(snapshot)
+    assert [t.number for t in result.frontier] == [3]
+    assert len(result.actions) == 1
+    assert result.actions[0].ticket.number == 3
+
