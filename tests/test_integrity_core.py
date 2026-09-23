@@ -473,3 +473,310 @@ def test_reasons_contain_no_secrets_or_code_dumps():
     for reason in verdict.reasons:
         assert "SUPER_SECRET_KEY" not in reason
         assert "secret_value" not in reason
+
+
+def test_check_3_ratchet_file_increased_fails():
+    base_tree = {
+        "tests/test_sample.py": "def test_a(): assert True\n",
+        ".ratchet": "10\n",
+    }
+    pr_diff = textwrap.dedent("""
+        diff --git a/.ratchet b/.ratchet
+        --- a/.ratchet
+        +++ b/.ratchet
+        @@ -1,1 +1,1 @@
+        -10
+        +12
+    """).strip() + "\n"
+    ticket_content = textwrap.dedent("""
+        # 10: Ticket
+        **Status:** done
+        ## Acceptance criteria
+        - [x] All done
+    """)
+    ticket = TicketParser().parse_text(ticket_content, filename="10-ticket.md")
+    core = IntegrityCore()
+    config = IntegrityConfig(ratchet_files=[".ratchet"])
+
+    verdict = core.evaluate(
+        base_tree=base_tree,
+        pr_diff=pr_diff,
+        ticket=ticket,
+        config=config,
+    )
+
+    assert verdict.verdict == Verdict.FAIL
+    assert verdict.is_fail()
+    assert any("Check 3 fail" in r and ".ratchet" in r and "12" in r for r in verdict.reasons)
+
+
+def test_check_3_ratchet_file_equal_or_decreased_passes():
+    base_tree = {
+        "tests/test_sample.py": "def test_a(): assert True\n",
+        ".ratchet": "10\n",
+    }
+    pr_diff = textwrap.dedent("""
+        diff --git a/.ratchet b/.ratchet
+        --- a/.ratchet
+        +++ b/.ratchet
+        @@ -1,1 +1,1 @@
+        -10
+        +8
+    """).strip() + "\n"
+    ticket_content = textwrap.dedent("""
+        # 10: Ticket
+        **Status:** done
+        ## Acceptance criteria
+        - [x] All done
+    """)
+    ticket = TicketParser().parse_text(ticket_content, filename="10-ticket.md")
+    core = IntegrityCore()
+    config = IntegrityConfig(ratchet_files=[".ratchet"])
+
+    verdict = core.evaluate(
+        base_tree=base_tree,
+        pr_diff=pr_diff,
+        ticket=ticket,
+        config=config,
+    )
+
+    assert verdict.verdict == Verdict.PASS
+    assert verdict.is_pass()
+
+
+def test_check_4_touching_github_produces_hold():
+    base_tree = {"tests/test_sample.py": "def test_a(): assert True\n"}
+    pr_diff = textwrap.dedent("""
+        diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+        --- a/.github/workflows/ci.yml
+        +++ b/.github/workflows/ci.yml
+        @@ -1,1 +1,2 @@
+         name: CI
+        +# edit
+    """).strip() + "\n"
+    ticket_content = textwrap.dedent("""
+        # 10: Ticket
+        **Status:** done
+        ## Acceptance criteria
+        - [x] All done
+    """)
+    ticket = TicketParser().parse_text(ticket_content, filename="10-ticket.md")
+    core = IntegrityCore()
+
+    verdict = core.evaluate(
+        base_tree=base_tree,
+        pr_diff=pr_diff,
+        ticket=ticket,
+    )
+
+    assert verdict.verdict == Verdict.HOLD
+    assert verdict.is_hold()
+    assert any("Check 4 hold" in r and ".github/workflows/ci.yml" in r for r in verdict.reasons)
+
+
+def test_check_4_touching_adr_agents_context_or_gate_produces_hold():
+    for protected_file in [
+        "docs/adr/0001-gate.md",
+        "AGENTS.md",
+        "CONTEXT.md",
+        "scripts/check_tests_first.py",
+    ]:
+        base_tree = {
+            "tests/test_sample.py": "def test_a(): assert True\n",
+            protected_file: "original\n",
+        }
+        pr_diff = textwrap.dedent(f"""
+            diff --git a/{protected_file} b/{protected_file}
+            --- a/{protected_file}
+            +++ b/{protected_file}
+            @@ -1,1 +1,2 @@
+             original
+            +change
+        """).strip() + "\n"
+        ticket_content = textwrap.dedent("""
+            # 10: Ticket
+            **Status:** done
+            ## Acceptance criteria
+            - [x] All done
+        """)
+        ticket = TicketParser().parse_text(ticket_content, filename="10-ticket.md")
+        core = IntegrityCore()
+
+        verdict = core.evaluate(
+            base_tree=base_tree,
+            pr_diff=pr_diff,
+            ticket=ticket,
+        )
+
+        assert verdict.verdict == Verdict.HOLD, f"Expected HOLD for touching {protected_file}"
+        assert any("Check 4 hold" in r and protected_file in r for r in verdict.reasons)
+
+
+def test_check_5_tests_first_escape_label_produces_hold():
+    base_tree = {"tests/test_sample.py": "def test_a(): assert True\n"}
+    pr_diff = ""
+    ticket_content = textwrap.dedent("""
+        # 10: Ticket
+        **Status:** done
+        ## Acceptance criteria
+        - [x] All done
+    """)
+    ticket = TicketParser().parse_text(ticket_content, filename="10-ticket.md")
+    core = IntegrityCore()
+
+    verdict = core.evaluate(
+        base_tree=base_tree,
+        pr_diff=pr_diff,
+        ticket=ticket,
+        labels=["tests-exempt"],
+    )
+
+    assert verdict.verdict == Verdict.HOLD
+    assert verdict.is_hold()
+    assert any("Check 5 hold" in r and "tests-exempt" in r for r in verdict.reasons)
+
+
+def test_check_5_commit_or_pr_tag_produces_hold():
+    base_tree = {"tests/test_sample.py": "def test_a(): assert True\n"}
+    pr_diff = ""
+    ticket_content = textwrap.dedent("""
+        # 10: Ticket
+        **Status:** done
+        ## Acceptance criteria
+        - [x] All done
+    """)
+    ticket = TicketParser().parse_text(ticket_content, filename="10-ticket.md")
+    core = IntegrityCore()
+
+    verdict = core.evaluate(
+        base_tree=base_tree,
+        pr_diff=pr_diff,
+        ticket=ticket,
+        commit_messages=["docs: update readme [no-test-needed: doc change]"],
+    )
+
+    assert verdict.verdict == Verdict.HOLD
+    assert any("Check 5 hold" in r and "no-test-needed" in r for r in verdict.reasons)
+
+
+def test_denylist_scan_fails_and_never_prints_secret():
+    secret_person = "Isaac Newton"
+    secret_slack = "U12345678"
+    secret_email = "newton@apple.org"
+
+    base_tree = {"src/calc.py": "def gravity(): pass\n"}
+    pr_diff = textwrap.dedent(f"""
+        diff --git a/src/calc.py b/src/calc.py
+        --- a/src/calc.py
+        +++ b/src/calc.py
+        @@ -1,1 +1,3 @@
+         def gravity(): pass
+        +# Author: {secret_person} ({secret_slack})
+        +# Contact: {secret_email}
+    """).strip() + "\n"
+    ticket_content = textwrap.dedent("""
+        # 10: Ticket
+        **Status:** done
+        ## Acceptance criteria
+        - [x] All done
+    """)
+    ticket = TicketParser().parse_text(ticket_content, filename="10-ticket.md")
+    core = IntegrityCore()
+
+    verdict = core.evaluate(
+        base_tree=base_tree,
+        pr_diff=pr_diff,
+        ticket=ticket,
+        denylist=[secret_person, secret_slack, secret_email],
+    )
+
+    assert verdict.verdict == Verdict.FAIL
+    assert verdict.is_fail()
+
+    # Must name the file and line number
+    assert any("src/calc.py" in r for r in verdict.reasons)
+    assert any("line 2" in r or "line 3" in r for r in verdict.reasons)
+
+    # Must NEVER echo any matched entry or line text
+    all_reasons_str = " ".join(verdict.reasons)
+    assert secret_person not in all_reasons_str
+    assert secret_slack not in all_reasons_str
+    assert secret_email not in all_reasons_str
+    assert "Author:" not in all_reasons_str
+    assert "Contact:" not in all_reasons_str
+
+
+def test_denylist_removal_does_not_fail():
+    secret_person = "Isaac Newton"
+    base_tree = {"src/calc.py": f"# Author: {secret_person}\ndef gravity(): pass\n"}
+    pr_diff = textwrap.dedent(f"""
+        diff --git a/src/calc.py b/src/calc.py
+        --- a/src/calc.py
+        +++ b/src/calc.py
+        @@ -1,2 +1,1 @@
+        -# Author: {secret_person}
+         def gravity(): pass
+    """).strip() + "\n"
+    ticket_content = textwrap.dedent("""
+        # 10: Ticket
+        **Status:** done
+        ## Acceptance criteria
+        - [x] All done
+    """)
+    ticket = TicketParser().parse_text(ticket_content, filename="10-ticket.md")
+    core = IntegrityCore()
+
+    verdict = core.evaluate(
+        base_tree=base_tree,
+        pr_diff=pr_diff,
+        ticket=ticket,
+        denylist=[secret_person],
+    )
+
+    assert verdict.verdict == Verdict.PASS
+
+
+def test_when_both_fail_and_hold_reasons_exist_verdict_is_fail():
+    base_tree = {
+        "tests/test_sample.py": "def test_a(): assert True\n",
+        ".github/workflows/ci.yml": "name: CI\n",
+    }
+    # Touches .github (produces hold) AND newly skips a test (produces fail)
+    pr_diff = textwrap.dedent("""
+        diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+        --- a/.github/workflows/ci.yml
+        +++ b/.github/workflows/ci.yml
+        @@ -1,1 +1,2 @@
+         name: CI
+        +# new step
+        diff --git a/tests/test_sample.py b/tests/test_sample.py
+        --- a/tests/test_sample.py
+        +++ b/tests/test_sample.py
+        @@ -1,1 +1,3 @@
+        +import pytest
+        +@pytest.mark.skip
+         def test_a(): assert True
+    """).strip() + "\n"
+    ticket_content = textwrap.dedent("""
+        # 10: Ticket
+        **Status:** done
+        ## Acceptance criteria
+        - [x] All done
+    """)
+    ticket = TicketParser().parse_text(ticket_content, filename="10-ticket.md")
+    core = IntegrityCore()
+
+    verdict = core.evaluate(
+        base_tree=base_tree,
+        pr_diff=pr_diff,
+        ticket=ticket,
+    )
+
+    assert verdict.verdict == Verdict.FAIL
+    assert verdict.is_fail()
+    assert not verdict.is_hold()
+
+    # Reasons contain both fail and hold
+    assert any("Check 1 fail" in r for r in verdict.reasons)
+    assert any("Check 4 hold" in r for r in verdict.reasons)
+

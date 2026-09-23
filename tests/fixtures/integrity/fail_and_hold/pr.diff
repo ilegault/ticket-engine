@@ -1,0 +1,12 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -1,1 +1,2 @@
+ name: CI
++# touched workflow
+diff --git a/tests/test_math.py b/tests/test_math.py
+--- a/tests/test_math.py
++++ b/tests/test_math.py
+@@ -1,2 +0,0 @@
+-def test_one():
+-    assert 1 + 1 == 2

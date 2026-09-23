@@ -1,0 +1,6 @@
+diff --git a/src/app.py b/src/app.py
+--- a/src/app.py
++++ b/src/app.py
+@@ -1,1 +1,2 @@
+ def main(): pass
++# Leaked name: Jane Doe

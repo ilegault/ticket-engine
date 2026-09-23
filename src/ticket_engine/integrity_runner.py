@@ -49,9 +49,12 @@ def format_verdict_comment(verdict: IntegrityVerdict) -> str:
 
 
 def get_base_tree_from_git(
-    repo_path: pathlib.Path, base_ref: str, test_dirs: tuple[str, ...] = ("tests",)
+    repo_path: pathlib.Path,
+    base_ref: str,
+    test_dirs: tuple[str, ...] = ("tests",),
+    ratchet_files: tuple[str, ...] = (),
 ) -> dict[str, str]:
-    """Retrieve test files from git at base_ref."""
+    """Retrieve test files and ratchet files from git at base_ref."""
     base_tree: dict[str, str] = {}
     try:
         res = subprocess.run(
@@ -78,10 +81,40 @@ def get_base_tree_from_git(
                 )
                 if show_res.returncode == 0:
                     base_tree[path_str] = show_res.stdout
+
+        for rf in ratchet_files:
+            rf_norm = rf.strip().replace("\\", "/")
+            show_res = subprocess.run(
+                ["git", "show", f"{base_ref}:{rf_norm}"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if show_res.returncode == 0:
+                base_tree[rf_norm] = show_res.stdout
     except (subprocess.SubprocessError, OSError) as exc:
         logger.warning("Failed to query git base tree: %s", exc)
 
     return base_tree
+
+
+def get_git_commit_messages(repo_path: pathlib.Path, base_ref: str) -> list[str]:
+    """Retrieve commit messages between base_ref and HEAD."""
+    try:
+        res = subprocess.run(
+            ["git", "log", "--pretty=%B", f"{base_ref}..HEAD"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return [res.stdout]
+    except (subprocess.SubprocessError, OSError) as exc:
+        logger.warning("Failed to query git commit messages: %s", exc)
+    return []
+
 
 
 def get_pr_diff_from_git(repo_path: pathlib.Path, base_ref: str) -> str:
@@ -139,10 +172,19 @@ def run_integrity_gate(
     head_sha: str | None = None,
     step_summary_path: pathlib.Path | None = None,
     test_results: Any = None,
+    labels: list[str] | None = None,
+    commit_messages: list[str] | None = None,
+    pr_text: str | None = None,
+    denylist: list[str] | str | None = None,
+    config: IntegrityConfig | None = None,
 ) -> int:
     """Execute integrity gate checks and report verdict."""
-    config = IntegrityConfig()
-    base_tree = get_base_tree_from_git(repo_path, base_ref, tuple(config.test_paths))
+    cfg = config or IntegrityConfig()
+    actual_denylist = denylist if denylist is not None else os.environ.get("PEOPLE_DENYLIST")
+
+    base_tree = get_base_tree_from_git(
+        repo_path, base_ref, tuple(cfg.test_paths), tuple(cfg.ratchet_files)
+    )
     pr_diff = get_pr_diff_from_git(repo_path, base_ref)
 
     if ticket_path and ticket_path.is_file():
@@ -150,13 +192,23 @@ def run_integrity_gate(
     else:
         ticket_content = find_ticket_content_from_git(repo_path, base_ref)
 
+    actual_commit_messages = (
+        commit_messages
+        if commit_messages is not None
+        else get_git_commit_messages(repo_path, base_ref)
+    )
+
     core = IntegrityCore()
     verdict = core.evaluate(
         base_tree=base_tree,
         pr_diff=pr_diff,
         ticket=ticket_content,
-        config=config,
+        config=cfg,
         test_results=test_results,
+        labels=labels,
+        commit_messages=actual_commit_messages,
+        pr_text=pr_text,
+        denylist=actual_denylist,
     )
 
     comment_body = format_verdict_comment(verdict)
@@ -246,13 +298,31 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("GITHUB_SHA"),
         help="Commit SHA for check status",
     )
+    parser.add_argument(
+        "--label",
+        action="append",
+        default=[],
+        help="PR label to evaluate for test exemptions",
+    )
+    parser.add_argument(
+        "--commit-message",
+        action="append",
+        default=[],
+        help="Commit message to evaluate for escape hatch tags",
+    )
+    parser.add_argument(
+        "--denylist",
+        default=None,
+        help="Explicit denylist string or entries",
+    )
 
     args = parser.parse_args(argv)
 
-    # Extract info from GITHUB_EVENT_PATH if available and arguments not explicitly given
     event_path = os.environ.get("GITHUB_EVENT_PATH")
     pr_num = args.pr_number
     head_sha = args.sha
+    event_labels: list[str] = []
+    event_texts: list[str] = []
 
     if event_path and pathlib.Path(event_path).is_file():
         try:
@@ -263,8 +333,21 @@ def main(argv: list[str] | None = None) -> int:
                     pr_num = int(pr["number"])
                 if not head_sha and "head" in pr and "sha" in pr["head"]:
                     head_sha = pr["head"]["sha"]
+                for lbl in pr.get("labels", []):
+                    if isinstance(lbl, dict) and "name" in lbl:
+                        event_labels.append(lbl["name"])
+                    elif isinstance(lbl, str):
+                        event_labels.append(lbl)
+                if pr.get("title"):
+                    event_texts.append(str(pr["title"]))
+                if pr.get("body"):
+                    event_texts.append(str(pr["body"]))
         except (OSError, json.JSONDecodeError, KeyError, ValueError) as exc:
             logger.warning("Could not read event payload: %s", exc)
+
+    all_labels = list(args.label) + event_labels
+    all_texts = list(args.commit_message) + event_texts
+    pr_text = "\n".join(all_texts) if all_texts else None
 
     step_summary_path = (
         pathlib.Path(os.environ["GITHUB_STEP_SUMMARY"])
@@ -281,7 +364,12 @@ def main(argv: list[str] | None = None) -> int:
         pr_number=pr_num,
         head_sha=head_sha,
         step_summary_path=step_summary_path,
+        labels=all_labels if all_labels else None,
+        commit_messages=args.commit_message if args.commit_message else None,
+        pr_text=pr_text,
+        denylist=args.denylist,
     )
+
 
 
 if __name__ == "__main__":
