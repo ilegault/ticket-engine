@@ -1,4 +1,4 @@
-"""Bootstrap adopt mode — file side.
+"""Bootstrap adopt and new modes — file side.
 
 WHY THIS EXISTS
 ---------------
@@ -8,10 +8,19 @@ statuses, replaces the repo-specific ticket skill and tests-first script with
 engine-canonical versions, adds the engine config, caller workflows, ticket
 template and AGENTS.md sections, and scans public files for PII to report.
 
+The `new` mode generates the complete skeleton for a brand-new repo: AGENTS.md
+with protocol sections, CONTEXT.md, a tests-first ADR, the .scratch/ layout,
+CI workflow with gate checks, engine config, caller workflows, ticket template,
+tests-first script, and the rendered planner instructions.
+
+Both modes render the Cowork planner instructions from a single engine template
+(``render_planner_instructions``), ensuring every repo's planner follows the
+same rules: five status words, Runner/Auto-merge on every ticket, approval
+tickets late in the dependency graph, roles not people, push to hand off.
+
 This module is the pure core: it accepts all relevant file contents as input
 and returns a list of file writes, diffs and PII findings. No file I/O is done
-here. The `run_adopt` adapter reads the repo, calls this core, and writes the
-results to disk.
+here. The ``run_adopt`` and ``run_new`` adapters read/write disk.
 
 ADR references: ADR 0001 (tests-first, gate scripts), ADR 0002 (no real names
 or IDs in public files, denylist enforcement).
@@ -141,6 +150,82 @@ tickets, or documentation. Refer to **roles** ("the approver", "a buyer",
 "the developer"). See `ilegault/ticket-engine` ADR 0002.
 """
 
+# ---------------------------------------------------------------------------
+# Planner instructions template
+# ---------------------------------------------------------------------------
+
+PLANNER_INSTRUCTIONS_MARKER = "<!-- ticket-engine-bootstrap: planner-instructions -->"
+
+_PLANNER_INSTRUCTIONS_TEMPLATE = """\
+# Cowork Planner Instructions — {repo_name}
+
+<!-- ticket-engine-bootstrap: planner-instructions -->
+
+## Purpose
+
+You are the Cowork planner for **{repo_name}**.  Your job is to translate a
+user request or a product goal into a set of tickets, then hand off by pushing
+those tickets into the repo's issue tracker.  You do not implement; you plan.
+
+---
+
+## Ticket anatomy
+
+Every ticket you create **must** contain these fields (use the standard template):
+
+| Field | Required value |
+|---|---|
+| **Status:** | One of the five words below |
+| **Runner:** | A role name (never a person's name) |
+| **Auto-merge:** | `yes` or `no` |
+| **Blocked by:** | Ticket numbers, or `None` |
+
+The five status words — use exactly these, no others:
+
+- `ready-for-agent` — ready for an AI worker to pick up
+- `ready-for-developer` — requires human judgement, secrets, or GitHub settings
+- `in-progress` — actively being worked
+- `blocked` — cannot proceed without a dependency being resolved first
+- `done` — accepted and merged
+
+---
+
+## Dependency ordering
+
+Break work into the smallest independently-deliverable slices.
+
+Place approval-required tickets (those with `Auto-merge: no` or that require a
+human review gate) **as late as possible** in the dependency graph — at the
+leaves of the DAG, after all automated work is complete.  This keeps the
+humans-in-the-loop waiting time as short as possible and maximises the work
+that can be automated without blocking.
+
+---
+
+## Roles, not people
+
+Assign `Runner:` to a **role** — never a person's name, Slack handle, or email.
+Roles include: `any`, `agent`, `developer`, `reviewer`, `approver`.
+
+A role describes the capability needed, not who holds it today.  This keeps
+tickets portable and avoids encoding org-chart assumptions.
+
+---
+
+## Handing off
+
+Once planning is complete, push all tickets to the repo by creating GitHub
+Issues (or writing them into `.scratch/phase-1/issues/`).  That push is the
+handoff signal — the dispatcher will pick them up from there.
+
+Do **not** start implementing tickets yourself.  Your output is the plan.
+"""
+
+
+def render_planner_instructions(repo_name: str) -> str:
+    """Render the planner instructions template for a specific repo."""
+    return _PLANNER_INSTRUCTIONS_TEMPLATE.replace("{repo_name}", repo_name)
+
 
 def caller_dispatch_workflow(engine_version: str) -> str:
     """Caller workflow that a target repo adds to invoke the engine's reusable dispatch workflow."""
@@ -178,6 +263,96 @@ def caller_integrity_workflow(engine_version: str) -> str:
         "    secrets:\n"
         "      PIPELINE_TOKEN: ${{ secrets.PIPELINE_TOKEN }}\n"
     )
+
+
+# ---------------------------------------------------------------------------
+# New-mode skeleton templates
+# ---------------------------------------------------------------------------
+
+_CONTEXT_MD_TEMPLATE = """\
+# CONTEXT — {repo_name}
+
+## Glossary
+
+| Term | Definition |
+|---|---|
+| **frontier** | The set of tickets that are `ready-for-agent` with all dependencies done |
+| **claim** | A Jules session holding an in-progress ticket |
+| **worker** | A Jules session assigned to implement one ticket |
+| **dispatcher** | The engine workflow that starts workers and merges approved PRs |
+| **verdict** | The integrity gate's decision: `pass`, `fail`, or `hold` |
+| **merge hold** | A PR that passed the gate but requires human review before merge |
+| **escalation** | A ticket/PR flagged for developer or stronger-model attention |
+| **circuit breaker** | Auto-pause triggered when escalations exceed a threshold |
+| **runner** | The role type that can execute a ticket (`agent`, `developer`, `any`) |
+
+## Architecture overview
+
+This repo is managed by the ticket-engine dispatcher.  See
+`ilegault/ticket-engine` for the engine source.
+"""
+
+_TESTS_FIRST_ADR_TEMPLATE = """\
+# ADR 0001: Tests first
+
+**Status:** Accepted
+
+## Context
+
+This repo follows a tests-first discipline: tests are written from the
+acceptance criteria before any implementation begins.  A test that has never
+been seen to fail is not known to work.
+
+## Decision
+
+All implementation work must begin with a failing test.  The gate script
+`scripts/check_tests_first.py` enforces this in CI.
+
+## Consequences
+
+- Workers are slower on the first commit but the feedback loop is tighter.
+- The acceptance criteria become executable specifications.
+- No `skip`, `skipif`, or `xfail` markers are allowed on tests written for this
+  repo's own tickets.
+"""
+
+_CI_WORKFLOW_TEMPLATE = """\
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .[dev] 2>/dev/null || pip install -e .
+      - name: check_tests_first
+        run: python scripts/check_tests_first.py
+      - name: pytest
+        run: pytest -q
+"""
+
+_SCRATCH_SPEC_PLACEHOLDER = """\
+# Phase-1 Spec — {repo_name}
+
+This file is a placeholder.  Replace it with the spec for this repo's first
+phase of work.
+
+## Sections
+
+- Goals
+- User stories
+- Implementation decisions
+- Testing decisions
+"""
+
+_SCRATCH_ISSUES_GITKEEP = ""
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +420,8 @@ class AdoptInput:
     integrity_workflow_content: str | None
     ticket_template_content: str | None    # existing .github/ISSUE_TEMPLATE/ticket.md or None
     public_files: dict[str, str]           # rel-path -> content for PII scan
+    repo_name: str = ""                    # used to render planner instructions
+    planner_instructions_content: str | None = None  # existing .agents/planner/INSTRUCTIONS.md
 
 
 @dataclass
@@ -252,6 +429,19 @@ class AdoptResult:
     writes: list[FileWrite] = field(default_factory=list)
     diffs: list[FileDiff] = field(default_factory=list)
     pii_findings: list[PiiFinding] = field(default_factory=list)
+    unchanged: list[str] = field(default_factory=list)
+
+
+@dataclass
+class NewInput:
+    repo_name: str
+    engine_version: str
+    canonical_tests_first_content: str
+
+
+@dataclass
+class NewResult:
+    writes: list[FileWrite] = field(default_factory=list)
     unchanged: list[str] = field(default_factory=list)
 
 
@@ -322,6 +512,22 @@ def _handle_agents_md(
     result.writes.append(FileWrite(path="AGENTS.md", content=new_content))
 
 
+def _handle_planner_instructions(
+    repo_name: str,
+    existing: str | None,
+    result: AdoptResult,
+) -> None:
+    """Add-if-absent / diff-if-edited policy for .agents/planner/INSTRUCTIONS.md."""
+    path = ".agents/planner/INSTRUCTIONS.md"
+    expected = render_planner_instructions(repo_name)
+    if existing is None:
+        result.writes.append(FileWrite(path=path, content=expected))
+    elif existing == expected:
+        result.unchanged.append(path)
+    else:
+        result.diffs.append(FileDiff(path=path, expected=expected, actual=existing))
+
+
 # ---------------------------------------------------------------------------
 # Pure adopt core
 # ---------------------------------------------------------------------------
@@ -390,6 +596,10 @@ def adopt(inp: AdoptInput) -> AdoptResult:
 
     # --- Criterion 3d: AGENTS.md sections ---
     _handle_agents_md(inp.agents_md_content, result)
+
+    # --- Criterion 3e: planner instructions ---
+    if inp.repo_name:
+        _handle_planner_instructions(inp.repo_name, inp.planner_instructions_content, result)
 
     # --- Criterion 4: PII scan ---
     result.pii_findings = scan_pii(inp.public_files)
@@ -491,6 +701,10 @@ def run_adopt(
             repo / ".github" / "ISSUE_TEMPLATE" / "ticket.md"
         ),
         public_files=_collect_public_files(repo),
+        repo_name=repo.name,
+        planner_instructions_content=_read_optional(
+            repo / ".agents" / "planner" / "INSTRUCTIONS.md"
+        ),
     )
 
     result = adopt(inp)
@@ -515,3 +729,281 @@ def run_adopt(
         )
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Pure new mode core
+# ---------------------------------------------------------------------------
+
+def new(inp: NewInput) -> NewResult:
+    """Pure bootstrap new core.
+
+    Generates the complete skeleton for a brand-new repo.  Returns FileWrite
+    items for every file that should be created.  Performs no I/O.
+    """
+    result = NewResult()
+
+    # AGENTS.md with protocol sections
+    agents_content = (
+        "# AGENTS.md\n\n"
+        + AGENTS_MD_IMPLEMENTATION_SECTION
+        + "\n"
+        + AGENTS_MD_ROLES_SECTION
+    )
+    result.writes.append(FileWrite(path="AGENTS.md", content=agents_content))
+
+    # CONTEXT.md
+    context_content = _CONTEXT_MD_TEMPLATE.replace("{repo_name}", inp.repo_name)
+    result.writes.append(FileWrite(path="CONTEXT.md", content=context_content))
+
+    # Tests-first ADR
+    result.writes.append(FileWrite(path="docs/adr/0001-tests-first.md", content=_TESTS_FIRST_ADR_TEMPLATE))
+
+    # .scratch/ layout
+    scratch_spec = _SCRATCH_SPEC_PLACEHOLDER.replace("{repo_name}", inp.repo_name)
+    result.writes.append(FileWrite(path=".scratch/phase-1/spec.md", content=scratch_spec))
+    result.writes.append(FileWrite(path=".scratch/phase-1/issues/.gitkeep", content=_SCRATCH_ISSUES_GITKEEP))
+
+    # CI workflow
+    result.writes.append(FileWrite(path=".github/workflows/ci.yml", content=_CI_WORKFLOW_TEMPLATE))
+
+    # Engine config
+    result.writes.append(FileWrite(path=".ticket-engine.toml", content=ENGINE_CONFIG_TEMPLATE))
+
+    # Caller workflows
+    result.writes.append(FileWrite(
+        path=".github/workflows/dispatch.yml",
+        content=caller_dispatch_workflow(inp.engine_version),
+    ))
+    result.writes.append(FileWrite(
+        path=".github/workflows/integrity.yml",
+        content=caller_integrity_workflow(inp.engine_version),
+    ))
+
+    # Ticket template
+    result.writes.append(FileWrite(path=".github/ISSUE_TEMPLATE/ticket.md", content=TICKET_TEMPLATE))
+
+    # Tests-first script
+    result.writes.append(FileWrite(path="scripts/check_tests_first.py", content=inp.canonical_tests_first_content))
+
+    # Planner instructions
+    result.writes.append(FileWrite(
+        path=".agents/planner/INSTRUCTIONS.md",
+        content=render_planner_instructions(inp.repo_name),
+    ))
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Adapter: new mode — write skeleton to disk
+# ---------------------------------------------------------------------------
+
+def run_new(
+    repo_dir: pathlib.Path | str,
+    repo_name: str,
+    engine_version: str = "v0.1.0",
+    canonical_tests_first_content: str | None = None,
+) -> NewResult:
+    """Adapter: call the new core and write files to disk.
+
+    Idempotent: files that already exist with identical content are skipped
+    and listed in the returned NewResult.unchanged.
+    """
+    repo = pathlib.Path(repo_dir)
+
+    if canonical_tests_first_content is None:
+        engine_script = (
+            pathlib.Path(__file__).parent.parent.parent / "scripts" / "check_tests_first.py"
+        )
+        canonical_tests_first_content = (
+            engine_script.read_text(encoding="utf-8") if engine_script.is_file() else ""
+        )
+
+    raw = new(NewInput(
+        repo_name=repo_name,
+        engine_version=engine_version,
+        canonical_tests_first_content=canonical_tests_first_content,
+    ))
+
+    result = NewResult()
+    for fw in raw.writes:
+        target = repo / fw.path
+        if target.is_file():
+            existing = target.read_text(encoding="utf-8")
+            if existing == fw.content:
+                result.unchanged.append(fw.path)
+                continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(fw.content, encoding="utf-8")
+        result.writes.append(fw)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# GitHub side -- operation types (pure; no I/O, no secret values)
+# ---------------------------------------------------------------------------
+
+# The three secrets every target repo must have.  The core schedules
+# SetSecretOp for any that are missing; the adapter supplies the values from
+# secrets.env -- values are never handled by the core (ADR 0002).
+REQUIRED_SECRETS: tuple[str, ...] = ("JULES_API_KEY", "PIPELINE_TOKEN", "PEOPLE_DENYLIST")
+
+# Labels created on the target repo so the dispatcher can tag PRs.
+_REQUIRED_LABELS: tuple[dict, ...] = (
+    {
+        "name": "engine:hold",
+        "color": "d93f0b",
+        "description": "PR held for developer review before auto-merge",
+    },
+    {
+        "name": "engine:escalated",
+        "color": "e4e669",
+        "description": "Worker escalated; needs developer or stronger-model attention",
+    },
+    {
+        "name": "engine:windows-waiting",
+        "color": "0075ca",
+        "description": "Ticket waiting for a Windows worker",
+    },
+)
+
+ENGINE_RULESET_NAME = "engine-branch-protection"
+_INTEGRITY_CHECK_CONTEXT = "ticket-engine/integrity-gate"
+
+
+@dataclass(frozen=True)
+class SetSecretOp:
+    name: str
+
+
+@dataclass(frozen=True)
+class CreateLabelOp:
+    name: str
+    color: str
+    description: str
+
+
+@dataclass(frozen=True)
+class EnableAutoMergeOp:
+    pass
+
+
+@dataclass(frozen=True)
+class EnableSecretScanningOp:
+    pass
+
+
+@dataclass(frozen=True)
+class EnablePushProtectionOp:
+    pass
+
+
+@dataclass(frozen=True)
+class CreateRulesetOp:
+    name: str
+    default_branch: str
+    required_checks: tuple[str, ...]
+
+
+@dataclass
+class GitHubSetupInput:
+    repo: str
+    default_branch: str
+    existing_secret_names: list[str]
+    existing_label_names: list[str]
+    auto_merge_enabled: bool
+    secret_scanning_enabled: bool
+    push_protection_enabled: bool
+    existing_ruleset_names: list[str]
+    python_version: str
+    system_libraries: list[str]
+
+
+@dataclass
+class GitHubSetupResult:
+    operations: list
+    jules_setup_script: str
+    manual_steps: list[str]
+
+
+def _build_jules_setup_script(python_version: str, system_libraries: list[str]) -> str:
+    nl = chr(10)
+    lines = [
+        "#!/usr/bin/env bash",
+        "# Jules environment setup -- generated by ticket-engine bootstrap.",
+        "# Paste this into the Jules session environment setup field.",
+        "set -euo pipefail",
+        "",
+        f"# Python {python_version}",
+        f"pyenv install {python_version} --skip-existing",
+        f"pyenv local {python_version}",
+        "",
+    ]
+    if system_libraries:
+        lines.append("# System libraries")
+        libs = " ".join(system_libraries)
+        lines.append(f"apt-get install -y {libs}")
+        lines.append("")
+    lines.append("# Install project")
+    lines.append("pip install -e .[dev] 2>/dev/null || pip install -e .")
+    return nl.join(lines) + nl
+
+
+def _build_manual_steps() -> list[str]:
+    return [
+        (
+            "Verify the PIPELINE_TOKEN has the required scopes: "
+            "contents:write, pull-requests:write, issues:write, actions:write."
+        ),
+        (
+            "Confirm that GitHub Actions is enabled in the repo settings "
+            "(Settings > Actions > Allow all actions)."
+        ),
+        (
+            "After the first dispatch run, confirm the integrity gate check appears "
+            "in the branch ruleset required status checks."
+        ),
+        (
+            "Review the morning report after the first overnight run to confirm "
+            "quota is within limits."
+        ),
+        (
+            "If the repo is new, merge the first PR manually to seed the dispatch loop."
+        ),
+    ]
+
+
+def github_setup(inp: GitHubSetupInput) -> GitHubSetupResult:
+    ops: list = []
+
+    for name in REQUIRED_SECRETS:
+        if name not in inp.existing_secret_names:
+            ops.append(SetSecretOp(name=name))
+
+    if not inp.auto_merge_enabled:
+        ops.append(EnableAutoMergeOp())
+    if not inp.secret_scanning_enabled:
+        ops.append(EnableSecretScanningOp())
+    if not inp.push_protection_enabled:
+        ops.append(EnablePushProtectionOp())
+    if ENGINE_RULESET_NAME not in inp.existing_ruleset_names:
+        ops.append(CreateRulesetOp(
+            name=ENGINE_RULESET_NAME,
+            default_branch=inp.default_branch,
+            required_checks=(_INTEGRITY_CHECK_CONTEXT,),
+        ))
+
+    for label in _REQUIRED_LABELS:
+        if label["name"] not in inp.existing_label_names:
+            ops.append(CreateLabelOp(
+                name=label["name"],
+                color=label["color"],
+                description=label["description"],
+            ))
+
+    script = _build_jules_setup_script(inp.python_version, inp.system_libraries)
+    steps = _build_manual_steps()
+
+    return GitHubSetupResult(operations=ops, jules_setup_script=script, manual_steps=steps)
