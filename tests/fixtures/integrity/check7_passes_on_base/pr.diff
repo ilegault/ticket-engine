@@ -1,0 +1,13 @@
+diff --git a/tests/test_calc.py b/tests/test_calc.py
+--- a/tests/test_calc.py
++++ b/tests/test_calc.py
+@@ -3,3 +3,9 @@
+ 
+ def test_add():
+     assert add(1, 2) == 3
++
++
++def test_add_char():
++    from calc import add
++
++    assert add(0, 0) == 0

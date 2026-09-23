@@ -15,6 +15,7 @@ Checks implemented:
 - Check 4: PR touching .github/, gate scripts, docs/adr/, AGENTS.md, CONTEXT.md -> hold, naming paths (ADR 0001 §2.4).
 - Check 5: tests-first escape hatch used (label, commit/PR tag) -> hold (ADR 0001 §2.5).
 - Check 6: ticket must be done with every acceptance box ticked (ADR 0001 §2.6).
+- Check 7: new test functions run against base source must fail on base; any new test passing on base -> hold, listing the tests (ADR 0001 §2.7). Silent if no new tests.
 - Auto-merge: no producing a merge hold regardless of other checks (ADR 0001 §3).
 - Denylist scan: added lines checked against PEOPLE_DENYLIST -> fail naming file:line, never echoing secret (ADR 0002).
 - Verdict precedence: when both fail and hold reasons exist, verdict is fail (ADR 0001).
@@ -55,6 +56,14 @@ class IntegrityVerdict:
 
     def is_hold(self) -> bool:
         return self.verdict == Verdict.HOLD
+
+
+@dataclass(frozen=True)
+class BaseTestResults:
+    new_tests: list[str] = field(default_factory=list)
+    passed_tests: list[str] = field(default_factory=list)
+    failed_tests: list[str] = field(default_factory=list)
+    runtime_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -418,7 +427,7 @@ class _ASTVisitor:
     """Extracts test functions, skip status, and counts assertions in Python AST."""
 
     def __init__(self, filename: str, content: str):
-        self.filename = filename
+        self.filename = filename.replace("\\", "/")
         self.content = content
         self.tests: dict[str, _TestFunctionInfo] = {}
         self.assertion_count = 0
@@ -549,6 +558,51 @@ class _ASTVisitor:
         return count
 
 
+def find_new_test_functions(
+    base_tree: Mapping[str, str],
+    pr_diff: str | Mapping[str, str],
+    test_paths: Sequence[str] = ("tests",),
+) -> list[str]:
+    """Identify test functions present in head that are new (not merely edited).
+
+    Uses AST visitor on test files from base_tree and reconstructed head_tree.
+    Returns qualified test names (e.g. 'tests/test_x.py::test_fn') not present in base.
+    """
+    if isinstance(pr_diff, Mapping):
+        head_tree = dict(pr_diff)
+    else:
+        head_tree = parse_and_apply_diff(base_tree, pr_diff)
+
+    test_dirs = tuple(p.replace("\\", "/").strip().lstrip("/").rstrip("/") + "/" for p in test_paths)
+
+    def is_test_file(path: str) -> bool:
+        norm = path.replace("\\", "/").strip().lstrip("/")
+        return norm.endswith(".py") and any(norm.startswith(td) for td in test_dirs)
+
+    base_test_files = {p.replace("\\", "/"): c for p, c in base_tree.items() if is_test_file(p)}
+    head_test_files = {p.replace("\\", "/"): c for p, c in head_tree.items() if is_test_file(p)}
+
+    base_visitors = {p: _ASTVisitor(p, c) for p, c in base_test_files.items()}
+    for v in base_visitors.values():
+        v.parse()
+
+    head_visitors = {p: _ASTVisitor(p, c) for p, c in head_test_files.items()}
+    for v in head_visitors.values():
+        v.parse()
+
+    base_tests: dict[str, _TestFunctionInfo] = {}
+    for v in base_visitors.values():
+        base_tests.update(v.tests)
+
+    new_tests: list[str] = []
+    for v in head_visitors.values():
+        for qname in v.tests:
+            if qname not in base_tests:
+                new_tests.append(qname)
+
+    return new_tests
+
+
 class IntegrityCore:
     """Pure evaluation core for target repo pull request integrity."""
 
@@ -563,6 +617,7 @@ class IntegrityCore:
         commit_messages: Sequence[str] | None = None,
         pr_text: str | None = None,
         denylist: Sequence[str] | str | None = None,
+        base_test_results: BaseTestResults | Mapping[str, Any] | None = None,
     ) -> IntegrityVerdict:
         cfg = config or IntegrityConfig()
         reasons: list[str] = []
@@ -739,14 +794,46 @@ class IntegrityCore:
                 "Hold: Ticket has Auto-merge: no set (requires developer approval)"
             )
 
+        # 10. Check 7: New tests must fail on base code (ADR 0001 §2.7, Ticket 05)
+        if base_test_results is not None:
+            if isinstance(base_test_results, Mapping):
+                new_tests = list(base_test_results.get("new_tests", []))
+                passed_on_base = list(base_test_results.get("passed_tests", []))
+                failed_on_base = list(base_test_results.get("failed_tests", []))
+                rt = float(base_test_results.get("runtime_seconds", 0.0))
+            else:
+                new_tests = list(getattr(base_test_results, "new_tests", []))
+                passed_on_base = list(getattr(base_test_results, "passed_tests", []))
+                failed_on_base = list(getattr(base_test_results, "failed_tests", []))
+                rt = float(getattr(base_test_results, "runtime_seconds", 0.0))
+
+            if new_tests:
+                if passed_on_base:
+                    is_holding = True
+                    tests_str = ", ".join(passed_on_base)
+                    rt_str = f" (runtime: {rt:.2f}s)" if rt > 0 else ""
+                    reasons.append(
+                        f"Check 7 hold: New test(s) passed on base code: {tests_str}{rt_str}"
+                    )
+                else:
+                    rt_str = f" (runtime {rt:.2f}s)" if rt > 0 else ""
+                    reasons.append(
+                        f"Check 7 pass: All {len(failed_on_base or new_tests)} new test(s) failed on base code{rt_str}"
+                    )
+
         if is_failing:
             return IntegrityVerdict(verdict=Verdict.FAIL, reasons=reasons)
         if is_holding:
             return IntegrityVerdict(verdict=Verdict.HOLD, reasons=reasons)
 
+        pass_reasons = ["All integrity checks passed (checks 1-7, denylist)"]
+        for r in reasons:
+            if r.startswith("Check 7 pass"):
+                pass_reasons.append(r)
+
         return IntegrityVerdict(
             verdict=Verdict.PASS,
-            reasons=["All integrity checks passed (checks 1-6, denylist)"],
+            reasons=pass_reasons,
         )
 
     def _resolve_ticket(

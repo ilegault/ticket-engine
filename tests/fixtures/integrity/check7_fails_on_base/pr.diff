@@ -1,0 +1,23 @@
+diff --git a/src/calc.py b/src/calc.py
+--- a/src/calc.py
++++ b/src/calc.py
+@@ -1,2 +1,6 @@
+ def add(a, b):
+     return a + b
++
++
++def multiply(a, b):
++    return a * b
+diff --git a/tests/test_calc.py b/tests/test_calc.py
+--- a/tests/test_calc.py
++++ b/tests/test_calc.py
+@@ -3,3 +3,9 @@
+ 
+ def test_add():
+     assert add(1, 2) == 3
++
++
++def test_multiply():
++    from calc import multiply
++
++    assert multiply(2, 3) == 6

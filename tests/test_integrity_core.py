@@ -14,10 +14,12 @@ from __future__ import annotations
 import textwrap
 
 from ticket_engine.integrity import (
+    BaseTestResults,
     IntegrityConfig,
     IntegrityCore,
     IntegrityVerdict,
     Verdict,
+    find_new_test_functions,
 )
 from ticket_engine.parser import TicketParser
 
@@ -779,4 +781,230 @@ def test_when_both_fail_and_hold_reasons_exist_verdict_is_fail():
     # Reasons contain both fail and hold
     assert any("Check 1 fail" in r for r in verdict.reasons)
     assert any("Check 4 hold" in r for r in verdict.reasons)
+
+
+def test_find_new_test_functions_identifies_added_tests_not_merely_edited():
+    base_tree = {
+        "tests/test_math.py": (
+            "def test_add():\n"
+            "    assert 1 + 1 == 2\n"
+            "\n"
+            "def test_sub():\n"
+            "    assert 2 - 1 == 1\n"
+        ),
+    }
+    # PR edits test_sub and adds test_mul
+    pr_diff = (
+        "diff --git a/tests/test_math.py b/tests/test_math.py\n"
+        "--- a/tests/test_math.py\n"
+        "+++ b/tests/test_math.py\n"
+        "@@ -4,2 +4,5 @@\n"
+        " def test_sub():\n"
+        "-    assert 2 - 1 == 1\n"
+        "+    assert 5 - 3 == 2\n"
+        "+\n"
+        "+def test_mul():\n"
+        "+    assert 2 * 3 == 6\n"
+    )
+
+    new_tests = find_new_test_functions(base_tree, pr_diff)
+    assert new_tests == ["tests/test_math.py::test_mul"]
+
+
+def test_find_new_test_functions_identifies_new_files_and_class_methods():
+    base_tree = {
+        "tests/test_math.py": "def test_add(): assert 1 + 1 == 2\n",
+    }
+    pr_diff = textwrap.dedent("""
+        diff --git a/tests/test_geom.py b/tests/test_geom.py
+        new file mode 100644
+        --- /dev/null
+        +++ b/tests/test_geom.py
+        @@ -0,0 +1,8 @@
+        +def test_area():
+        +    assert True
+        +
+        +class TestCircle:
+        +    def test_radius(self):
+        +        assert True
+    """).strip() + "\n"
+
+    new_tests = find_new_test_functions(base_tree, pr_diff)
+    assert new_tests == [
+        "tests/test_geom.py::test_area",
+        "tests/test_geom.py::TestCircle::test_radius",
+    ]
+
+
+def test_check7_silent_when_no_new_tests_even_if_source_modified():
+    base_tree = {
+        "src/calc.py": "def add(a, b): return a + b\n",
+        "tests/test_calc.py": "from calc import add\ndef test_add(): assert add(1, 2) == 3\n",
+    }
+    # PR touches source and edits existing test, but adds no new test functions
+    pr_diff = textwrap.dedent("""
+        diff --git a/src/calc.py b/src/calc.py
+        --- a/src/calc.py
+        +++ b/src/calc.py
+        @@ -1,1 +1,2 @@
+         def add(a, b): return a + b
+        +# minor comment
+        diff --git a/tests/test_calc.py b/tests/test_calc.py
+        --- a/tests/test_calc.py
+        +++ b/tests/test_calc.py
+        @@ -2,1 +2,1 @@
+        -def test_add(): assert add(1, 2) == 3
+        +def test_add(): assert add(2, 3) == 5
+    """).strip() + "\n"
+    ticket_content = textwrap.dedent("""
+        # 10: Refactor
+        **Status:** done
+        ## Acceptance criteria
+        - [x] Done
+    """)
+    ticket = TicketParser().parse_text(ticket_content, filename="10-ticket.md")
+    core = IntegrityCore()
+
+    verdict = core.evaluate(
+        base_tree=base_tree,
+        pr_diff=pr_diff,
+        ticket=ticket,
+        base_test_results=BaseTestResults(new_tests=[], passed_tests=[], failed_tests=[]),
+    )
+
+    assert verdict.verdict == Verdict.PASS
+    assert not any("Check 7" in r for r in verdict.reasons)
+
+
+def test_check7_hold_when_new_test_passes_on_base():
+    base_tree = {
+        "src/calc.py": "def add(a, b): return a + b\n",
+        "tests/test_calc.py": "def test_add(): assert True\n",
+    }
+    pr_diff = textwrap.dedent("""
+        diff --git a/tests/test_calc.py b/tests/test_calc.py
+        --- a/tests/test_calc.py
+        +++ b/tests/test_calc.py
+        @@ -1,1 +1,3 @@
+         def test_add(): assert True
+        +def test_add_char():
+        +    assert True
+    """).strip() + "\n"
+    ticket_content = textwrap.dedent("""
+        # 10: Characterisation test
+        **Status:** done
+        ## Acceptance criteria
+        - [x] Done
+    """)
+    ticket = TicketParser().parse_text(ticket_content, filename="10-ticket.md")
+    core = IntegrityCore()
+
+    base_results = BaseTestResults(
+        new_tests=["tests/test_calc.py::test_add_char"],
+        passed_tests=["tests/test_calc.py::test_add_char"],
+        failed_tests=[],
+        runtime_seconds=0.15,
+    )
+
+    verdict = core.evaluate(
+        base_tree=base_tree,
+        pr_diff=pr_diff,
+        ticket=ticket,
+        base_test_results=base_results,
+    )
+
+    assert verdict.verdict == Verdict.HOLD
+    assert verdict.is_hold()
+    assert any(
+        "Check 7 hold" in r and "tests/test_calc.py::test_add_char" in r for r in verdict.reasons
+    )
+    assert any("0.15s" in r for r in verdict.reasons)
+
+
+def test_check7_pass_when_new_tests_fail_or_error_on_base():
+    base_tree = {
+        "src/calc.py": "def add(a, b): return a + b\n",
+        "tests/test_calc.py": "def test_add(): assert True\n",
+    }
+    pr_diff = textwrap.dedent("""
+        diff --git a/tests/test_calc.py b/tests/test_calc.py
+        --- a/tests/test_calc.py
+        +++ b/tests/test_calc.py
+        @@ -1,1 +1,3 @@
+         def test_add(): assert True
+        +def test_multiply_new():
+        +    assert True
+    """).strip() + "\n"
+    ticket_content = textwrap.dedent("""
+        # 10: New feature
+        **Status:** done
+        ## Acceptance criteria
+        - [x] Done
+    """)
+    ticket = TicketParser().parse_text(ticket_content, filename="10-ticket.md")
+    core = IntegrityCore()
+
+    # The new test failed/errored on base (desired outcome)
+    base_results = BaseTestResults(
+        new_tests=["tests/test_calc.py::test_multiply_new"],
+        passed_tests=[],
+        failed_tests=["tests/test_calc.py::test_multiply_new"],
+        runtime_seconds=0.25,
+    )
+
+    verdict = core.evaluate(
+        base_tree=base_tree,
+        pr_diff=pr_diff,
+        ticket=ticket,
+        base_test_results=base_results,
+    )
+
+    assert verdict.verdict == Verdict.PASS
+    assert verdict.is_pass()
+    assert any(
+        "Check 7 pass" in r and "0.25s" in r for r in verdict.reasons
+    )
+
+
+def test_check7_precedence_fail_over_hold():
+    base_tree = {
+        "tests/test_sample.py": "def test_a(): assert True\n",
+    }
+    pr_diff = textwrap.dedent("""
+        diff --git a/tests/test_sample.py b/tests/test_sample.py
+        --- a/tests/test_sample.py
+        +++ b/tests/test_sample.py
+        @@ -1,1 +1,3 @@
+         def test_a(): assert True
+        +def test_new_char(): assert True
+    """).strip() + "\n"
+    # Ticket is in-progress (fails check 6), while new test passed on base (holds check 7)
+    ticket_content = textwrap.dedent("""
+        # 10: Incomplete
+        **Status:** in-progress
+        ## Acceptance criteria
+        - [ ] Unfinished
+    """)
+    ticket = TicketParser().parse_text(ticket_content, filename="10-ticket.md")
+    core = IntegrityCore()
+
+    base_results = BaseTestResults(
+        new_tests=["tests/test_sample.py::test_new_char"],
+        passed_tests=["tests/test_sample.py::test_new_char"],
+        failed_tests=[],
+        runtime_seconds=0.10,
+    )
+
+    verdict = core.evaluate(
+        base_tree=base_tree,
+        pr_diff=pr_diff,
+        ticket=ticket,
+        base_test_results=base_results,
+    )
+
+    assert verdict.verdict == Verdict.FAIL
+    assert verdict.is_fail()
+    assert any("Check 6 fail" in r for r in verdict.reasons)
+    assert any("Check 7 hold" in r for r in verdict.reasons)
+
 
