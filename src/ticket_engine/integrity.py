@@ -744,11 +744,15 @@ class IntegrityCore:
                 "planning PR; a human must review and merge it"
             )
         elif not ticket_raw_text.strip():
-            is_failing = True
+            # No ticket file changed: not a worker's ticket PR but the developer's own
+            # infra or config change. Hold, never fail (there is no ticket to fix) and
+            # never judge it against some other ticket (that once auto-merged an
+            # unfinished PR on an old ticket's "done").
+            is_holding = True
             reasons.append(
-                "Check 6 fail: the PR does not change any ticket file under "
-                ".scratch/<effort>/issues/; set its ticket's Status: done and tick every "
-                "acceptance criterion in this PR"
+                "Check 6 hold: the PR does not change any ticket file under "
+                ".scratch/<effort>/issues/, so it is not a ticket PR; a human must review "
+                "and merge it (a worker's PR must set its ticket to done in the same PR)"
             )
         else:
             if not ticket_obj.is_done():
