@@ -16,6 +16,11 @@ The prompt brings together:
    "does this plan look correct?", which stalls the ticket overnight because nobody
    answers. The rule lives here, not only in the skill, because `load_ticket_skill`
    prefers the target repo's own copy of the skill, which the engine does not control.
+5. A required final step: update this ticket's file (Status: done, every criterion
+   ticked, a dated summary under ## Comments) in the same PR. Jules merged two tickets
+   without doing this, because the skill only told local workers to; the tickets then
+   read as unfinished, kept their claims, and blocked the queue. It lives here for the
+   same reason as rule 4, and the integrity gate fails any PR that skips it.
 
 CRITICAL PRIVACY AND LOGGING INVARIANT:
 As required by ADR 0002 and the Phase 1 Spec: Prompts and secrets must NEVER
@@ -80,6 +85,21 @@ _UNATTENDED_RULE = (
 )
 
 
+def _final_step_rule(ticket_path: str) -> str:
+    return (
+        f"Before you finish, update the ticket file '{ticket_path}' in this same PR. "
+        "This is required, not optional:\n"
+        "1. Set its status line to `Status: done`.\n"
+        "2. Tick every acceptance criterion you implemented and verified: `- [ ]` becomes `- [x]`. "
+        "Tick only what a test or check you ran actually covers; if a criterion is not met, "
+        "the ticket is not done, so escalate instead of ticking it.\n"
+        "3. Under `## Comments`, replace any progress note with a dated summary: what was "
+        "built and which tests cover which criterion.\n"
+        "The integrity gate fails any PR that does not change its ticket file this way, "
+        "and the PR cannot merge until it does."
+    )
+
+
 def assemble_prompt(skill_text: str, repo: str, ticket_path: str) -> str:
     """Assemble the prompt for an implementing worker (such as Jules).
 
@@ -106,6 +126,9 @@ def assemble_prompt(skill_text: str, repo: str, ticket_path: str) -> str:
         "",
         "## UNATTENDED RUN — NO HUMAN IS WATCHING",
         _UNATTENDED_RULE,
+        "",
+        "## FINAL STEP — MARK THE TICKET DONE IN THIS PR",
+        _final_step_rule(clean_ticket_path),
         "",
         "## TICKET IMPLEMENTATION SKILL AND RULES",
         skill_text.strip(),
