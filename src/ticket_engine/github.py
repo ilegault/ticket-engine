@@ -213,6 +213,23 @@ class GitHubClient:
         endpoint = f"/repos/{repo}/pulls/{pr_number}"
         return self._request("PATCH", endpoint, {"draft": True})
 
+    def merge_pull_request(
+        self, repo: str, pr_number: int, merge_method: str = "merge"
+    ) -> dict[str, Any] | None:
+        """Merge a pull request. Returns None (logged, not raised) if GitHub
+        refuses the merge, e.g. required checks not all reported yet, or a
+        conflict. Callers should treat that as "leave it for a human", not a
+        crash: the PR is simply left for a manual merge."""
+        endpoint = f"/repos/{repo}/pulls/{pr_number}/merge"
+        try:
+            return self._request("PUT", endpoint, {"merge_method": merge_method})
+        except urllib.error.HTTPError as exc:
+            logger.warning(
+                "Could not auto-merge PR #%s on %s (%s): %s",
+                pr_number, repo, exc.code, exc.reason,
+            )
+            return None
+
     def add_issue_labels(
         self, repo: str, issue_number: int, labels: list[str]
     ) -> list[str]:

@@ -427,6 +427,22 @@ def run_integrity_gate(
             except (OSError, urllib.error.URLError, json.JSONDecodeError, KeyError, ValueError, RuntimeError) as exc:
                 logger.error("Failed to set commit status: %s", exc)
 
+        # ADR 0001 §1: a PR whose CI is green and whose integrity verdict is
+        # `pass` merges automatically. GitHub itself still enforces branch
+        # protection (all required checks, no conflicts) at merge time, so a
+        # premature attempt (e.g. another required check still running) is
+        # refused by GitHub and just leaves the PR for a manual merge, same
+        # as today's behaviour.
+        if pr_number and verdict.is_pass():
+            try:
+                client.merge_pull_request(
+                    repo=repo_name,
+                    pr_number=pr_number,
+                    merge_method=repo_cfg.merge_method,
+                )
+            except (OSError, urllib.error.URLError, json.JSONDecodeError, KeyError, ValueError, RuntimeError) as exc:
+                logger.error("Failed to auto-merge PR #%s: %s", pr_number, exc)
+
     return 1 if verdict.is_fail() else 0
 
 

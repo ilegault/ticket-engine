@@ -111,4 +111,67 @@ def test_run_integrity_gate_hold_returns_0_and_sets_pending_status(tmp_path: pat
         assert status_call["state"] == "pending"
 
 
+def test_run_integrity_gate_pass_merges_pr(tmp_path: pathlib.Path):
+    mock_client = MagicMock()
+
+    with patch("ticket_engine.integrity_runner.GitHubClient", return_value=mock_client), \
+         patch("ticket_engine.integrity_runner.get_base_tree_from_git", return_value={"tests/test_a.py": "def test_a(): assert True\n"}), \
+         patch("ticket_engine.integrity_runner.get_pr_diff_from_git", return_value=""), \
+         patch("ticket_engine.integrity_runner.find_ticket_content_from_git", return_value="# 01: T\n**Status:** done\n## Acceptance criteria\n- [x] Done\n"):
+
+        exit_code = run_integrity_gate(
+            repo_path=tmp_path,
+            base_ref="origin/master",
+            token="fake-token",
+            repo_name="owner/repo",
+            pr_number=99,
+            head_sha="1234567890abcdef",
+        )
+
+        assert exit_code == 0
+        mock_client.merge_pull_request.assert_called_once_with(
+            repo="owner/repo", pr_number=99, merge_method="merge",
+        )
+
+
+def test_run_integrity_gate_fail_does_not_merge_pr(tmp_path: pathlib.Path):
+    mock_client = MagicMock()
+
+    with patch("ticket_engine.integrity_runner.GitHubClient", return_value=mock_client), \
+         patch("ticket_engine.integrity_runner.get_base_tree_from_git", return_value={"tests/test_a.py": "def test_a(): assert True\n"}), \
+         patch("ticket_engine.integrity_runner.get_pr_diff_from_git", return_value=""), \
+         patch("ticket_engine.integrity_runner.find_ticket_content_from_git", return_value="# 01: T\n**Status:** in-progress\n## Acceptance criteria\n- [x] Done\n"):
+
+        run_integrity_gate(
+            repo_path=tmp_path,
+            base_ref="origin/master",
+            token="fake-token",
+            repo_name="owner/repo",
+            pr_number=99,
+            head_sha="1234567890abcdef",
+        )
+
+        mock_client.merge_pull_request.assert_not_called()
+
+
+def test_run_integrity_gate_hold_does_not_merge_pr(tmp_path: pathlib.Path):
+    mock_client = MagicMock()
+
+    with patch("ticket_engine.integrity_runner.GitHubClient", return_value=mock_client), \
+         patch("ticket_engine.integrity_runner.get_base_tree_from_git", return_value={"tests/test_a.py": "def test_a(): assert True\n"}), \
+         patch("ticket_engine.integrity_runner.get_pr_diff_from_git", return_value=""), \
+         patch("ticket_engine.integrity_runner.find_ticket_content_from_git", return_value="# 01: T\n**Status:** done\n**Auto-merge:** no\n## Acceptance criteria\n- [x] Done\n"):
+
+        run_integrity_gate(
+            repo_path=tmp_path,
+            base_ref="origin/master",
+            token="fake-token",
+            repo_name="owner/repo",
+            pr_number=99,
+            head_sha="1234567890abcdef",
+        )
+
+        mock_client.merge_pull_request.assert_not_called()
+
+
 

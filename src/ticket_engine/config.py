@@ -45,6 +45,7 @@ class RepoConfig:
     ratchet_paths: list[str] = field(default_factory=list)
     stale_claim_hours: int = 12
     max_fix_attempts: int = 3
+    merge_method: str = "merge"
     circuit_breaker_escalations_limit: int = 2
     circuit_breaker_window_hours: int = 24
 
@@ -106,4 +107,5 @@ def load_repo_config(repo_path: pathlib.Path | str | None = None) -> RepoConfig:
         circuit_breaker_window_hours=int(
             config_data.get("circuit_breaker_window_hours", 24)
         ),
+        merge_method=str(config_data.get("merge_method", "merge")),
     )
