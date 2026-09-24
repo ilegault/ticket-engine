@@ -15,6 +15,16 @@ from unittest.mock import MagicMock, patch
 from ticket_engine.integrity import IntegrityVerdict, Verdict
 from ticket_engine.integrity_runner import format_verdict_comment, run_integrity_gate
 
+# A passing ticket PR changes its tests; the gate holds one that doesn't (check 6).
+_TEST_TOUCH_DIFF = (
+    "diff --git a/tests/test_a.py b/tests/test_a.py\n"
+    "--- a/tests/test_a.py\n"
+    "+++ b/tests/test_a.py\n"
+    "@@ -1 +1,2 @@\n"
+    " def test_a(): assert True\n"
+    "+# covers the ticket\n"
+)
+
 
 def test_format_verdict_comment_includes_verdict_and_reasons():
     verdict = IntegrityVerdict(
@@ -41,8 +51,9 @@ def test_run_integrity_gate_pass_posts_comment_and_status(tmp_path: pathlib.Path
     mock_client = MagicMock()
 
     with patch("ticket_engine.integrity_runner.GitHubClient", return_value=mock_client), \
+         patch("ticket_engine.integrity_runner.resolve_base_ref", side_effect=lambda _p, ref: ref), \
          patch("ticket_engine.integrity_runner.get_base_tree_from_git", return_value={"tests/test_a.py": "def test_a(): assert True\n"}), \
-         patch("ticket_engine.integrity_runner.get_pr_diff_from_git", return_value=""), \
+         patch("ticket_engine.integrity_runner.get_pr_diff_from_git", return_value=_TEST_TOUCH_DIFF), \
          patch("ticket_engine.integrity_runner.find_ticket_content_from_git", return_value="# 01: T\n**Status:** done\n## Acceptance criteria\n- [x] Done\n"):
 
         summary_file = tmp_path / "step_summary.md"
@@ -71,6 +82,7 @@ def test_run_integrity_gate_fail_returns_1_and_sets_failure_status(tmp_path: pat
     mock_client = MagicMock()
 
     with patch("ticket_engine.integrity_runner.GitHubClient", return_value=mock_client), \
+         patch("ticket_engine.integrity_runner.resolve_base_ref", side_effect=lambda _p, ref: ref), \
          patch("ticket_engine.integrity_runner.get_base_tree_from_git", return_value={"tests/test_a.py": "def test_a(): assert True\n"}), \
          patch("ticket_engine.integrity_runner.get_pr_diff_from_git", return_value=""), \
          patch("ticket_engine.integrity_runner.find_ticket_content_from_git", return_value="# 01: T\n**Status:** in-progress\n## Acceptance criteria\n- [x] Done\n"):
@@ -93,6 +105,7 @@ def test_run_integrity_gate_hold_returns_0_and_sets_pending_status(tmp_path: pat
     mock_client = MagicMock()
 
     with patch("ticket_engine.integrity_runner.GitHubClient", return_value=mock_client), \
+         patch("ticket_engine.integrity_runner.resolve_base_ref", side_effect=lambda _p, ref: ref), \
          patch("ticket_engine.integrity_runner.get_base_tree_from_git", return_value={"tests/test_a.py": "def test_a(): assert True\n"}), \
          patch("ticket_engine.integrity_runner.get_pr_diff_from_git", return_value=""), \
          patch("ticket_engine.integrity_runner.find_ticket_content_from_git", return_value="# 01: T\n**Status:** done\n**Auto-merge:** no\n## Acceptance criteria\n- [x] Done\n"):
@@ -115,8 +128,9 @@ def test_run_integrity_gate_pass_merges_pr(tmp_path: pathlib.Path):
     mock_client = MagicMock()
 
     with patch("ticket_engine.integrity_runner.GitHubClient", return_value=mock_client), \
+         patch("ticket_engine.integrity_runner.resolve_base_ref", side_effect=lambda _p, ref: ref), \
          patch("ticket_engine.integrity_runner.get_base_tree_from_git", return_value={"tests/test_a.py": "def test_a(): assert True\n"}), \
-         patch("ticket_engine.integrity_runner.get_pr_diff_from_git", return_value=""), \
+         patch("ticket_engine.integrity_runner.get_pr_diff_from_git", return_value=_TEST_TOUCH_DIFF), \
          patch("ticket_engine.integrity_runner.find_ticket_content_from_git", return_value="# 01: T\n**Status:** done\n## Acceptance criteria\n- [x] Done\n"):
 
         exit_code = run_integrity_gate(
@@ -146,8 +160,9 @@ def test_run_integrity_gate_pass_falls_back_to_direct_merge_when_auto_merge_refu
     mock_client.enable_auto_merge.return_value = False
 
     with patch("ticket_engine.integrity_runner.GitHubClient", return_value=mock_client), \
+         patch("ticket_engine.integrity_runner.resolve_base_ref", side_effect=lambda _p, ref: ref), \
          patch("ticket_engine.integrity_runner.get_base_tree_from_git", return_value={"tests/test_a.py": "def test_a(): assert True\n"}), \
-         patch("ticket_engine.integrity_runner.get_pr_diff_from_git", return_value=""), \
+         patch("ticket_engine.integrity_runner.get_pr_diff_from_git", return_value=_TEST_TOUCH_DIFF), \
          patch("ticket_engine.integrity_runner.find_ticket_content_from_git", return_value="# 01: T\n**Status:** done\n## Acceptance criteria\n- [x] Done\n"):
 
         run_integrity_gate(
@@ -168,6 +183,7 @@ def test_run_integrity_gate_fail_does_not_merge_pr(tmp_path: pathlib.Path):
     mock_client = MagicMock()
 
     with patch("ticket_engine.integrity_runner.GitHubClient", return_value=mock_client), \
+         patch("ticket_engine.integrity_runner.resolve_base_ref", side_effect=lambda _p, ref: ref), \
          patch("ticket_engine.integrity_runner.get_base_tree_from_git", return_value={"tests/test_a.py": "def test_a(): assert True\n"}), \
          patch("ticket_engine.integrity_runner.get_pr_diff_from_git", return_value=""), \
          patch("ticket_engine.integrity_runner.find_ticket_content_from_git", return_value="# 01: T\n**Status:** in-progress\n## Acceptance criteria\n- [x] Done\n"):
@@ -191,6 +207,7 @@ def test_run_integrity_gate_hold_does_not_merge_pr(tmp_path: pathlib.Path):
     mock_client = MagicMock()
 
     with patch("ticket_engine.integrity_runner.GitHubClient", return_value=mock_client), \
+         patch("ticket_engine.integrity_runner.resolve_base_ref", side_effect=lambda _p, ref: ref), \
          patch("ticket_engine.integrity_runner.get_base_tree_from_git", return_value={"tests/test_a.py": "def test_a(): assert True\n"}), \
          patch("ticket_engine.integrity_runner.get_pr_diff_from_git", return_value=""), \
          patch("ticket_engine.integrity_runner.find_ticket_content_from_git", return_value="# 01: T\n**Status:** done\n**Auto-merge:** no\n## Acceptance criteria\n- [x] Done\n"):
@@ -258,3 +275,87 @@ def test_find_ticket_content_returns_the_ticket_the_pr_changed(tmp_path: pathlib
     _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-am", "ticket 35")
 
     assert find_ticket_content_from_git(repo, "master") == done
+
+
+# --- Base ref as GitHub Actions presents it ---------------------------------
+# On a pull_request run, actions/checkout leaves HEAD detached at the PR and has
+# only remote-tracking branches: there is no local `master`, only `origin/master`.
+# The workflow passes `github.base_ref`, which is the bare name `master`. Every git
+# call against `master` then failed silently, so checks 1-4 and 7 compared the PR
+# against nothing and check 6 never found the PR's ticket.
+
+
+def _ci_shaped_clone(tmp_path: pathlib.Path, pr_ticket: str, pr_extra: dict | None = None) -> pathlib.Path:
+    origin = tmp_path / "origin"
+    (origin / ".scratch/e/issues").mkdir(parents=True)
+    (origin / "tests").mkdir()
+    (origin / "tests/test_a.py").write_text("def test_a():\n    assert 1 == 1\n", encoding="utf-8")
+    (origin / ".scratch/e/issues/35-t.md").write_text(
+        "# 35: T\n**Status:** ready-for-agent\n## Acceptance criteria\n- [ ] x\n", encoding="utf-8"
+    )
+    _git(origin, "init", "-q", "-b", "master")
+    _git(origin, "-c", "user.email=t@t", "-c", "user.name=t", "add", ".")
+    _git(origin, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "base")
+    _git(origin, "checkout", "-q", "-b", "pr")
+    (origin / ".scratch/e/issues/35-t.md").write_text(pr_ticket, encoding="utf-8")
+    for rel, text in (pr_extra or {}).items():
+        (origin / rel).write_text(text, encoding="utf-8")
+    _git(origin, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-am", "pr")
+    _git(origin, "checkout", "-q", "master")
+
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", str(origin), str(clone))
+    _git(clone, "fetch", "-q", "origin", "pr")
+    _git(clone, "checkout", "-q", "--detach", "FETCH_HEAD")
+    _git(clone, "branch", "-q", "-D", "master")
+    return clone
+
+
+_DONE_TICKET = "# 35: T\n**Status:** done\n## Acceptance criteria\n- [x] x\n"
+
+
+def test_resolve_base_ref_falls_back_to_the_remote_tracking_branch(tmp_path: pathlib.Path):
+    from ticket_engine.integrity_runner import resolve_base_ref
+
+    clone = _ci_shaped_clone(tmp_path, _DONE_TICKET)
+    assert resolve_base_ref(clone, "master") == "origin/master"
+    assert resolve_base_ref(clone, "origin/master") == "origin/master"
+
+
+def test_resolve_base_ref_refuses_a_ref_that_does_not_exist(tmp_path: pathlib.Path):
+    import pytest
+
+    from ticket_engine.integrity_runner import resolve_base_ref
+
+    clone = _ci_shaped_clone(tmp_path, _DONE_TICKET)
+    with pytest.raises(ValueError, match="nope"):
+        resolve_base_ref(clone, "nope")
+
+
+def test_gate_finds_the_pr_ticket_when_given_a_bare_base_name(tmp_path: pathlib.Path):
+    clone = _ci_shaped_clone(
+        tmp_path,
+        _DONE_TICKET,
+        pr_extra={"tests/test_a.py": "def test_a():\n    assert 1 == 1\n    assert 2 == 2\n"},
+    )
+    summary = tmp_path / "summary.md"
+
+    exit_code = run_integrity_gate(repo_path=clone, base_ref="master", step_summary_path=summary)
+
+    text = summary.read_text(encoding="utf-8")
+    assert "does not change any ticket file" not in text
+    assert exit_code == 0
+    assert "PASS" in text
+
+
+def test_gate_sees_a_deleted_test_when_given_a_bare_base_name(tmp_path: pathlib.Path):
+    # Check 2 must see the base's tests; before the fix the base tree was empty in CI.
+    clone = _ci_shaped_clone(
+        tmp_path, _DONE_TICKET, pr_extra={"tests/test_a.py": "# test removed\n"}
+    )
+    summary = tmp_path / "summary.md"
+
+    exit_code = run_integrity_gate(repo_path=clone, base_ref="master", step_summary_path=summary)
+
+    assert exit_code == 1
+    assert "test_a" in summary.read_text(encoding="utf-8")

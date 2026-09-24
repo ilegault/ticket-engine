@@ -524,6 +524,12 @@ def test_check_3_ratchet_file_equal_or_decreased_passes():
         @@ -1,1 +1,1 @@
         -10
         +8
+        diff --git a/tests/test_sample.py b/tests/test_sample.py
+        --- a/tests/test_sample.py
+        +++ b/tests/test_sample.py
+        @@ -1,1 +1,2 @@
+         def test_a(): assert True
+        +# covers the ticket
     """).strip() + "\n"
     ticket_content = textwrap.dedent("""
         # 10: Ticket
@@ -947,3 +953,33 @@ def test_check_6_pr_that_changes_no_ticket_file_fails_with_a_clear_reason():
     assert any("does not change any ticket file" in r for r in verdict.reasons)
     # One clear reason, not a pile of confusing ones about an empty ticket.
     assert not any("no acceptance criteria" in r for r in verdict.reasons)
+
+
+_DONE_TICKET_TEXT = "# 38: T\n**Status:** done\n## Acceptance criteria\n- [x] Built it\n"
+
+
+def test_check_6_ticket_marked_done_with_no_test_change_fails():
+    # Slackbot PR #35: the worker built ticket 38, the gate asked it to mark the ticket
+    # done, and its "fix" reverted every code and test change and just ticked the
+    # boxes. The net PR changed only the ticket file, and it merged as "done".
+    base_tree = {"tests/test_a.py": "def test_a():\n    assert 1 == 1\n"}
+    head_tree = dict(base_tree)
+    head_tree[".scratch/e/issues/38-t.md"] = _DONE_TICKET_TEXT
+
+    verdict = IntegrityCore().evaluate(base_tree=base_tree, pr_diff=head_tree, ticket=_DONE_TICKET_TEXT)
+
+    # Never auto-merges: held for a human, who can see nothing was built.
+    assert verdict.verdict == Verdict.HOLD
+    assert any("changes no test file" in r for r in verdict.reasons)
+
+
+def test_check_6_ticket_marked_done_with_a_test_change_is_not_flagged():
+    base_tree = {"tests/test_a.py": "def test_a():\n    assert 1 == 1\n"}
+    head_tree = dict(base_tree)
+    head_tree[".scratch/e/issues/38-t.md"] = _DONE_TICKET_TEXT
+    head_tree["tests/test_b.py"] = "def test_b():\n    assert 2 == 2\n"
+
+    verdict = IntegrityCore().evaluate(base_tree=base_tree, pr_diff=head_tree, ticket=_DONE_TICKET_TEXT)
+
+    assert not any("changes no test file" in r for r in verdict.reasons)
+    assert verdict.verdict == Verdict.PASS

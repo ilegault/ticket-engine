@@ -337,3 +337,37 @@ def test_adopt_second_run_preserves_planner_instructions_idempotency():
     result2 = adopt(inp2)
     assert result2.writes == [], f"Second adopt run wrote: {[w.path for w in result2.writes]}"
     assert result2.diffs == []
+
+
+def test_planner_instructions_carry_the_acceptance_criteria_rules():
+    # Tickets 35 and 40 in Slackbot went wrong in ways each of these rules targets:
+    # a vague "then it passes" gave a test that proved nothing, an invariant cited by
+    # number was not followed, a criterion promised something Slack cannot do, a
+    # ten-criterion ticket dropped half of them, the tests faked the lookup under
+    # change, and real first names ended up in the code.
+    instructions = render_planner_instructions("any-repo")
+    section = instructions[instructions.index("## Writing acceptance criteria"):]
+    for phrase in (
+        "names its proof",
+        "by file and function",
+        "Check the platform",
+        "five criteria",
+        "may be faked",
+        "Roles, never names",
+    ):
+        assert phrase in section, f"acceptance-criteria rule missing: {phrase!r}"
+
+
+def test_engine_issue_tracker_doc_uses_only_valid_status_words():
+    # The doc once listed `human-task`, which the parser treats as legacy, so ticket
+    # sets written from it held tickets the dispatcher reported as unreadable.
+    import pathlib
+
+    from ticket_engine.parser import VALID_STATUSES
+
+    doc = (pathlib.Path(__file__).resolve().parent.parent / "docs/agents/issue-tracker.md").read_text(
+        encoding="utf-8"
+    )
+    table = doc[doc.index("## Status vocabulary"):doc.index("## Working the frontier")]
+    listed = {line.split("`")[1] for line in table.splitlines() if line.startswith("| `")}
+    assert listed == set(VALID_STATUSES)
