@@ -169,3 +169,28 @@ def test_prompt_tells_the_worker_it_is_unattended_whatever_the_skill_says():
     assert "blocked" in lowered
     # It must come before the skill so it frames everything after it.
     assert lowered.index("unattended") < lowered.index("a repo-local skill")
+
+
+def test_prompt_makes_updating_the_ticket_file_the_required_last_step():
+    # Jules merged two tickets without marking them done: its section of the skill
+    # never said to, only the local-worker section did. The engine's own prompt must
+    # say it, naming this ticket's file, whatever the repo's copy of the skill says.
+    ticket_path = ".scratch/effort/issues/35-some-ticket.md"
+    prompt = assemble_prompt("# A repo-local skill", "owner/repo", ticket_path)
+    finish = prompt[prompt.index("## FINAL STEP"):]
+
+    assert ticket_path in finish
+    assert "Status: done" in finish
+    assert "- [x]" in finish
+    assert "## Comments" in finish
+    # It must say what happens if skipped, so the worker knows it isn't optional.
+    assert "integrity gate" in finish.lower()
+    # It sits before the skill so it isn't lost at the end of a long document.
+    assert prompt.index("## FINAL STEP") < prompt.index("# A repo-local skill")
+
+
+def test_bundled_skill_tells_jules_workers_to_update_the_ticket():
+    skill = load_ticket_skill()
+    jules_section = skill[skill.index("## 6. If you are a Jules worker"):skill.index("## 6b.")]
+    assert "Status: done" in jules_section
+    assert "- [x]" in jules_section

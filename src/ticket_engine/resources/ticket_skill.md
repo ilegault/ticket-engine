@@ -174,6 +174,11 @@ This section applies when executing as a Jules cloud worker:
 - **Respond to red CI by fixing.** If CI fails, you will receive the failing
   output. Diagnose the root cause, fix the implementation or test harness
   honestly, and commit.
+- **Mark the ticket done in the same PR.** As your last step, in the ticket file:
+  set `Status: done`, tick every criterion you implemented and verified (`- [x]`),
+  and replace the progress note under `## Comments` with a dated summary of what
+  was built and which tests cover which criterion. The integrity gate fails a PR
+  that does not change its ticket file this way.
 - **Budget: up to three fix attempts.** If red CI persists after three attempts,
   or if tests cannot pass without muting or weakening them, escalate immediately.
 - **Escalation brief format.** When escalating, set the ticket's `Status:` to
