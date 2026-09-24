@@ -26,7 +26,7 @@ import sys
 import tempfile
 import time
 import urllib.error
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ticket_engine.config import load_repo_config
@@ -294,13 +294,18 @@ def execute_new_tests_on_base(
     new_tests: Sequence[str],
     test_command: str = "pytest",
     source_paths: Sequence[str] = ("src",),
+    test_env: Mapping[str, str] | None = None,
 ) -> BaseTestResults:
-    """Run new test functions against the base branch's source code."""
+    """Run new test functions on the PR's code, then on the base branch's source.
+
+    WHY THIS EXISTS: check 7 needs each new test to fail on base. A test that crashes
+    for an unrelated reason (a package or env var missing in the gate's environment)
+    also "fails" on base, and the gate once passed check 7 in 0.08s with every new
+    test crashing on import. So each new test must first pass on the PR's own code;
+    one that doesn't is reported as unrunnable instead of as failing on base.
+    """
     if not new_tests:
         return BaseTestResults(new_tests=[], passed_tests=[], failed_tests=[], runtime_seconds=0.0)
-
-    passed: list[str] = []
-    failed: list[str] = []
 
     base_cmd_parts = shlex.split(test_command)
     if not base_cmd_parts:
@@ -314,36 +319,47 @@ def execute_new_tests_on_base(
     else:
         cmd_prefix = list(base_cmd_parts)
 
+    env = dict(os.environ)
+    env.update(test_env or {})
+
+    def _passes(test_node: str) -> bool:
+        try:
+            proc = subprocess.run(
+                cmd_prefix + [test_node],
+                cwd=repo_path,
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                check=False,
+                env=env,
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            logger.warning("Error running test %s: %s", test_node, exc)
+            return False
+        return proc.returncode == 0
+
     t_start = time.perf_counter()
 
-    with temporary_base_source(repo_path, base_ref, source_paths):
-        for test_node in new_tests:
-            run_cmd = cmd_prefix + [test_node]
-            try:
-                proc = subprocess.run(
-                    run_cmd,
-                    cwd=repo_path,
-                    capture_output=True,
-                    stdin=subprocess.DEVNULL,
-                    text=True,
-                    check=False,
-                )
-                if proc.returncode == 0:
-                    passed.append(test_node)
-                else:
-                    failed.append(test_node)
-            except (subprocess.SubprocessError, OSError) as exc:
-                logger.warning("Error running test %s on base: %s", test_node, exc)
-                failed.append(test_node)
+    runnable = [t for t in new_tests if _passes(t)]
+    unrunnable = [t for t in new_tests if t not in runnable]
+    if unrunnable:
+        logger.warning("New tests that fail on the PR's own code in the gate env: %s", unrunnable)
 
-    t_end = time.perf_counter()
-    duration = max(0.0, t_end - t_start)
+    passed: list[str] = []
+    failed: list[str] = []
+    if runnable:
+        with temporary_base_source(repo_path, base_ref, source_paths):
+            for test_node in runnable:
+                (passed if _passes(test_node) else failed).append(test_node)
+
+    duration = max(0.0, time.perf_counter() - t_start)
 
     return BaseTestResults(
         new_tests=list(new_tests),
         passed_tests=passed,
         failed_tests=failed,
         runtime_seconds=duration,
+        unrunnable_tests=unrunnable,
     )
 
 
@@ -397,6 +413,7 @@ def run_integrity_gate(
                 new_tests=new_tests,
                 test_command=repo_cfg.test_command,
                 source_paths=cfg.src_paths,
+                test_env=repo_cfg.test_env,
             )
         else:
             actual_base_results = None

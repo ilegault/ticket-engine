@@ -63,6 +63,9 @@ class BaseTestResults:
     passed_tests: list[str] = field(default_factory=list)
     failed_tests: list[str] = field(default_factory=list)
     runtime_seconds: float = 0.0
+    # New tests that did not pass on the PR's own code in the gate environment, so
+    # their result on base proves nothing (missing package, missing env var, ...).
+    unrunnable_tests: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -796,14 +799,23 @@ class IntegrityCore:
                 new_tests = list(base_test_results.get("new_tests", []))
                 passed_on_base = list(base_test_results.get("passed_tests", []))
                 failed_on_base = list(base_test_results.get("failed_tests", []))
+                unrunnable = list(base_test_results.get("unrunnable_tests", []))
                 rt = float(base_test_results.get("runtime_seconds", 0.0))
             else:
                 new_tests = list(getattr(base_test_results, "new_tests", []))
                 passed_on_base = list(getattr(base_test_results, "passed_tests", []))
                 failed_on_base = list(getattr(base_test_results, "failed_tests", []))
+                unrunnable = list(getattr(base_test_results, "unrunnable_tests", []))
                 rt = float(getattr(base_test_results, "runtime_seconds", 0.0))
 
-            if new_tests:
+            if unrunnable:
+                is_holding = True
+                reasons.append(
+                    "Check 7 hold: new test(s) did not pass on the PR's own code in the gate "
+                    "environment, so their result on base proves nothing (missing package or "
+                    f"env var?): {', '.join(unrunnable)}"
+                )
+            if new_tests and not unrunnable:
                 if passed_on_base:
                     is_holding = True
                     tests_str = ", ".join(passed_on_base)

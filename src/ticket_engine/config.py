@@ -48,6 +48,9 @@ class RepoConfig:
     merge_method: str = "merge"
     circuit_breaker_escalations_limit: int = 2
     circuit_breaker_window_hours: int = 24
+    # Environment variables the repo's tests need (e.g. dummy API tokens its own CI
+    # sets). The integrity gate sets them for check 7's test runs.
+    test_env: dict[str, str] = field(default_factory=dict)
 
 
 def load_repo_config(repo_path: pathlib.Path | str | None = None) -> RepoConfig:
@@ -108,4 +111,5 @@ def load_repo_config(repo_path: pathlib.Path | str | None = None) -> RepoConfig:
             config_data.get("circuit_breaker_window_hours", 24)
         ),
         merge_method=str(config_data.get("merge_method", "merge")),
+        test_env={str(k): str(v) for k, v in dict(config_data.get("test_env", {})).items()},
     )

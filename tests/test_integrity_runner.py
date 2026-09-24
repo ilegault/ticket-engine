@@ -359,3 +359,89 @@ def test_gate_sees_a_deleted_test_when_given_a_bare_base_name(tmp_path: pathlib.
 
     assert exit_code == 1
     assert "test_a" in summary.read_text(encoding="utf-8")
+
+
+# --- Check 7 must not mistake "could not run" for "fails on base" -------------
+# In CI the gate job once lacked the target repo's packages and its test env vars.
+# Every new test crashed on import, the gate counted each crash as "failed on base",
+# and check 7 passed in 0.08s having proved nothing. A new test only counts as
+# failing on base if it first passes on the PR's own code in the same environment.
+
+_TICKET_FOR_CHECK7 = "# 7: T\n**Status:** done\n## Acceptance criteria\n- [x] x\n"
+
+
+def _check7_repo(tmp_path: pathlib.Path, new_test: str, extra: dict | None = None) -> pathlib.Path:
+    """Base has src/lib.py with `old()`. The PR adds `new()`, the ticket and `new_test`."""
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "tests").mkdir()
+    (repo / ".scratch/e/issues").mkdir(parents=True)
+    (repo / "src/__init__.py").write_text("", encoding="utf-8")
+    (repo / "src/lib.py").write_text("def old():\n    return 1\n", encoding="utf-8")
+    (repo / "tests/test_old.py").write_text(
+        "from src.lib import old\n\ndef test_old():\n    assert old() == 1\n", encoding="utf-8"
+    )
+    (repo / ".scratch/e/issues/07-t.md").write_text(
+        "# 7: T\n**Status:** ready-for-agent\n## Acceptance criteria\n- [ ] x\n", encoding="utf-8"
+    )
+    _git(repo, "init", "-q", "-b", "master")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "add", ".")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "base")
+    _git(repo, "checkout", "-q", "-b", "pr")
+    (repo / "src/lib.py").write_text(
+        "def old():\n    return 1\n\n\ndef new():\n    return 2\n", encoding="utf-8"
+    )
+    (repo / "tests/test_new.py").write_text(new_test, encoding="utf-8")
+    (repo / ".scratch/e/issues/07-t.md").write_text(_TICKET_FOR_CHECK7, encoding="utf-8")
+    for rel, text in (extra or {}).items():
+        (repo / rel).write_text(text, encoding="utf-8")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "add", ".")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "pr")
+    return repo
+
+
+def _run_gate(repo: pathlib.Path, tmp_path: pathlib.Path) -> tuple[int, str]:
+    summary = tmp_path / "summary.md"
+    code = run_integrity_gate(repo_path=repo, base_ref="master", step_summary_path=summary)
+    return code, summary.read_text(encoding="utf-8")
+
+
+def test_check7_new_test_that_really_needs_the_feature_passes(tmp_path: pathlib.Path):
+    repo = _check7_repo(
+        tmp_path, "from src.lib import new\n\n\ndef test_new():\n    assert new() == 2\n"
+    )
+    code, text = _run_gate(repo, tmp_path)
+    assert "Check 7 pass" in text, text
+    assert code == 0
+
+
+def test_check7_new_test_that_cannot_run_in_the_gate_env_holds(tmp_path: pathlib.Path):
+    # Crashes on import on the PR's own code too, like a repo package missing in CI.
+    repo = _check7_repo(
+        tmp_path,
+        "import package_the_gate_env_does_not_have  # noqa: F401\n\n\ndef test_new():\n    assert True\n",
+    )
+    code, text = _run_gate(repo, tmp_path)
+    assert "Check 7 pass" not in text, text
+    assert "did not pass on the PR's own code" in text
+    assert "tests/test_new.py::test_new" in text
+    assert "HOLD" in text
+    assert code == 0
+
+
+def test_check7_uses_the_repo_test_env_from_engine_config(tmp_path: pathlib.Path):
+    # Slackbot's tests need dummy Slack tokens set before import; the repo declares
+    # them once in its engine config and the gate sets them for check 7's runs.
+    new_test = (
+        "import os\n\nfrom src.lib import new\n\n\n"
+        "def test_new():\n    assert os.environ['GATE_DEMO_TOKEN'] == 'not-a-secret'\n    assert new() == 2\n"
+    )
+    config = '[test_env]\nGATE_DEMO_TOKEN = "not-a-secret"\n'
+    with_env = _check7_repo(tmp_path / "a", new_test, extra={".ticket-engine.toml": config})
+    code, text = _run_gate(with_env, tmp_path / "a")
+    assert "Check 7 pass" in text, text
+    assert code == 0
+
+    without_env = _check7_repo(tmp_path / "b", new_test)
+    _, text = _run_gate(without_env, tmp_path / "b")
+    assert "did not pass on the PR's own code" in text
