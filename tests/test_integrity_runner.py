@@ -209,3 +209,52 @@ def test_run_integrity_gate_hold_does_not_merge_pr(tmp_path: pathlib.Path):
         # A hold still reports the gate check as successful, so any auto-merge queued by
         # an earlier pass must be cancelled or GitHub would merge a held PR.
         mock_client.disable_auto_merge.assert_called_once_with(repo="owner/repo", pr_number=99)
+
+
+def _git(repo: pathlib.Path, *args: str) -> None:
+    import subprocess
+
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+
+def _repo_with_done_ticket(tmp_path: pathlib.Path) -> pathlib.Path:
+    """A base branch holding an old, already-done ticket, plus a PR branch."""
+    repo = tmp_path / "repo"
+    (repo / ".scratch/old-effort/issues").mkdir(parents=True)
+    (repo / ".scratch/new-effort/issues").mkdir(parents=True)
+    (repo / "src").mkdir()
+    (repo / ".scratch/old-effort/issues/01-old.md").write_text(
+        "# 01: Old\n**Status:** done\n## Acceptance criteria\n- [x] Done\n", encoding="utf-8"
+    )
+    (repo / ".scratch/new-effort/issues/35-new.md").write_text(
+        "# 35: New\n**Status:** ready-for-agent\n## Acceptance criteria\n- [ ] Do it\n",
+        encoding="utf-8",
+    )
+    (repo / "src/app.py").write_text("x = 1\n", encoding="utf-8")
+    _git(repo, "init", "-q", "-b", "master")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "add", ".")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "base")
+    _git(repo, "checkout", "-q", "-b", "pr")
+    return repo
+
+
+def test_find_ticket_content_ignores_tickets_the_pr_did_not_change(tmp_path: pathlib.Path):
+    from ticket_engine.integrity_runner import find_ticket_content_from_git
+
+    repo = _repo_with_done_ticket(tmp_path)
+    (repo / "src/app.py").write_text("x = 2\n", encoding="utf-8")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-am", "code only")
+
+    # Must not fall back to the old done ticket and let the PR pass on its behalf.
+    assert find_ticket_content_from_git(repo, "master") == ""
+
+
+def test_find_ticket_content_returns_the_ticket_the_pr_changed(tmp_path: pathlib.Path):
+    from ticket_engine.integrity_runner import find_ticket_content_from_git
+
+    repo = _repo_with_done_ticket(tmp_path)
+    done = "# 35: New\n**Status:** done\n## Acceptance criteria\n- [x] Do it\n"
+    (repo / ".scratch/new-effort/issues/35-new.md").write_text(done, encoding="utf-8")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-am", "ticket 35")
+
+    assert find_ticket_content_from_git(repo, "master") == done

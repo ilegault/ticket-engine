@@ -151,7 +151,7 @@ def get_pr_diff_from_git(repo_path: pathlib.Path, base_ref: str) -> str:
 
 
 def find_ticket_content_from_git(repo_path: pathlib.Path, base_ref: str) -> str:
-    """Find ticket markdown content modified by the PR."""
+    """Find ticket markdown content modified by the PR, or "" if it changed none."""
     try:
         res = subprocess.run(
             ["git", "diff", "--name-only", f"{base_ref}...HEAD"],
@@ -171,11 +171,9 @@ def find_ticket_content_from_git(repo_path: pathlib.Path, base_ref: str) -> str:
     except (subprocess.SubprocessError, OSError) as exc:
         logger.warning("Failed to query git changed files for ticket: %s", exc)
 
-    # Fallback to local files under .scratch
-    for p in repo_path.glob(".scratch/*/issues/*.md"):
-        if p.is_file():
-            return p.read_text(encoding="utf-8")
-
+    # No fallback to "any ticket file": that once picked an old, already-done ticket
+    # and let a PR that never updated its own ticket pass check 6 and auto-merge.
+    # An empty result makes check 6 fail with a reason the worker can act on.
     return ""
 
 
