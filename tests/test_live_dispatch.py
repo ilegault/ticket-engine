@@ -149,3 +149,64 @@ def test_live_dispatch_paused_starts_nothing():
     assert len(started) == 0
     mock_github.create_claim_branch.assert_not_called()
     mock_jules.create_session.assert_not_called()
+
+
+def test_live_dispatch_releases_claim_for_done_ticket_with_no_live_session():
+    mock_github = MagicMock()
+    mock_github.get_default_branch_sha.return_value = "base123sha"
+    mock_github.list_claim_branches.return_value = ["claim/phase-1/01"]
+    mock_github.create_claim_branch.return_value = True
+
+    mock_jules = MagicMock()
+    mock_jules.count_recent_sessions.return_value = 5
+    mock_jules.list_sessions.return_value = []
+    mock_jules.create_session.return_value = {"id": "sessions/test789", "state": "RUNNING"}
+
+    config = RepoConfig(default_branch="master", concurrency=2)
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=config,
+    )
+
+    tickets = [
+        make_ticket(1, title="Already Shipped", status="done"),
+        make_ticket(2, title="Next Up"),
+    ]
+
+    started = dispatcher.dispatch(tickets=tickets)
+
+    # The stale claim for the done ticket 1 was deleted...
+    mock_github.delete_branch.assert_called_once_with(repo="owner/repo", branch="claim/phase-1/01")
+    # ...which freed a concurrency slot so ticket 2 could start.
+    assert len(started) == 1
+    assert started[0].number == 2
+
+
+def test_live_dispatch_does_not_release_claim_with_live_jules_session():
+    mock_github = MagicMock()
+    mock_github.get_default_branch_sha.return_value = "base123sha"
+    mock_github.list_claim_branches.return_value = ["claim/phase-1/01"]
+
+    mock_jules = MagicMock()
+    mock_jules.count_recent_sessions.return_value = 5
+    mock_jules.list_sessions.return_value = [
+        {"id": "sessions/live1", "state": "RUNNING", "title": "phase-1-01: Still Going"}
+    ]
+
+    config = RepoConfig(default_branch="master", concurrency=2)
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=config,
+    )
+
+    # Ticket file already flipped to done (PR merged) but Jules is still
+    # mid-session on it (e.g. a follow-up fix commit) - must not release yet.
+    tickets = [make_ticket(1, title="Still In Flight", status="done")]
+
+    dispatcher.dispatch(tickets=tickets)
+
+    mock_github.delete_branch.assert_not_called()
