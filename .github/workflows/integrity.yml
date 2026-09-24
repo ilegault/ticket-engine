@@ -40,7 +40,7 @@ jobs:
       - name: Install ticket-engine
         run: |
           pip install --upgrade pip
-          pip install .
+          pip install "ticket-engine @ git+https://github.com/ilegault/ticket-engine.git@v1"
 
       - name: Run Integrity Gate
         env:
