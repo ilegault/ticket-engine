@@ -933,3 +933,17 @@ def test_check7_precedence_fail_over_hold():
     assert any("Check 7 hold" in r for r in verdict.reasons)
 
 
+
+
+def test_check_6_pr_that_changes_no_ticket_file_fails_with_a_clear_reason():
+    # Slackbot PR #38 implemented ticket 35 but never touched its ticket file. The gate
+    # verified some other, already-done ticket instead, passed, and auto-merged it,
+    # leaving ticket 35 `ready-for-agent` on master with its claim stuck forever.
+    base_tree = {"tests/test_sample.py": "def test_a(): assert True\n"}
+
+    verdict = IntegrityCore().evaluate(base_tree=base_tree, pr_diff="", ticket="")
+
+    assert verdict.verdict == Verdict.FAIL
+    assert any("does not change any ticket file" in r for r in verdict.reasons)
+    # One clear reason, not a pile of confusing ones about an empty ticket.
+    assert not any("no acceptance criteria" in r for r in verdict.reasons)

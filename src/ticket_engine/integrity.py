@@ -722,18 +722,28 @@ class IntegrityCore:
                 f"Check 5 hold: Tests-first escape hatch used ({', '.join(escape_reasons)})"
             )
 
-        # 6. Check 6: ticket file done and all acceptance boxes ticked
+        # 6. Check 6: ticket file done and all acceptance boxes ticked.
+        # A PR that changes no ticket file has nothing to verify; it must fail rather
+        # than be checked against some other ticket (that let one merge unfinished).
         ticket_obj, ticket_raw_text = self._resolve_ticket(ticket)
-        if not ticket_obj.is_done():
+        if not ticket_raw_text.strip():
             is_failing = True
             reasons.append(
-                f"Check 6 fail: Ticket status is '{ticket_obj.status}', expected 'done'"
+                "Check 6 fail: the PR does not change any ticket file under "
+                ".scratch/<effort>/issues/; set its ticket's Status: done and tick every "
+                "acceptance criterion in this PR"
             )
+        else:
+            if not ticket_obj.is_done():
+                is_failing = True
+                reasons.append(
+                    f"Check 6 fail: Ticket status is '{ticket_obj.status}', expected 'done'"
+                )
 
-        unticked_reasons = self._check_acceptance_criteria(ticket_raw_text)
-        if unticked_reasons:
-            is_failing = True
-            reasons.extend(unticked_reasons)
+            unticked_reasons = self._check_acceptance_criteria(ticket_raw_text)
+            if unticked_reasons:
+                is_failing = True
+                reasons.extend(unticked_reasons)
 
         # 7. Check test results if provided
         if test_results is not None:
