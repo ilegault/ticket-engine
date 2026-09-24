@@ -983,3 +983,79 @@ def test_check_6_ticket_marked_done_with_a_test_change_is_not_flagged():
 
     assert not any("changes no test file" in r for r in verdict.reasons)
     assert verdict.verdict == Verdict.PASS
+
+
+def test_check_6_pr_changing_several_ticket_files_is_held_as_planning():
+    # A planning PR rewrites many tickets at once (most still ready-for-agent). The gate
+    # used to judge the first changed ticket as "the PR's ticket" and fail it, which
+    # blocked every planning PR. Several changed ticket files mean a human merges it.
+    open_ticket = "# 44: T\n**Status:** ready-for-agent\n## Acceptance criteria\n- [ ] x\n"
+    base_tree = {"tests/test_a.py": "def test_a():\n    assert 1 == 1\n"}
+    head_tree = dict(base_tree)
+    head_tree[".scratch/e/issues/34-a.md"] = "# 34: A\n**Status:** done\n## Acceptance criteria\n- [ ] undone\n"
+    head_tree[".scratch/e/issues/44-t.md"] = open_ticket
+
+    verdict = IntegrityCore().evaluate(base_tree=base_tree, pr_diff=head_tree, ticket=open_ticket)
+
+    assert verdict.verdict == Verdict.HOLD
+    assert any("2 ticket files" in r for r in verdict.reasons)
+    assert not any(r.startswith("Check 6 fail") for r in verdict.reasons)
+
+
+def test_check_6_single_ticket_pr_is_still_judged_on_its_ticket():
+    base_tree = {"tests/test_a.py": "def test_a():\n    assert 1 == 1\n"}
+    head_tree = dict(base_tree)
+    open_ticket = "# 44: T\n**Status:** in-progress\n## Acceptance criteria\n- [x] x\n"
+    head_tree[".scratch/e/issues/44-t.md"] = open_ticket
+    head_tree["tests/test_b.py"] = "def test_b():\n    assert 2 == 2\n"
+
+    verdict = IntegrityCore().evaluate(base_tree=base_tree, pr_diff=head_tree, ticket=open_ticket)
+
+    assert verdict.verdict == Verdict.FAIL
+    assert any("expected 'done'" in r for r in verdict.reasons)
+
+
+# Tickets written from the /to-tickets template put their checkboxes straight under
+# "What to build", with no "## Acceptance criteria" heading. The gate only looked under
+# that heading, so it reported "no acceptance criteria" for every such ticket, done or
+# not, and a worker could never satisfy check 6 honestly.
+
+_HEADINGLESS_DONE = (
+    "# 35: T\n\n**Status:** done\n\n**What to build:** a thing.\n\n"
+    "- [x] First criterion\n- [x] Second criterion\n\n## Comments\n\n- [ ] a note, not a criterion\n"
+)
+
+
+def _eval_ticket(ticket_text: str):
+    base_tree = {"tests/test_a.py": "def test_a():\n    assert 1 == 1\n"}
+    head_tree = dict(base_tree)
+    head_tree[".scratch/e/issues/35-t.md"] = ticket_text
+    head_tree["tests/test_b.py"] = "def test_b():\n    assert 2 == 2\n"
+    return IntegrityCore().evaluate(base_tree=base_tree, pr_diff=head_tree, ticket=ticket_text)
+
+
+def test_check_6_reads_checkboxes_without_an_acceptance_heading():
+    verdict = _eval_ticket(_HEADINGLESS_DONE)
+    assert verdict.verdict == Verdict.PASS, verdict.reasons
+
+
+def test_check_6_headingless_unticked_criterion_fails_by_name():
+    verdict = _eval_ticket(_HEADINGLESS_DONE.replace("- [x] Second criterion", "- [ ] Second criterion"))
+    assert verdict.verdict == Verdict.FAIL
+    assert any("not ticked: 'Second criterion'" in r for r in verdict.reasons)
+
+
+def test_check_6_headingless_ticket_with_no_boxes_still_fails():
+    no_boxes = "# 35: T\n\n**Status:** done\n\n**What to build:** a thing.\n\n## Comments\n"
+    verdict = _eval_ticket(no_boxes)
+    assert any("no acceptance criteria checkboxes" in r for r in verdict.reasons)
+
+
+def test_check_6_acceptance_heading_after_comments_is_still_read():
+    # Some tickets append their "## Acceptance criteria" section after "## Comments".
+    ticket = (
+        "# 33: T\n\n**Status:** done\n\n## What to build\n\nA thing.\n\n## Comments\n\nA note.\n\n"
+        "## Acceptance criteria\n\n- [x] It works\n"
+    )
+    verdict = _eval_ticket(ticket)
+    assert verdict.verdict == Verdict.PASS, verdict.reasons

@@ -152,6 +152,9 @@ def parse_ratchet_value(content: str | None) -> float | int | dict[str, float | 
 
 
 
+_TICKET_FILE_RE = re.compile(r"^\.scratch/[^/]+/issues/[^/]+\.md$")
+
+
 def get_diff_changed_paths(
     pr_diff: str | Mapping[str, str], base_tree: Mapping[str, str]
 ) -> set[str]:
@@ -726,7 +729,18 @@ class IntegrityCore:
         # A PR that changes no ticket file has nothing to verify; it must fail rather
         # than be checked against some other ticket (that let one merge unfinished).
         ticket_obj, ticket_raw_text = self._resolve_ticket(ticket)
-        if not ticket_raw_text.strip():
+        changed_tickets = sorted(p for p in changed_paths if _TICKET_FILE_RE.match(p))
+        if len(changed_tickets) > 1:
+            # A worker PR carries exactly one ticket. Several changed ticket files mean a
+            # planning PR (a new or rewritten ticket set), which has no single ticket to
+            # judge and must be merged by a human. Judging the first file found used to
+            # fail every planning PR on some unrelated ticket's status.
+            is_holding = True
+            reasons.append(
+                f"Check 6 hold: the PR changes {len(changed_tickets)} ticket files, so it is a "
+                "planning PR; a human must review and merge it"
+            )
+        elif not ticket_raw_text.strip():
             is_failing = True
             reasons.append(
                 "Check 6 fail: the PR does not change any ticket file under "
@@ -834,23 +848,39 @@ class IntegrityCore:
         return TicketParser().parse_text(raw, filename="ticket.md"), raw
 
     def _check_acceptance_criteria(self, raw_ticket: str) -> list[str]:
+        """Collect the ticket's checkboxes and report unticked ones.
+
+        With a `## Acceptance criteria` heading, only boxes under it count. Without
+        one (the /to-tickets template puts boxes straight under "What to build"),
+        every box before `## Comments` counts: requiring the heading made the gate
+        report "no acceptance criteria" for every such ticket, which no honest PR
+        could fix. Boxes under `## Comments` are notes, never criteria.
+        """
         if not raw_ticket:
             return []
 
         lines = raw_ticket.splitlines()
-        in_ac_section = False
+        has_ac_heading = any(
+            ln.strip().lower().startswith("## acceptance criteria") for ln in lines
+        )
+        in_scope = not has_ac_heading
         total_boxes = 0
         unticked_boxes: list[str] = []
 
         for line in lines:
             stripped = line.strip()
-            if stripped.lower().startswith("## acceptance criteria"):
-                in_ac_section = True
+            lowered = stripped.lower()
+            if lowered.startswith("## acceptance criteria"):
+                in_scope = True
                 continue
-            if in_ac_section and stripped.startswith("## ") and not stripped.lower().startswith("## acceptance criteria"):
-                break
+            if stripped.startswith("## "):
+                if has_ac_heading and in_scope:
+                    break
+                if not has_ac_heading and lowered.startswith("## comments"):
+                    break
+                continue
 
-            if in_ac_section:
+            if in_scope:
                 m = _ACCEPTANCE_BOX_RE.match(stripped)
                 if m:
                     total_boxes += 1
