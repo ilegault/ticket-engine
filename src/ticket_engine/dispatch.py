@@ -10,6 +10,14 @@ Tunables (stale-claim hours, max fix attempts, circuit breaker limit/window) are
 from config.
 This ensures every scheduling decision, dependency hold, concurrency gate, and
 runner partition is testable reproducibly with static snapshots.
+
+LIVE SESSIONS
+-------------
+A session counts as live in any non-terminal Jules state (`LIVE_SESSION_STATES`).
+An earlier version only recognised made-up names (RUNNING, ACTIVE, PENDING), so a
+session that was PLANNING or waiting on a question looked dead and its claim could be
+released under it. Those legacy names stay in the set so older snapshots still read
+the same.
 """
 from __future__ import annotations
 
@@ -92,6 +100,60 @@ class ReleaseClaimAction:
 @dataclass(frozen=True)
 class PauseRepoAction:
     reason: str = "Circuit breaker: two escalations within 24 hours"
+
+
+# Every non-terminal Jules session state, plus legacy names older snapshots used.
+LIVE_SESSION_STATES = frozenset(
+    {
+        "QUEUED",
+        "PLANNING",
+        "AWAITING_PLAN_APPROVAL",
+        "AWAITING_USER_FEEDBACK",
+        "IN_PROGRESS",
+        "PAUSED",
+        "RUNNING",
+        "ACTIVE",
+        "PENDING",
+    }
+)
+
+
+def is_live_session_state(state: object) -> bool:
+    """True when a Jules session in this state is still working or waiting to work."""
+    return str(state or "").strip().upper() in LIVE_SESSION_STATES
+
+
+def count_repo_starts(
+    sessions: Sequence[dict[str, Any] | object],
+    repo: str,
+    now: datetime.datetime,
+    hours: int = 24,
+) -> int:
+    """Count Jules sessions for exactly this repo created in the last `hours`. Pure.
+
+    Feeds the per-repo daily cap. The old count took every session in the Jules list
+    (all repos, any age), so ten sessions anywhere stopped the repo for good.
+    """
+    target = repo.strip().strip("/")
+    wanted = {target, f"sources/github/{target}"}
+    cutoff = now - datetime.timedelta(hours=hours)
+    count = 0
+    for sess in sessions:
+        if not isinstance(sess, dict):
+            continue
+        source = str((sess.get("sourceContext") or {}).get("source", "")).strip().strip("/")
+        if source not in wanted:
+            continue
+        raw = str(sess.get("createTime") or "")
+        try:
+            created = datetime.datetime.fromisoformat(raw)
+        except ValueError:
+            continue
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=datetime.UTC)
+        if created >= cutoff:
+            count += 1
+    return count
 
 
 @dataclass(frozen=True)
@@ -293,10 +355,9 @@ class DispatchCore:
             if not has_live and snapshot.jules_sessions:
                 for sess in snapshot.jules_sessions:
                     if isinstance(sess, dict):
-                        state = str(sess.get("state", "")).upper()
                         title = sess.get("title", "")
                         if (
-                            state in ("RUNNING", "ACTIVE", "IN_PROGRESS", "QUEUED", "PENDING")
+                            is_live_session_state(sess.get("state"))
                             and (f"-{ticket_num:02d}:" in title or f"-{ticket_num}:" in title)
                         ):
                             has_live = True

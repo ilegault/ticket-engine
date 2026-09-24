@@ -8,6 +8,12 @@ mandate that:
 2. An already-exists response (HTTP 422) means "claimed" and the ticket is skipped.
 3. This adapter isolates all GitHub REST I/O using Python standard library
    `urllib.request`. It keeps cores pure and is fully fakeable in tests.
+4. Auto-merge goes through GitHub's native auto-merge (GraphQL
+   `enablePullRequestAutoMerge`), not an immediate REST merge. The integrity gate is
+   itself a required check and is still running when it decides, so an immediate
+   merge is always refused ("required checks pending") and nothing ever retried it:
+   every green PR waited for a human. Native auto-merge lets GitHub merge the moment
+   every required check is green.
 """
 from __future__ import annotations
 
@@ -21,6 +27,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 INTEGRITY_COMMENT_MARKER = "<!-- ticket-engine-integrity-gate -->"
+_GRAPHQL_MERGE_METHODS = {"merge": "MERGE", "squash": "SQUASH", "rebase": "REBASE"}
 
 
 class GitHubClient:
@@ -229,6 +236,62 @@ class GitHubClient:
                 pr_number, repo, exc.code, exc.reason,
             )
             return None
+
+    def _graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any] | None:
+        """Run a GraphQL call. Returns `data`, or None when GitHub reports errors."""
+        res = self._request("POST", "/graphql", {"query": query, "variables": variables})
+        if not isinstance(res, dict):
+            return None
+        if res.get("errors"):
+            messages = "; ".join(str(e.get("message", e)) for e in res["errors"])
+            logger.warning("GitHub GraphQL refused: %s", messages)
+            return None
+        data = res.get("data")
+        return data if isinstance(data, dict) else None
+
+    def _pull_request_node_id(self, repo: str, pr_number: int) -> str:
+        pr = self._request("GET", f"/repos/{repo}/pulls/{pr_number}")
+        node_id = pr.get("node_id") if isinstance(pr, dict) else None
+        if not node_id:
+            msg = f"PR #{pr_number} on {repo} has no node_id"
+            raise ValueError(msg)
+        return str(node_id)
+
+    def enable_auto_merge(
+        self, repo: str, pr_number: int, merge_method: str = "merge"
+    ) -> bool:
+        """Queue a PR to merge automatically once all required checks pass.
+
+        Returns False (logged) when GitHub refuses, e.g. auto-merge is not allowed on
+        the repo, or the PR is already mergeable right now ("clean status").
+        """
+        method = _GRAPHQL_MERGE_METHODS.get(merge_method.strip().lower())
+        if method is None:
+            msg = f"Unknown merge_method {merge_method!r}; expected merge, squash or rebase"
+            raise ValueError(msg)
+        node_id = self._pull_request_node_id(repo, pr_number)
+        data = self._graphql(
+            "mutation($id: ID!, $method: PullRequestMergeMethod!) {"
+            " enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: $method})"
+            " { pullRequest { number } } }",
+            {"id": node_id, "method": method},
+        )
+        if data is None:
+            logger.warning("Could not enable auto-merge on PR #%s (%s)", pr_number, repo)
+            return False
+        logger.info("Auto-merge enabled on PR #%s (%s)", pr_number, repo)
+        return True
+
+    def disable_auto_merge(self, repo: str, pr_number: int) -> bool:
+        """Cancel a queued auto-merge. Returns False if none was queued (not an error)."""
+        node_id = self._pull_request_node_id(repo, pr_number)
+        data = self._graphql(
+            "mutation($id: ID!) {"
+            " disablePullRequestAutoMerge(input: {pullRequestId: $id})"
+            " { pullRequest { number } } }",
+            {"id": node_id},
+        )
+        return data is not None
 
     def add_issue_labels(
         self, repo: str, issue_number: int, labels: list[str]

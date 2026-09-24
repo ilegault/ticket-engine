@@ -11,6 +11,11 @@ The prompt brings together:
 2. The target repository name and exact ticket path.
 3. The strict orientation order: read AGENTS.md, the ticket file, ADRs in
    docs/adr/, and CONTEXT.md first.
+4. An unattended-run rule: never stop to ask for confirmation. Jules sessions are
+   created with plan approval off, but the agent could still pause on its own to ask
+   "does this plan look correct?", which stalls the ticket overnight because nobody
+   answers. The rule lives here, not only in the skill, because `load_ticket_skill`
+   prefers the target repo's own copy of the skill, which the engine does not control.
 
 CRITICAL PRIVACY AND LOGGING INVARIANT:
 As required by ADR 0002 and the Phase 1 Spec: Prompts and secrets must NEVER
@@ -63,6 +68,18 @@ def load_ticket_skill(skill_path: pathlib.Path | str | None = None) -> str:
         raise FileNotFoundError(msg) from exc
 
 
+_UNATTENDED_RULE = (
+    "This session runs unattended. No human reads it or will reply to it. "
+    "Do not ask for confirmation, approval, or feedback on your plan "
+    '(for example "Does this plan look correct?"). Make the decision yourself from the '
+    "ticket, its ADRs, and AGENTS.md, then proceed. If a question truly blocks you "
+    "(the ticket is ambiguous in a way that changes the result, or it needs bench work "
+    "or a human judgement call), do not wait for an answer: set the ticket's `Status:` "
+    "to `blocked`, write the escalation brief described below under `## Comments`, "
+    "and finish the session."
+)
+
+
 def assemble_prompt(skill_text: str, repo: str, ticket_path: str) -> str:
     """Assemble the prompt for an implementing worker (such as Jules).
 
@@ -86,6 +103,9 @@ def assemble_prompt(skill_text: str, repo: str, ticket_path: str) -> str:
         "3. Every ADR referenced by the ticket in 'docs/adr/'. ADRs are binding, not background.",
         "4. CONTEXT.md — the domain glossary. Use its words exactly.",
         "5. The module docstring of every file you are about to edit. Docstrings explain why.",
+        "",
+        "## UNATTENDED RUN — NO HUMAN IS WATCHING",
+        _UNATTENDED_RULE,
         "",
         "## TICKET IMPLEMENTATION SKILL AND RULES",
         skill_text.strip(),

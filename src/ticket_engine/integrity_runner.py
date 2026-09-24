@@ -428,20 +428,35 @@ def run_integrity_gate(
                 logger.error("Failed to set commit status: %s", exc)
 
         # ADR 0001 §1: a PR whose CI is green and whose integrity verdict is
-        # `pass` merges automatically. GitHub itself still enforces branch
-        # protection (all required checks, no conflicts) at merge time, so a
-        # premature attempt (e.g. another required check still running) is
-        # refused by GitHub and just leaves the PR for a manual merge, same
-        # as today's behaviour.
+        # `pass` merges automatically. This job is itself a required check and is
+        # still running right now, so an immediate merge is always refused. Hand
+        # the merge to GitHub's native auto-merge instead: it merges once every
+        # required check (the gate and CI) is green, and that merge's push wakes
+        # the dispatcher for the next ticket. If GitHub won't queue it (e.g. the
+        # PR is already mergeable), fall back to merging directly.
+        net_errors = (OSError, urllib.error.URLError, json.JSONDecodeError, KeyError, ValueError, RuntimeError)
         if pr_number and verdict.is_pass():
             try:
-                client.merge_pull_request(
+                queued = client.enable_auto_merge(
                     repo=repo_name,
                     pr_number=pr_number,
                     merge_method=repo_cfg.merge_method,
                 )
-            except (OSError, urllib.error.URLError, json.JSONDecodeError, KeyError, ValueError, RuntimeError) as exc:
+                if not queued:
+                    client.merge_pull_request(
+                        repo=repo_name,
+                        pr_number=pr_number,
+                        merge_method=repo_cfg.merge_method,
+                    )
+            except net_errors as exc:
                 logger.error("Failed to auto-merge PR #%s: %s", pr_number, exc)
+        elif pr_number:
+            # A hold still reports this check as successful, and a failing new push
+            # may follow an earlier pass: cancel any auto-merge an earlier run queued.
+            try:
+                client.disable_auto_merge(repo=repo_name, pr_number=pr_number)
+            except net_errors as exc:
+                logger.error("Failed to cancel auto-merge on PR #%s: %s", pr_number, exc)
 
     return 1 if verdict.is_fail() else 0
 

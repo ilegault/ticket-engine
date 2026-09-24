@@ -155,3 +155,17 @@ def test_assembled_prompt_sample_ticket():
     assert "docs/adr" in prompt
     assert "If you are a Jules worker" in prompt
     assert "Escalation" in prompt
+
+
+def test_prompt_tells_the_worker_it_is_unattended_whatever_the_skill_says():
+    # The skill text comes from the target repo's own copy, which the engine does not
+    # control, so the no-questions rule must be added by the engine itself.
+    prompt = assemble_prompt("# A repo-local skill with no unattended rule", "owner/repo", "t.md")
+    lowered = prompt.lower()
+
+    assert "unattended" in lowered
+    assert "no human" in lowered
+    assert "do not ask" in lowered
+    assert "blocked" in lowered
+    # It must come before the skill so it frames everything after it.
+    assert lowered.index("unattended") < lowered.index("a repo-local skill")
