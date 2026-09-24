@@ -232,6 +232,55 @@ class LiveDispatcher:
         except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
             logger.warning("Failed to count repo starts in 24h: %s", exc)
 
+        # 4b. Release claim branches for tickets that are already done.
+        # A claim branch only ever gets created (step 6 below); nothing else
+        # ever deletes it. Once a ticket's PR has merged, its file on the
+        # default branch reads Status: done, so if there is also no Jules
+        # session still live for it, the claim it made is stale right now,
+        # not just after some staleness window. Releasing it immediately
+        # (rather than waiting on the separate, currently-unused staleness
+        # sweep) is what keeps a concurrency slot from being lost forever
+        # every time a ticket finishes.
+        ticket_by_number = {t.number: t for t in tickets}
+        released_claims: set[str] = set()
+        for claim_ref in existing_claims:
+            claim_parts = claim_ref.strip("/").split("/")
+            claim_ticket_num = int(claim_parts[-1]) if claim_parts[-1].isdigit() else None
+            claim_ticket = (
+                ticket_by_number.get(claim_ticket_num)
+                if claim_ticket_num is not None
+                else None
+            )
+            if claim_ticket is None or not claim_ticket.is_done():
+                continue
+
+            has_live_session = any(
+                isinstance(s, dict)
+                and str(s.get("state", "")).upper()
+                in ("RUNNING", "ACTIVE", "IN_PROGRESS", "QUEUED", "PENDING")
+                and (
+                    f"-{claim_ticket_num:02d}:" in s.get("title", "")
+                    or f"-{claim_ticket_num}:" in s.get("title", "")
+                )
+                for s in all_sessions
+            )
+            if has_live_session:
+                continue
+
+            try:
+                self.github_client.delete_branch(repo=self.repo, branch=claim_ref)
+                logger.info(
+                    "Released completed claim branch %s for %s (ticket %02d is done)",
+                    claim_ref,
+                    self.repo,
+                    claim_ticket_num,
+                )
+                released_claims.add(claim_ref)
+            except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                logger.error("Failed to release completed claim %s: %s", claim_ref, exc)
+
+        existing_claims -= released_claims
+
         # 5. Build WorldSnapshot and evaluate pure core
         snapshot = WorldSnapshot(
             tickets=tickets,
