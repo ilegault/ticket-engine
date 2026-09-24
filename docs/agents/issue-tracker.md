@@ -21,6 +21,21 @@ reviewer needs may be written there.
 - Acceptance criteria are `- [ ]` checkboxes, ticked individually as they are met
 - Conversation appends at the bottom under a `## Comments` heading, dated `YYYY-MM-DD`
 
+## Writing acceptance criteria
+
+The implementer has none of the planner's context. Each criterion:
+
+- names its proof: what a test asserts, in observable terms (message text, a
+  view's `callback_id`, a row written or its absence);
+- points at the existing code to copy by file and function, rather than citing an
+  invariant by number;
+- promises only what the platform can do (check the Slack/GitHub API first);
+- says what tests may fake (the Slack client, the network) and what must be real
+  (the lookup or write under change, on a temporary copy of any file).
+
+About five criteria, or one handler, per ticket; split bigger work with
+`Blocked by:`. Roles, never names, anywhere in the ticket.
+
 ## Status vocabulary
 
 Exactly these five words, and nothing else:
@@ -31,10 +46,11 @@ Exactly these five words, and nothing else:
 | `in-progress` | claimed; set this before writing any code |
 | `done` | landed, criteria all ticked |
 | `blocked` | escalated — see the `## Comments` entry and the draft PR |
-| `human-task` | needs a person: a Slack action, a server deploy, a lab decision. **An agent must not claim it.** |
+| `ready-for-developer` | needs a person: a Slack action, a server deploy, a lab decision. **An agent must not claim it.** |
 
 Three spellings of "finished" make the frontier unreadable by the next tool that
-opens the repo. Use the word in the table.
+opens the repo. Use the word in the table. `human-task` is a legacy spelling of
+`ready-for-developer`; the dispatcher reports it as unreadable.
 
 ## Working the frontier
 

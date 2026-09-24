@@ -745,6 +745,21 @@ class IntegrityCore:
                 is_failing = True
                 reasons.extend(unticked_reasons)
 
+            # A ticket's work is proven by tests in the same PR (ADR 0001). A PR that
+            # marks its ticket done while changing no test file shipped nothing
+            # provable: once, a worker reverted its whole implementation and only
+            # ticked the boxes, and that PR merged as "done". Some tickets legitimately
+            # have no tests (CI or docs work), so this holds for a human rather than
+            # failing: it can never auto-merge, and a real infra ticket isn't punished.
+            if ticket_obj.is_done():
+                test_prefixes = tuple(tp.rstrip("/") + "/" for tp in cfg.test_paths)
+                if not any(p.startswith(test_prefixes) for p in changed_paths):
+                    is_holding = True
+                    reasons.append(
+                        "Check 6 hold: the PR marks its ticket done but changes no test file; "
+                        "a human must confirm the work actually shipped"
+                    )
+
         # 7. Check test results if provided
         if test_results is not None:
             failed = (

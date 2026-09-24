@@ -113,6 +113,40 @@ def get_base_tree_from_git(
     return base_tree
 
 
+def _ref_exists(repo_path: pathlib.Path, ref: str) -> bool:
+    res = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+        cwd=repo_path,
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    return res.returncode == 0
+
+
+def resolve_base_ref(repo_path: pathlib.Path, base_ref: str) -> str:
+    """Return a base ref git can actually resolve, trying `origin/<ref>` second.
+
+    WHY THIS EXISTS: on a pull_request run, actions/checkout leaves only
+    remote-tracking branches (`origin/master`, no local `master`), while the
+    workflow passes `github.base_ref`, the bare name `master`. Every git call
+    against the bare name failed, and the helpers below treat a failed call as
+    "nothing there", so checks 1-4 and 7 compared the PR against an empty base and
+    check 6 never found the PR's ticket. A base that resolves to nothing is now an
+    error, never an empty comparison.
+    """
+    ref = base_ref.strip()
+    candidates = [ref]
+    if not ref.startswith("origin/"):
+        candidates.append(f"origin/{ref}")
+    for candidate in candidates:
+        if _ref_exists(repo_path, candidate):
+            return candidate
+    msg = f"Integrity gate: base ref {base_ref!r} not found (tried {', '.join(candidates)})"
+    raise ValueError(msg)
+
+
 def get_git_commit_messages(repo_path: pathlib.Path, base_ref: str) -> list[str]:
     """Retrieve commit messages between base_ref and HEAD."""
     try:
@@ -330,6 +364,7 @@ def run_integrity_gate(
     base_test_results: BaseTestResults | None = None,
 ) -> int:
     """Execute integrity gate checks and report verdict."""
+    base_ref = resolve_base_ref(repo_path, base_ref)
     repo_cfg = load_repo_config(repo_path)
     cfg = config or IntegrityConfig(
         test_paths=repo_cfg.test_paths,

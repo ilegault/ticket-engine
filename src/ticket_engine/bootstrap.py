@@ -190,6 +190,34 @@ The five status words — use exactly these, no others:
 
 ---
 
+## Writing acceptance criteria
+
+The implementer is a cheaper agent with none of your context. A vague criterion
+gets a guessed implementation and a test that proves nothing. Every ticket follows
+these rules:
+
+1. **Each criterion names its proof.** Say what a test asserts, in observable
+   terms: the message text, a view's `callback_id`, the row written or its
+   absence. "Then it proceeds" is not a criterion; "the reply is the Screen 2 view
+   on the EPIF path, with no warning block" is.
+2. **Point at the code to copy, by file and function.** Not "serialised like every
+   other state (invariant 3)" but "post the card with `metadata=` the way
+   `lifecycle.<function>` does, including the approver". If a ticket relies on an
+   invariant, spell out what it means for this change.
+3. **Check the platform before promising behaviour.** When a criterion depends on
+   what an API can do (a Slack response type, a GitHub token permission), confirm
+   it can, and write the criterion around what is possible.
+4. **Keep tickets small: about five criteria**, or one handler or entry point.
+   Split bigger work into tickets joined by `Blocked by:`.
+5. **Say what tests may fake.** Name what may be faked (the Slack client, the
+   network) and what must be real (the lookup or write the ticket changes, using a
+   temporary copy of any file). A test that fakes the thing under change proves
+   nothing.
+6. **Roles, never names**, in the story as well as the fields: "the approver", "the
+   requester", "a buyer" — never a real person, handle or email.
+
+---
+
 ## Dependency ordering
 
 Break work into the smallest independently-deliverable slices.
