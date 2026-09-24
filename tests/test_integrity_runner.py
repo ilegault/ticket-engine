@@ -129,6 +129,36 @@ def test_run_integrity_gate_pass_merges_pr(tmp_path: pathlib.Path):
         )
 
         assert exit_code == 0
+        # The gate is itself a required check and is still running here, so an
+        # immediate merge is always refused. It hands the merge to GitHub instead,
+        # which merges once every required check (CI included) is green.
+        mock_client.enable_auto_merge.assert_called_once_with(
+            repo="owner/repo", pr_number=99, merge_method="merge",
+        )
+        mock_client.merge_pull_request.assert_not_called()
+
+
+def test_run_integrity_gate_pass_falls_back_to_direct_merge_when_auto_merge_refused(
+    tmp_path: pathlib.Path,
+):
+    # e.g. every check already finished, so GitHub won't queue auto-merge.
+    mock_client = MagicMock()
+    mock_client.enable_auto_merge.return_value = False
+
+    with patch("ticket_engine.integrity_runner.GitHubClient", return_value=mock_client), \
+         patch("ticket_engine.integrity_runner.get_base_tree_from_git", return_value={"tests/test_a.py": "def test_a(): assert True\n"}), \
+         patch("ticket_engine.integrity_runner.get_pr_diff_from_git", return_value=""), \
+         patch("ticket_engine.integrity_runner.find_ticket_content_from_git", return_value="# 01: T\n**Status:** done\n## Acceptance criteria\n- [x] Done\n"):
+
+        run_integrity_gate(
+            repo_path=tmp_path,
+            base_ref="origin/master",
+            token="fake-token",
+            repo_name="owner/repo",
+            pr_number=99,
+            head_sha="1234567890abcdef",
+        )
+
         mock_client.merge_pull_request.assert_called_once_with(
             repo="owner/repo", pr_number=99, merge_method="merge",
         )
@@ -152,6 +182,9 @@ def test_run_integrity_gate_fail_does_not_merge_pr(tmp_path: pathlib.Path):
         )
 
         mock_client.merge_pull_request.assert_not_called()
+        mock_client.enable_auto_merge.assert_not_called()
+        # A new push that fails must cancel auto-merge queued by an earlier pass.
+        mock_client.disable_auto_merge.assert_called_once_with(repo="owner/repo", pr_number=99)
 
 
 def test_run_integrity_gate_hold_does_not_merge_pr(tmp_path: pathlib.Path):
@@ -172,6 +205,7 @@ def test_run_integrity_gate_hold_does_not_merge_pr(tmp_path: pathlib.Path):
         )
 
         mock_client.merge_pull_request.assert_not_called()
-
-
-
+        mock_client.enable_auto_merge.assert_not_called()
+        # A hold still reports the gate check as successful, so any auto-merge queued by
+        # an earlier pass must be cancelled or GitHub would merge a held PR.
+        mock_client.disable_auto_merge.assert_called_once_with(repo="owner/repo", pr_number=99)

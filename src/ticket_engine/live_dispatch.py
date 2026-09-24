@@ -32,6 +32,8 @@ from ticket_engine.dispatch import (
     StartTicketAction,
     WorldSnapshot,
     apply_escalation_to_ticket_text,
+    count_repo_starts,
+    is_live_session_state,
 )
 from ticket_engine.prompt import assemble_prompt, load_ticket_skill
 
@@ -224,11 +226,9 @@ class LiveDispatcher:
         all_sessions = []
         try:
             all_sessions = self.jules_client.list_sessions()
-            for s in all_sessions:
-                s_title = s.get("title", "")
-                src = s.get("sourceContext", {}).get("source", "")
-                if self.repo in src or s_title:
-                    repo_starts_24h += 1
+            repo_starts_24h = count_repo_starts(
+                all_sessions, repo=self.repo, now=datetime.datetime.now(datetime.UTC), hours=24
+            )
         except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
             logger.warning("Failed to count repo starts in 24h: %s", exc)
 
@@ -256,8 +256,7 @@ class LiveDispatcher:
 
             has_live_session = any(
                 isinstance(s, dict)
-                and str(s.get("state", "")).upper()
-                in ("RUNNING", "ACTIVE", "IN_PROGRESS", "QUEUED", "PENDING")
+                and is_live_session_state(s.get("state"))
                 and (
                     f"-{claim_ticket_num:02d}:" in s.get("title", "")
                     or f"-{claim_ticket_num}:" in s.get("title", "")
