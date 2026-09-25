@@ -4,7 +4,7 @@
 
 **Blocked by:** 16
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Runner:** any
 
@@ -14,12 +14,19 @@
 
 Tests go in `tests/test_morning_report.py`, using its existing `_data(...)` helper and fixed `_NOW`. Build the tickets for these tests through the real parser (`TicketParser().parse_text(...)`, as the `ticket(...)` helper in `tests/test_run_report.py` does), not the direct `Ticket(...)` construction of this file's `_ticket` helper. Put them in `WorldSnapshot(repo_name="owner/repo", tickets=[...])`. Nothing is faked: `render_morning_report` is pure. Write these tests first and watch them fail.
 
-- [ ] **Placement and count.** In `src/ticket_engine/morning_report.py`, `_render_repo_section` emits the line `**Needs you (ready-for-developer):** N` (N = number of `ready-for-developer` tickets in `snapshot.tickets`) after the Held block and before the `**Windows-waiting:**` line, followed by a blank line. A test asserts the exact lead line and that it appears after `**Held (awaiting approval):**` and before `**Windows-waiting:**` in the rendered text.
-- [ ] **Same table, same renderer.** When N > 0, the lines from `run_report.needs_you_table(snapshot.tickets)` (added in ticket 16) follow the lead line. `morning_report` imports it from `run_report`, and `run_report` does not import `morning_report`. Write no table or blocker logic in `morning_report.py`.
-- [ ] **Never two answers.** For tickets `34 ready-for-agent`, `36 done` and `43 ready-for-developer` blocked by `34, 36`, the row starting `| 43 |` in the morning report is character-for-character equal to the row starting `| 43 |` in `build_run_report(tickets, RunFacts())`, and equals `| 43 | Ticket 43 | 34 (ready-for-agent) | — |` (use title `Ticket 43`).
-- [ ] **Zero is shown, not hidden.** A snapshot with no developer tickets renders `**Needs you (ready-for-developer):** 0`, and the section contains no `| Ticket | Title | Waiting on | Holding up |` line.
-- [ ] **Nothing existing is weakened.** Every existing test in `tests/test_morning_report.py`, including `test_render_morning_report_no_person_names`, passes unchanged. None are deleted or edited.
+- [x] **Placement and count.** In `src/ticket_engine/morning_report.py`, `_render_repo_section` emits the line `**Needs you (ready-for-developer):** N` (N = number of `ready-for-developer` tickets in `snapshot.tickets`) after the Held block and before the `**Windows-waiting:**` line, followed by a blank line. A test asserts the exact lead line and that it appears after `**Held (awaiting approval):**` and before `**Windows-waiting:**` in the rendered text.
+- [x] **Same table, same renderer.** When N > 0, the lines from `run_report.needs_you_table(snapshot.tickets)` (added in ticket 16) follow the lead line. `morning_report` imports it from `run_report`, and `run_report` does not import `morning_report`. Write no table or blocker logic in `morning_report.py`.
+- [x] **Never two answers.** For tickets `34 ready-for-agent`, `36 done` and `43 ready-for-developer` blocked by `34, 36`, the row starting `| 43 |` in the morning report is character-for-character equal to the row starting `| 43 |` in `build_run_report(tickets, RunFacts())`, and equals `| 43 | Ticket 43 | 34 (ready-for-agent) | — |` (use title `Ticket 43`).
+- [x] **Zero is shown, not hidden.** A snapshot with no developer tickets renders `**Needs you (ready-for-developer):** 0`, and the section contains no `| Ticket | Title | Waiting on | Holding up |` line.
+- [x] **Nothing existing is weakened.** Every existing test in `tests/test_morning_report.py`, including `test_render_morning_report_no_person_names`, passes unchanged. None are deleted or edited.
 
 Gates, in CI order: `ruff check .`, `python scripts/check_tests_first.py`, `pytest -q`.
 
 ## Comments
+
+2026-09-25: Implemented Needs-you section in morning report per-repo section reusing run_report.needs_you_table.
+- AC1: Placement and count line `**Needs you (ready-for-developer):** N` rendered after Held block and before Windows-waiting block, followed by a blank line; tested in `test_render_morning_report_needs_you_placement_and_count`.
+- AC2: When N > 0, shared table lines from `run_report.needs_you_table` follow lead line; tested in `test_render_morning_report_needs_you_same_table_same_renderer`.
+- AC3: Morning report row matches run report row character-for-character; tested in `test_render_morning_report_needs_you_never_two_answers`.
+- AC4: When N == 0, renders count 0 and omits table lines; tested in `test_render_morning_report_needs_you_zero_shown_not_hidden`.
+- AC5: All existing tests pass unchanged; full suite passes with 324 tests green.

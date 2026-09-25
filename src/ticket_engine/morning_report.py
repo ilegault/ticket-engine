@@ -4,8 +4,9 @@ WHY THIS EXISTS
 ---------------
 Ticket 08 and Phase 1 Spec §Reporting (User Stories 49-50) require a daily
 summary issue in the engine repo listing, per target repo: merged PRs,
-escalated PRs (with brief links), held PRs (with links), windows-waiting
-frontier tickets, paused status, parse findings, and Jules quota standing.
+escalated PRs (with brief links), held PRs (with links), ready-for-developer
+tickets (Ticket 17), windows-waiting frontier tickets, paused status,
+parse findings, and Jules quota standing.
 
 ADR 0002 (everything public; privacy by checks) requires that the rendered
 text never includes a real person's name, a secret, or a denylist entry.
@@ -22,6 +23,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from ticket_engine.dispatch import DispatchCore, MergedPR, OpenPR, WorldSnapshot
+from ticket_engine.run_report import needs_you_table
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +98,13 @@ def _render_repo_section(
         ticket = ticket_map.get(pr.ticket_number)
         title = ticket.title if ticket else f"Ticket {pr.ticket_number}"
         lines.append(f"- {link}: {title}")
+    lines.append("")
+
+    # --- Needs you (ready-for-developer) ---
+    dev_tickets = [t for t in snapshot.tickets if t.status == "ready-for-developer"]
+    lines.append(f"**Needs you (ready-for-developer):** {len(dev_tickets)}")
+    if dev_tickets:
+        lines.extend(needs_you_table(snapshot.tickets))
     lines.append("")
 
     # --- Windows-waiting (frontier tickets with runner=windows) ---
