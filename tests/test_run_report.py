@@ -26,6 +26,7 @@ from ticket_engine.run_report import (
     build_run_report,
     find_duplicate_numbers,
     held_up_by,
+    needs_you_table,
     write_step_summary,
 )
 
@@ -77,6 +78,45 @@ def test_developer_ticket_lists_everything_it_transitively_holds_up():
     row = table_row(report, 36)
     assert "Commit the blank EPIF template" in row
     assert row.endswith("| 37, 41, 45, 46 |")
+
+
+def test_needs_you_table_header_and_structure():
+    report = build_run_report(epif_chain(), RunFacts(repo=REPO))
+    assert "| Ticket | Title | Waiting on | Holding up |" in report
+    assert "|---|---|---|---|" in report
+    assert needs_you_table([]) == []
+    assert needs_you_table([ticket(1, "ready-for-agent")]) == []
+
+
+def test_needs_you_table_waiting_on_reuses_unfinished_blockers():
+    tickets = [
+        ticket(34, "ready-for-agent"),
+        ticket(35, "in-progress"),
+        ticket(36, "done"),
+        ticket(43, "ready-for-developer", "34, 35, 36", title="Deploy"),
+    ]
+    report = build_run_report(tickets, RunFacts())
+    assert (
+        table_row(report, 43)
+        == "| 43 | Deploy | 34 (ready-for-agent), 35 (in-progress) | — |"
+    )
+
+
+def test_needs_you_table_all_blockers_done_says_ready_now():
+    report = build_run_report(epif_chain(), RunFacts())
+    assert (
+        table_row(report, 36)
+        == "| 36 | Commit the blank EPIF template | ready now | 37, 41, 45, 46 |"
+    )
+
+
+def test_needs_you_table_missing_and_legacy_blockers():
+    t48 = ticket(48, "ready-for-developer", "99", title="Make folder")
+    t49 = ticket(49, "human-task", title="Earlier step")
+    t50 = ticket(50, "ready-for-developer", "49", title="Bench step")
+    report = build_run_report([t48, t49, t50], RunFacts())
+    assert table_row(report, 48) == "| 48 | Make folder | 99 (no such ticket) | — |"
+    assert table_row(report, 50) == "| 50 | Bench step | 49 (human-task) | — |"
 
 
 def test_waiting_agent_tickets_name_the_unfinished_blocker_and_its_status():
