@@ -26,6 +26,7 @@ from ticket_engine.github import GitHubClient
 from ticket_engine.jules import JulesClient
 from ticket_engine.live_dispatch import LiveDispatcher
 from ticket_engine.parser import Ticket, TicketParser
+from ticket_engine.run_report import build_run_report, write_step_summary
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,12 @@ def run_live_dispatch_cli(
     print(f"Dispatched {len(started)} ticket(s) to Jules workers.")
     for t in started:
         print(f"  - Started ticket {t.number:02d}: {t.title}")
+
+    # End-of-run report: to the log, and to the Actions run summary page when present.
+    report = build_run_report(tickets, dispatcher.last_run)
+    print()
+    print(report)
+    write_step_summary(report)
     return 0
 
 

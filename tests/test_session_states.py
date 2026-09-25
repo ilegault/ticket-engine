@@ -31,7 +31,9 @@ from ticket_engine.live_dispatch import LiveDispatcher
 from ticket_engine.parser import Ticket
 
 REPO = "owner/Slackbot"
-NOW = datetime.datetime(2026, 9, 24, 12, 0, tzinfo=datetime.UTC)
+# Real clock, not a fixed date: the live-dispatch tests below count sessions against
+# datetime.now(), so a fixed NOW drifts out of the 24h window and the cap test rots.
+NOW = datetime.datetime.now(datetime.UTC).replace(microsecond=0)
 
 
 def make_ticket(number: int, status: str = "ready-for-agent") -> Ticket:

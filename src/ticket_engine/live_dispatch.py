@@ -36,6 +36,7 @@ from ticket_engine.dispatch import (
     is_live_session_state,
 )
 from ticket_engine.prompt import assemble_prompt, load_ticket_skill
+from ticket_engine.run_report import RunFacts
 
 if TYPE_CHECKING:
     from ticket_engine.github import GitHubClient
@@ -64,6 +65,10 @@ class LiveDispatcher:
         self.paused = paused
         self._skill_text = skill_text
         self.core = DispatchCore()
+        # Error text from the last failed TICKET_ENGINE_PAUSED read; "" when it worked.
+        self.pause_check_error = ""
+        # What the last dispatch() observed, for the end-of-run report.
+        self.last_run = RunFacts(repo=repo)
 
     @property
     def skill_text(self) -> str:
@@ -73,6 +78,7 @@ class LiveDispatcher:
 
     def check_paused_state(self) -> bool:
         """Check TICKET_ENGINE_PAUSED from repository variables."""
+        self.pause_check_error = ""
         try:
             val = self.github_client.get_repo_variable(self.repo, "TICKET_ENGINE_PAUSED")
             if isinstance(val, str):
@@ -81,6 +87,7 @@ class LiveDispatcher:
                 self.paused = False
         except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
             logger.warning("Failed to read TICKET_ENGINE_PAUSED variable: %s", exc)
+            self.pause_check_error = str(exc)
         return self.paused
 
     def dispatch_escalations_and_stale_claims(
@@ -192,8 +199,22 @@ class LiveDispatcher:
         return executed_actions
 
     def dispatch(self, tickets: list[Ticket]) -> list[Ticket]:
-        """Evaluate frontier and launch Jules sessions for eligible tickets."""
+        """Evaluate frontier and launch Jules sessions for eligible tickets.
+
+        Records what it saw in `self.last_run` on every path, including early returns,
+        so the end-of-run report can say why nothing started.
+        """
         self.check_paused_state()
+        facts = RunFacts(
+            repo=self.repo,
+            paused=self.paused,
+            pause_check_error=self.pause_check_error,
+            jules_limit=self.config.jules_limit,
+            jules_reserve=self.config.jules_reserve,
+            daily_cap=self.config.daily_cap,
+            concurrency=self.config.concurrency,
+        )
+        self.last_run = facts
         if self.paused:
             logger.info("Repository %s is paused (TICKET_ENGINE_PAUSED). Starting nothing.", self.repo)
             return []
@@ -205,6 +226,7 @@ class LiveDispatcher:
             )
         except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
             logger.error("Failed to fetch default branch SHA for %s: %s", self.repo, exc)
+            facts.stopped_early = f"could not read the `{self.config.default_branch}` branch ({exc})"
             return []
 
         # 2. Fetch existing claims from GitHub
@@ -217,8 +239,10 @@ class LiveDispatcher:
         # 3. Fetch recent Jules sessions for quota counting
         try:
             recent_jules_count = self.jules_client.count_recent_sessions(hours=24)
+            facts.jules_sessions_24h = recent_jules_count
         except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
             logger.error("Failed to query Jules sessions for quota: %s", exc)
+            facts.stopped_early = f"could not query Jules sessions for the quota ({exc})"
             return []
 
         # 4. Count starts in last 24h for this repo from Jules sessions
@@ -279,6 +303,8 @@ class LiveDispatcher:
                 logger.error("Failed to release completed claim %s: %s", claim_ref, exc)
 
         existing_claims -= released_claims
+        facts.repo_starts_24h = repo_starts_24h
+        facts.claims_in_flight = sorted(existing_claims)
 
         # 5. Build WorldSnapshot and evaluate pure core
         snapshot = WorldSnapshot(
@@ -308,6 +334,7 @@ class LiveDispatcher:
                 sha=base_sha,
             )
             if not claim_created:
+                facts.claim_collisions.append(ticket.number)
                 logger.info(
                     "Claim collision for ticket %02d (%s). Skipped.",
                     ticket.number,
@@ -335,12 +362,14 @@ class LiveDispatcher:
                     require_plan_approval=False,
                 )
                 started_tickets.append(ticket)
+                facts.started.append(ticket)
                 logger.info(
                     "Successfully started Jules session for ticket %02d: %s",
                     ticket.number,
                     ticket.title,
                 )
             except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                facts.start_failures.append(ticket.number)
                 logger.error(
                     "Failed to create Jules session for ticket %02d: %s",
                     ticket.number,

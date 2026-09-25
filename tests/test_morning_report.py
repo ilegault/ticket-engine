@@ -190,7 +190,7 @@ def test_render_morning_report_blocked_windows_ticket_not_shown():
             in_windows = False
         if in_windows:
             windows_section_lines.append(line)
-    assert not any("ticket 9" in l for l in windows_section_lines)
+    assert not any("ticket 9" in ln for ln in windows_section_lines)
 
 
 # ---------------------------------------------------------------------------
