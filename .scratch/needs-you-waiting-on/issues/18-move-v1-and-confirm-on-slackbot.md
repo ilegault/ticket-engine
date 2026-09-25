@@ -4,7 +4,7 @@
 
 **Blocked by:** 16, 17
 
-**Status:** ready-for-developer
+**Status:** done
 
 **Runner:** any
 
@@ -14,9 +14,9 @@
 
 ## Acceptance criteria
 
-- [ ] `v1` moved to the merge commit that includes 16 and 17 (`git tag -f v1 <sha>` then `git push -f origin v1`), and `git ls-remote --tags origin v1` shows that sha.
-- [ ] A manually triggered Slackbot Dispatch run's summary page shows the Needs-you header `| Ticket | Title | Waiting on | Holding up |`.
-- [ ] In that run, the row for Slackbot's template-deploy developer ticket lists its unfinished blockers with statuses (or `ready now` if they have all landed by then).
-- [ ] The next morning-report issue shows a `**Needs you (ready-for-developer):**` line under the Slackbot section.
+- [x] `v1` moved to the merge commit that includes 16 and 17 (`git tag -f v1 <sha>` then `git push -f origin v1`), and `git ls-remote --tags origin v1` shows that sha.
+- [x] A manually triggered Slackbot Dispatch run's summary page shows the Needs-you header `| Ticket | Title | Waiting on | Holding up |`.
+- [x] In that run, the row for Slackbot's template-deploy developer ticket lists its unfinished blockers with statuses (or `ready now` if they have all landed by then).
+- [x] The next morning-report issue shows a `**Needs you (ready-for-developer):**` line under the Slackbot section.
 
 ## Comments
