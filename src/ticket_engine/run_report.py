@@ -117,6 +117,28 @@ def unfinished_blockers(ticket: Ticket, tickets: Sequence[Ticket]) -> list[str]:
     return reasons
 
 
+def needs_you_table(tickets: Sequence[Ticket]) -> list[str]:
+    """Render the markdown table lines for ready-for-developer tickets.
+
+    Shows what each developer ticket is waiting on and what it is holding up.
+    Returns an empty list when there are no developer tickets. Pure.
+    """
+    dev = sorted((t for t in tickets if t.status == "ready-for-developer"), key=lambda t: t.number)
+    if not dev:
+        return []
+    lines = [
+        "| Ticket | Title | Waiting on | Holding up |",
+        "|---|---|---|---|",
+    ]
+    for t in dev:
+        waiting = unfinished_blockers(t, tickets)
+        waiting_txt = ", ".join(waiting) if waiting else "ready now"
+        held = held_up_by(t.number, tickets)
+        held_txt = ", ".join(f"{n:02d}" for n in held) if held else "—"
+        lines.append(f"| {_label(t)} | {t.title} | {waiting_txt} | {held_txt} |")
+    return lines
+
+
 def _limits_line(facts: RunFacts) -> str:
     bits: list[str] = []
     if facts.jules_sessions_24h is not None:
@@ -198,19 +220,14 @@ def build_run_report(tickets: Sequence[Ticket], facts: RunFacts) -> str:
         lines.append("")
 
     # --- Needs you ---------------------------------------------------------
-    started_numbers = {t.number for t in facts.started}
-    dev = sorted((t for t in tickets if t.status == "ready-for-developer"), key=lambda t: t.number)
-    if dev:
+    dev_table = needs_you_table(tickets)
+    if dev_table:
         lines.append("### 🧑‍🔧 Needs you (`ready-for-developer`)")
-        lines.append("| Ticket | Title | Holding up |")
-        lines.append("|---|---|---|")
-        for t in dev:
-            held = held_up_by(t.number, tickets)
-            held_txt = ", ".join(f"{n:02d}" for n in held) if held else "—"
-            lines.append(f"| {_label(t)} | {t.title} | {held_txt} |")
+        lines.extend(dev_table)
         lines.append("")
 
     # --- Waiting agent tickets --------------------------------------------
+    started_numbers = {t.number for t in facts.started}
     waiting: list[tuple[Ticket, list[str]]] = []
     for t in sorted(tickets, key=lambda t: t.number):
         if t.status != "ready-for-agent" or t.number in started_numbers:
