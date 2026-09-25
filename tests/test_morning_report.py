@@ -10,10 +10,12 @@ WorldSnapshot and asserts on the returned string — no I/O, no mocking.
 from __future__ import annotations
 
 import datetime
+import pathlib
 
 from ticket_engine.dispatch import MergedPR, OpenPR, WorldSnapshot
 from ticket_engine.morning_report import MorningReportData, render_morning_report
-from ticket_engine.parser import ParseFinding, Ticket
+from ticket_engine.parser import ParseFinding, Ticket, TicketParser
+from ticket_engine.run_report import RunFacts, build_run_report
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -38,6 +40,26 @@ def _ticket(
         blocked_by=blocked_by or [],
         findings=findings or [],
     )
+
+
+def _parsed_ticket(
+    number: int,
+    status: str,
+    blocked_by: str = "None",
+    effort: str = "effort-a",
+    title: str | None = None,
+) -> Ticket:
+    """Parse a real ticket file body, the same way the dispatcher reads the repo."""
+    title = title or f"Ticket {number}"
+    text = f"# {number}: {title}\n\n**Status:** {status}\n\n**Blocked by:** {blocked_by}\n"
+    path = pathlib.Path(".scratch") / effort / "issues" / f"{number:02d}-t.md"
+    return TicketParser().parse_text(text, filename=path.name, path=path)
+
+
+def _table_row(report: str, number: int) -> str:
+    rows = [ln for ln in report.splitlines() if ln.startswith(f"| {number:02d} |")]
+    assert rows, f"no table row for {number:02d} in:\n{report}"
+    return rows[0]
 
 
 def _open_pr(number: int, ticket_number: int, labels: tuple[str, ...] = ()) -> OpenPR:
@@ -326,3 +348,80 @@ def test_render_morning_report_clean_repo_shows_section():
     snapshot = WorldSnapshot(repo_name="owner/quiet-repo")
     report = render_morning_report(_data([snapshot]))
     assert "owner/quiet-repo" in report
+
+
+# ---------------------------------------------------------------------------
+# Ticket 17: Needs you (ready-for-developer)
+# ---------------------------------------------------------------------------
+
+
+def test_render_morning_report_needs_you_placement_and_count():
+    t1 = _parsed_ticket(10, "ready-for-developer")
+    t2 = _parsed_ticket(20, "ready-for-developer")
+    snapshot = WorldSnapshot(
+        repo_name="owner/repo",
+        tickets=[t1, t2],
+    )
+    report = render_morning_report(_data([snapshot]))
+
+    assert "**Needs you (ready-for-developer):** 2" in report
+
+    held_idx = report.find("**Held (awaiting approval):**")
+    needs_idx = report.find("**Needs you (ready-for-developer):** 2")
+    windows_idx = report.find("**Windows-waiting:**")
+
+    assert held_idx != -1
+    assert needs_idx != -1
+    assert windows_idx != -1
+    assert held_idx < needs_idx < windows_idx
+
+    # Lead line followed by table and trailing blank line before Windows-waiting
+    lines = report.splitlines()
+    needs_line_idx = lines.index("**Needs you (ready-for-developer):** 2")
+    assert lines[needs_line_idx + 1] == "| Ticket | Title | Waiting on | Holding up |"
+    windows_line_idx = lines.index("**Windows-waiting:** 0")
+    assert lines[windows_line_idx - 1] == ""
+
+
+def test_render_morning_report_needs_you_same_table_same_renderer():
+    t1 = _parsed_ticket(34, "ready-for-agent")
+    t2 = _parsed_ticket(36, "done")
+    t3 = _parsed_ticket(43, "ready-for-developer", blocked_by="34, 36", title="Ticket 43")
+    snapshot = WorldSnapshot(
+        repo_name="owner/repo",
+        tickets=[t1, t2, t3],
+    )
+    report = render_morning_report(_data([snapshot]))
+    assert "| Ticket | Title | Waiting on | Holding up |" in report
+    assert "|---|---|---|---|" in report
+    assert _table_row(report, 43) == "| 43 | Ticket 43 | 34 (ready-for-agent) | — |"
+
+
+def test_render_morning_report_needs_you_never_two_answers():
+    t34 = _parsed_ticket(34, "ready-for-agent")
+    t36 = _parsed_ticket(36, "done")
+    t43 = _parsed_ticket(43, "ready-for-developer", blocked_by="34, 36", title="Ticket 43")
+    tickets = [t34, t36, t43]
+    snapshot = WorldSnapshot(repo_name="owner/repo", tickets=tickets)
+
+    morning = render_morning_report(_data([snapshot]))
+    run = build_run_report(tickets, RunFacts())
+
+    expected = "| 43 | Ticket 43 | 34 (ready-for-agent) | — |"
+    assert _table_row(morning, 43) == expected
+    assert _table_row(morning, 43) == _table_row(run, 43)
+
+
+def test_render_morning_report_needs_you_zero_shown_not_hidden():
+    snapshot = WorldSnapshot(
+        repo_name="owner/repo",
+        tickets=[_parsed_ticket(1, "ready-for-agent")],
+    )
+    report = render_morning_report(_data([snapshot]))
+    assert "**Needs you (ready-for-developer):** 0" in report
+    assert "| Ticket | Title | Waiting on | Holding up |" not in report
+
+    lines = report.splitlines()
+    idx = lines.index("**Needs you (ready-for-developer):** 0")
+    assert lines[idx + 1] == ""
+    assert lines[idx + 2] == "**Windows-waiting:** 0"
