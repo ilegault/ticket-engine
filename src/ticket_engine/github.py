@@ -414,4 +414,43 @@ class GitHubClient:
                 return []
             raise
 
+    def create_issue(
+        self, repo: str, title: str, body: str, labels: list[str]
+    ) -> int:
+        """Create an issue via REST POST /repos/{repo}/issues.
+
+        Returns the created issue number.
+        """
+        endpoint = f"/repos/{repo}/issues"
+        payload: dict[str, Any] = {
+            "title": title,
+            "body": body,
+            "labels": labels,
+        }
+        res = self._request("POST", endpoint, payload)
+        if isinstance(res, dict) and "number" in res:
+            return int(res["number"])
+        msg = f"Failed to create issue in repo {repo}: unexpected response {res!r}"
+        raise ValueError(msg)
+
+    def list_open_issues(self, repo: str, label: str) -> list[dict[str, Any]]:
+        """List open issues with the given label."""
+        return self.list_issues(repo=repo, state="open", labels=label)
+
+    def find_open_issue(self, repo: str, label: str, title: str) -> int | None:
+        """Find an open issue with the exact title and label."""
+        for item in self.list_open_issues(repo, label):
+            if isinstance(item, dict) and item.get("title") == title:
+                num = item.get("number")
+                if num is not None:
+                    return int(num)
+        return None
+
+    def close_issue(self, repo: str, number: int) -> bool:
+        """Close an issue via PATCH /repos/{repo}/issues/{number}."""
+        endpoint = f"/repos/{repo}/issues/{number}"
+        self._request("PATCH", endpoint, {"state": "closed"})
+        return True
+
+
 

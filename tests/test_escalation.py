@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import datetime
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 from ticket_engine.config import RepoConfig
@@ -329,4 +330,156 @@ def test_github_client_methods_for_escalation_and_claims():
         res = client.set_repo_variable("owner/repo", "TICKET_ENGINE_PAUSED", "true")
         assert res is True
         mock_req.assert_called_once_with("PATCH", "/repos/owner/repo/actions/variables/TICKET_ENGINE_PAUSED", {"name": "TICKET_ENGINE_PAUSED", "value": "true"})
+
+
+def test_escalate_pr_action_creates_escalation_issue_and_second_run_does_not():
+    mock_github = MagicMock()
+    mock_github.get_repo_variable.return_value = None
+    mock_github.get_file_contents.return_value = {"content": "raw", "sha": "sha1"}
+    mock_github.find_open_issue.return_value = None
+    mock_github.create_issue.return_value = 101
+
+    mock_jules = MagicMock()
+
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=RepoConfig(),
+    )
+
+    ticket = make_ticket(7)
+    open_pr = OpenPR(
+        number=12,
+        branch="ticket/phase-1-07-test-ticket-7",
+        ticket_number=7,
+        failed_ci_count=3,
+        head_sha="head123",
+        ci_log_excerpt="SyntaxError: invalid syntax",
+    )
+
+    # 1. First run: issue is not open yet -> creates issue
+    actions = dispatcher.dispatch_escalations_and_stale_claims(
+        tickets=[ticket],
+        open_prs=[open_pr],
+    )
+    assert len(actions) == 1
+
+    mock_github.find_open_issue.assert_called_once_with(
+        "owner/repo", "escalation", "Escalation: phase-1-07 test-ticket-7"
+    )
+    mock_github.create_issue.assert_called_once_with(
+        repo="owner/repo",
+        title="Escalation: phase-1-07 test-ticket-7",
+        body="@owner\nTicket: owner/repo #07\nLink: https://github.com/owner/repo/pull/12\nReason: ci_failed\n",
+        labels=["escalation"],
+    )
+
+    # 2. Second run: issue is already open (find_open_issue returns issue number)
+    mock_github.find_open_issue.reset_mock()
+    mock_github.create_issue.reset_mock()
+    mock_github.find_open_issue.return_value = 101
+
+    dispatcher.dispatch_escalations_and_stale_claims(
+        tickets=[ticket],
+        open_prs=[open_pr],
+    )
+    mock_github.find_open_issue.assert_called_once_with(
+        "owner/repo", "escalation", "Escalation: phase-1-07 test-ticket-7"
+    )
+    mock_github.create_issue.assert_not_called()
+
+
+def test_no_free_text_reaches_issue_and_failed_create_issue_recorded():
+    mock_github = MagicMock()
+    mock_github.get_repo_variable.return_value = None
+    mock_github.get_file_contents.return_value = {"content": "raw", "sha": "sha1"}
+    mock_github.find_open_issue.return_value = None
+    # Simulate failed create_issue
+    err = urllib.error.HTTPError(
+        url="https://api.github.com/repos/owner/repo/issues",
+        code=403,
+        msg="Forbidden",
+        hdrs={},
+        fp=None,
+    )
+    mock_github.create_issue.side_effect = err
+
+    mock_jules = MagicMock()
+
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=RepoConfig(),
+    )
+
+    secret = "SECRET-TOKEN-abc"
+    ticket = make_ticket(7)
+    open_pr = OpenPR(
+        number=12,
+        branch="ticket/phase-1-07-test-ticket-7",
+        ticket_number=7,
+        failed_ci_count=3,
+        head_sha="head123",
+        ci_log_excerpt=secret,
+    )
+
+    # Should not raise exception
+    dispatcher.dispatch_escalations_and_stale_claims(
+        tickets=[ticket],
+        open_prs=[open_pr],
+    )
+
+    # Verify secret is not in title or body passed to create_issue
+    assert mock_github.create_issue.called
+    kwargs = mock_github.create_issue.call_args[1]
+    assert secret not in kwargs["title"]
+    assert secret not in kwargs["body"]
+
+    # Verify failure recorded in issue_failures
+    assert len(dispatcher.last_run.issue_failures) == 1
+    assert dispatcher.last_run.issue_failures[0][0] == 7
+    assert "Forbidden" in dispatcher.last_run.issue_failures[0][1] or "403" in dispatcher.last_run.issue_failures[0][1]
+
+
+def test_dispatch_closes_resolved_escalation_issues():
+    mock_github = MagicMock()
+    mock_github.get_repo_variable.return_value = None
+    mock_github.get_default_branch_sha.return_value = "base_sha"
+    mock_github.list_claim_branches.return_value = ["claim/phase-1/03"]
+    mock_github.list_open_issues.return_value = [
+        {"number": 101, "title": "Escalation: phase-1-01 test-ticket-1"},
+        {"number": 102, "title": "Escalation: phase-1-02 test-ticket-2"},
+        {"number": 103, "title": "Escalation: phase-1-03 test-ticket-3"},
+    ]
+
+    mock_jules = MagicMock()
+    mock_jules.count_recent_sessions.return_value = 0
+    mock_jules.list_sessions.return_value = []
+
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=RepoConfig(),
+    )
+
+    # Ticket 1 is done
+    t1 = make_ticket(1, status="done")
+    # Ticket 2 is ready-for-agent (not done), but its claim branch is missing
+    t2 = make_ticket(2, status="ready-for-agent")
+    # Ticket 3 is in-progress (not done), and its claim branch exists
+    t3 = make_ticket(3, status="in-progress")
+
+    dispatcher.dispatch([t1, t2, t3])
+
+    # Issue 101 closed because ticket 1 is done on default branch
+    # Issue 102 closed because claim/phase-1/02 is not in list_claim_branches
+    # Issue 103 left alone because ticket 3 is not done and claim branch exists
+    closed_numbers = [call[0][1] for call in mock_github.close_issue.call_args_list]
+    assert 101 in closed_numbers
+    assert 102 in closed_numbers
+    assert 103 not in closed_numbers
+
 

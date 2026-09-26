@@ -31,7 +31,13 @@ import logging
 import urllib.error
 from typing import TYPE_CHECKING, Any
 
-from ticket_engine.box_status import BoxStatus, parse_box_status
+from ticket_engine.box_status import (
+    BoxStatus,
+    EscalationReason,
+    TicketRef,
+    parse_box_status,
+    render_escalation_issue,
+)
 from ticket_engine.config import RepoConfig
 from ticket_engine.dispatch import (
     NO_BOX,
@@ -210,6 +216,29 @@ class LiveDispatcher:
                 except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
                     logger.warning("Failed to add label to PR #%s: %s", action.pr_number, exc)
 
+                # 6. Open escalation issue if not already open
+                owner = self.repo.split("/")[0]
+                title, body = render_escalation_issue(
+                    ref=TicketRef(repo=self.repo, number=ticket.number),
+                    effort=effort,
+                    title_slug=ticket.slug,
+                    link=f"https://github.com/{self.repo}/pull/{action.pr_number}",
+                    reason=EscalationReason.ci_failed,
+                    owner=owner,
+                )
+                try:
+                    existing = self.github_client.find_open_issue(self.repo, "escalation", title)
+                    if existing is None:
+                        self.github_client.create_issue(
+                            repo=self.repo,
+                            title=title,
+                            body=body,
+                            labels=["escalation"],
+                        )
+                except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                    logger.error("Failed to create escalation issue for ticket %02d: %s", ticket.number, exc)
+                    self.last_run.issue_failures.append((ticket.number, str(exc)))
+
                 executed_actions.append(action)
 
             elif isinstance(action, ReleaseClaimAction):
@@ -311,6 +340,31 @@ class LiveDispatcher:
                     facts.session_failures.append((num, "escalate", str(exc)))
                     continue
                 facts.session_escalations.append((num, action.claim_ref, action.replies))
+                owner = self.repo.split("/")[0]
+                effort = action.ticket.effort or "phase-1"
+                title, body = render_escalation_issue(
+                    ref=TicketRef(repo=self.repo, number=num),
+                    effort=effort,
+                    title_slug=action.ticket.slug,
+                    link=f"https://github.com/{self.repo}/tree/{action.claim_ref}",
+                    reason=EscalationReason.kept_asking,
+                    owner=owner,
+                )
+                try:
+                    existing = self.github_client.find_open_issue(self.repo, "escalation", title)
+                    if existing is None:
+                        self.github_client.create_issue(
+                            repo=self.repo,
+                            title=title,
+                            body=body,
+                            labels=["escalation"],
+                        )
+                except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                    logger.error("Failed to create escalation issue for ticket %02d: %s", num, exc)
+                    facts.issue_failures.append((num, str(exc)))
+                    if self.last_run is not facts:
+                        self.last_run.issue_failures.append((num, str(exc)))
+
                 try:
                     self.jules_client.send_message(action.session_name, action.stop_message)
                 except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
@@ -319,6 +373,68 @@ class LiveDispatcher:
 
             elif isinstance(action, EscalatedSessionStillWaiting):
                 facts.still_escalated.append((action.ticket_number, action.claim_ref))
+
+    def _close_resolved_escalation_issues(
+        self,
+        tickets: list[Ticket],
+        claim_branches: set[str],
+    ) -> None:
+        """Close open escalation issues for tickets that landed or whose claims were dropped."""
+        try:
+            open_issues = self.github_client.list_open_issues(self.repo, "escalation")
+        except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+            logger.warning("Failed to list open escalation issues for %s: %s", self.repo, exc)
+            return
+
+        ticket_by_number = {t.number: t for t in tickets}
+
+        for issue in open_issues:
+            if not isinstance(issue, dict):
+                continue
+            title = issue.get("title", "")
+            issue_number = issue.get("number")
+            if not issue_number or not isinstance(title, str):
+                continue
+
+            parts = title.strip().split()
+            if len(parts) < 2 or parts[0] != "Escalation:":
+                continue
+
+            token = parts[1]
+            if "-" in token:
+                effort_from_title, num_str = token.rsplit("-", 1)
+            else:
+                effort_from_title, num_str = None, token
+
+            if not num_str.isdigit():
+                continue
+
+            ticket_num = int(num_str)
+            ticket = ticket_by_number.get(ticket_num)
+
+            effort = effort_from_title or (ticket.effort if ticket else None) or "phase-1"
+            claim_ref = f"claim/{effort}/{ticket_num:02d}"
+
+            should_close = False
+            if ticket is not None and ticket.is_done() or claim_ref not in claim_branches:
+                should_close = True
+
+            if should_close:
+                try:
+                    self.github_client.close_issue(self.repo, int(issue_number))
+                    logger.info(
+                        "Closed resolved escalation issue #%s for ticket %02d on %s",
+                        issue_number,
+                        ticket_num,
+                        self.repo,
+                    )
+                except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                    logger.error(
+                        "Failed to close escalation issue #%s for ticket %02d: %s",
+                        issue_number,
+                        ticket_num,
+                        exc,
+                    )
 
     def dispatch(self, tickets: list[Ticket]) -> list[Ticket]:
         """Evaluate frontier and launch Jules sessions for eligible tickets.
@@ -437,6 +553,7 @@ class LiveDispatcher:
                 logger.error("Failed to release completed claim %s: %s", claim_ref, exc)
 
         existing_claims -= released_claims
+        self._close_resolved_escalation_issues(tickets, existing_claims)
         facts.repo_starts_24h = repo_starts_24h
         facts.claims_in_flight = sorted(existing_claims)
 
@@ -522,6 +639,34 @@ class LiveDispatcher:
                 )
             )
 
+        # Read box status issue if box is enabled (ADR 0006)
+        box: BoxStatus | None | NoBox = NO_BOX
+        box_status_error = ""
+        if self.config.box_enabled:
+            try:
+                issues = self.github_client.list_issues(
+                    repo=ENGINE_REPO,
+                    state="open",
+                    labels="engine:box-status",
+                )
+                box_issue = None
+                for iss in issues:
+                    if isinstance(iss, dict):
+                        box_issue = iss
+                        break
+                if box_issue:
+                    body = str(box_issue.get("body") or "")
+                    box = parse_box_status(body)
+                    if box is None:
+                        box_status_error = "unparseable box status body"
+                else:
+                    box = None
+                    box_status_error = "no open issue labelled engine:box-status found"
+            except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                logger.warning("Failed to read box status issue from %s: %s", ENGINE_REPO, exc)
+                box = None
+                box_status_error = str(exc)
+
         # 5. Build WorldSnapshot and evaluate pure core
         snapshot = WorldSnapshot(
             tickets=tickets,
@@ -535,6 +680,11 @@ class LiveDispatcher:
             box_status_error=box_status_error,
         )
         result = self.core.evaluate(snapshot)
+
+        facts.box_state = result.box_state
+        facts.box_checked_in = box.checked_in_at if isinstance(box, BoxStatus) else None
+        facts.left_for_box = result.left_for_box
+        facts.box_status_error = box_status_error
 
         # Carry out stale claim releases
         for action in result.actions:

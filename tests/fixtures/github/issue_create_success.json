@@ -1,0 +1,14 @@
+{
+  "id": 1001,
+  "node_id": "I_kwDOxxxxxx",
+  "number": 42,
+  "title": "Escalation: phase-1-07 test-ticket-7",
+  "state": "open",
+  "body": "@owner\nTicket: owner/repo #07\nLink: https://github.com/owner/repo/pull/12\nReason: ci_failed\n",
+  "labels": [
+    {
+      "id": 2001,
+      "name": "escalation"
+    }
+  ]
+}

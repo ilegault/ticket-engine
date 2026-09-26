@@ -199,3 +199,91 @@ def test_get_branch_head_time_404_returns_none():
         result = client.get_branch_head_time(repo="owner/repo", branch="missing")
         assert result is None
 
+
+def test_create_issue_success_returns_number():
+    fixture_json = load_fixture("issue_create_success.json")
+    client = GitHubClient(token="mock_token")
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = fixture_json.encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        result = client.create_issue(
+            repo="owner/repo",
+            title="Escalation: phase-1-07 test-ticket-7",
+            body="@owner\nTicket: owner/repo #07\nLink: https://github.com/owner/repo/pull/12\nReason: ci_failed\n",
+            labels=["escalation"],
+        )
+
+        assert result == 42
+        mock_urlopen.assert_called_once()
+        req = mock_urlopen.call_args[0][0]
+        assert req.method == "POST"
+        assert req.full_url == "https://api.github.com/repos/owner/repo/issues"
+        payload = json.loads(req.data.decode("utf-8"))
+        assert payload["title"] == "Escalation: phase-1-07 test-ticket-7"
+        assert payload["labels"] == ["escalation"]
+
+
+def test_find_open_issue_exact_title_match():
+    fixture_json = load_fixture("issues_list_open.json")
+    client = GitHubClient(token="mock_token")
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = fixture_json.encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        found = client.find_open_issue(
+            repo="owner/repo",
+            label="escalation",
+            title="Escalation: phase-1-07 test-ticket-7",
+        )
+        assert found == 42
+
+        not_found = client.find_open_issue(
+            repo="owner/repo",
+            label="escalation",
+            title="Nonexistent issue",
+        )
+        assert not_found is None
+
+
+def test_close_issue_success():
+    fixture_json = load_fixture("issue_close_success.json")
+    client = GitHubClient(token="mock_token")
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = fixture_json.encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        client.close_issue(repo="owner/repo", number=42)
+
+        mock_urlopen.assert_called_once()
+        req = mock_urlopen.call_args[0][0]
+        assert req.method == "PATCH"
+        assert req.full_url == "https://api.github.com/repos/owner/repo/issues/42"
+        payload = json.loads(req.data.decode("utf-8"))
+        assert payload["state"] == "closed"
+
+
+def test_list_open_issues_success():
+    fixture_json = load_fixture("issues_list_open.json")
+    client = GitHubClient(token="mock_token")
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = fixture_json.encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        issues = client.list_open_issues(repo="owner/repo", label="escalation")
+        assert len(issues) == 2
+        assert issues[0]["number"] == 42
+        req = mock_urlopen.call_args[0][0]
+        assert req.method == "GET"
+        assert "state=open" in req.full_url
+        assert "labels=escalation" in req.full_url
+
+

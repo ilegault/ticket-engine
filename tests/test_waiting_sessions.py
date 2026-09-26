@@ -252,6 +252,10 @@ def fakes(sessions: list[dict], activities: dict[str, list[dict]], paused: str |
     github.list_claim_branches.return_value = [f"claim/{EFFORT}/46"]
     github.get_repo_variable.return_value = paused
     github.get_file_contents.return_value = {"content": TICKET_TEXT, "sha": "blobsha"}
+    github.find_open_issue.return_value = None
+    github.create_issue.return_value = 101
+    github.list_open_issues.return_value = []
+    github.close_issue.return_value = True
     jules = MagicMock()
     jules.count_recent_sessions.return_value = 3
     jules.list_sessions.return_value = sessions
@@ -312,6 +316,15 @@ def test_live_dispatch_escalates_on_the_claim_branch_then_stops_the_session():
         "ticket and delete the claim branch to retry." in report
     )
     github.delete_branch.assert_not_called()
+    github.find_open_issue.assert_called_once_with(
+        REPO, "escalation", f"Escalation: {EFFORT}-46 epif-dm"
+    )
+    github.create_issue.assert_called_once_with(
+        repo=REPO,
+        title=f"Escalation: {EFFORT}-46 epif-dm",
+        body=f"@owner\nTicket: {REPO} #46\nLink: https://github.com/{REPO}/tree/{claim}\nReason: kept_asking\n",
+        labels=["escalation"],
+    )
 
 
 def test_failed_escalation_commit_does_not_stop_the_session():

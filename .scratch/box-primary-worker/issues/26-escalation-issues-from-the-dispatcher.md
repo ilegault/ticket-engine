@@ -4,7 +4,7 @@
 
 **Blocked by:** 20
 
-**Status:** in-progress
+**Status:** done
 
 **Runner:** any
 
@@ -14,21 +14,28 @@
 
 Adapter tests go in `tests/test_github_adapter.py`, with recorded responses in `tests/fixtures/github/`. Live tests go in `tests/test_escalation.py` and `tests/test_waiting_sessions.py`, using the fakes those files already use. `box_status` and `DispatchCore` are real. Write these tests first and watch them fail.
 
-- [ ] **Adapter.** `GitHubClient` gains:
+- [x] **Adapter.** `GitHubClient` gains:
   - `create_issue(repo, title, body, labels) -> int`, via REST `POST /repos/{repo}/issues`;
   - `find_open_issue(repo, label, title) -> int | None`, via `GET /repos/{repo}/issues?state=open&labels=<label>`, exact title match;
   - `close_issue(repo, number)`, via `PATCH` with `state: closed`.
 
   Copy `add_issue_labels` for request shape and error handling. There is one recorded-response test per method.
-- [ ] **Opened on PR escalation.** When `dispatch_escalations_and_stale_claims` carries out an `EscalatePRAction`, and after the escalation commit, it calls `find_open_issue(repo, "escalation", title)` and, if that returns `None`, `create_issue`.
+- [x] **Opened on PR escalation.** When `dispatch_escalations_and_stale_claims` carries out an `EscalatePRAction`, and after the escalation commit, it calls `find_open_issue(repo, "escalation", title)` and, if that returns `None`, `create_issue`.
   - The title and body come from `render_escalation_issue` with reason `ci_failed` and link `https://github.com/<repo>/pull/<NN>`.
   - `owner` is `repo.split("/")[0]`, never a literal.
   - The test asserts the fake's recorded title `Escalation: <effort>-<NN> <slug>`, a body starting `@<owner>`, and labels `["escalation"]`.
   - A second run with the issue already open creates nothing.
-- [ ] **Opened on waiting-session escalation.** `_handle_waiting_sessions` does the same after the escalation commit to the claim branch. It uses reason `kept_asking` and link `https://github.com/<repo>/tree/<claim_ref>`.
-- [ ] **Closed when resolved.** Each `dispatch` run lists open `escalation` issues (new `list_open_issues(repo, label)`). It closes each one whose ticket number (parsed from the title) is `is_done()` on the default branch, or whose `claim/<effort>/<NN>` branch is not in `list_claim_branches`. A test covers both close paths and one open ticket that is left alone.
-- [ ] **No free text reaches the issue.** A test escalates a PR whose fake `ci_log_excerpt` is `"SECRET-TOKEN-abc"` and asserts that string is absent from every recorded issue title and body. A failed `create_issue` is logged and recorded in `RunFacts.session_failures` style (new `issue_failures: list[tuple[int, str]]`), never raised.
+- [x] **Opened on waiting-session escalation.** `_handle_waiting_sessions` does the same after the escalation commit to the claim branch. It uses reason `kept_asking` and link `https://github.com/<repo>/tree/<claim_ref>`.
+- [x] **Closed when resolved.** Each `dispatch` run lists open `escalation` issues (new `list_open_issues(repo, label)`). It closes each one whose ticket number (parsed from the title) is `is_done()` on the default branch, or whose `claim/<effort>/<NN>` branch is not in `list_claim_branches`. A test covers both close paths and one open ticket that is left alone.
+- [x] **No free text reaches the issue.** A test escalates a PR whose fake `ci_log_excerpt` is `"SECRET-TOKEN-abc"` and asserts that string is absent from every recorded issue title and body. A failed `create_issue` is logged and recorded in `RunFacts.session_failures` style (new `issue_failures: list[tuple[int, str]]`), never raised.
 
 Gates, in CI order: `ruff check .`, `python scripts/check_tests_first.py`, `pytest -q`.
 
 ## Comments
+
+2026-09-26: Implemented escalation issues in target repos from the dispatcher.
+- AC 1: GitHubClient gains create_issue, find_open_issue, close_issue, and list_open_issues; tested with recorded response fixtures in tests/test_github_adapter.py.
+- AC 2: EscalatePRAction opens escalation issue via render_escalation_issue (reason ci_failed, link to PR, owner @mention); duplicate creation prevented when already open. Tested in tests/test_escalation.py.
+- AC 3: EscalateWaitingSessionAction opens escalation issue via render_escalation_issue (reason kept_asking, link to claim branch, owner @mention); tested in tests/test_waiting_sessions.py.
+- AC 4: Each dispatch run closes open escalation issues whose tickets are done on the default branch or whose claim branches no longer exist; tested in tests/test_escalation.py.
+- AC 5: Verified no free text reaches issue title/body (tested with secret token); create_issue failures are caught and recorded in RunFacts.issue_failures without raising.

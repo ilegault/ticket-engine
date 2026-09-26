@@ -1,0 +1,14 @@
+[
+  {
+    "id": 1001,
+    "number": 42,
+    "title": "Escalation: phase-1-07 test-ticket-7",
+    "state": "open"
+  },
+  {
+    "id": 1002,
+    "number": 43,
+    "title": "Another issue",
+    "state": "open"
+  }
+]
