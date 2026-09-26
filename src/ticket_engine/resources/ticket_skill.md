@@ -87,6 +87,7 @@ developer"), never to people. (See ADR 0002).
 
 ### Claim the ticket
 
+- Run `python scripts/check_claimable.py <effort> <NN>` immediately before creating the claim branch. Anything other than `claimable: ...` means someone else already has this ticket, or it landed while you were orienting -- stop, do not claim it, and end the session with a one-line summary naming the decision it returned.
 - Create a ticket branch: `ticket/<effort>-<NN>-<slug>`. One ticket, one branch.
   Never commit directly to the default branch (`master` / `main`).
 - Set the ticket's `Status:` line to `in-progress` and commit that first before

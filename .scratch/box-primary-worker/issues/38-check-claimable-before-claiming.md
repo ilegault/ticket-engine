@@ -52,7 +52,7 @@ existing convention this reuses; this ticket does not change it.
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Runner:** any
 
@@ -67,14 +67,14 @@ records the argument lists it was called with, in order, and returns scripted
 `CompletedProcess`-like results — real network and real git are never
 touched). Write these tests first and watch them fail.
 
-- [ ] **Four decisions, pure.** `claim_precheck`: `None` → `"unreadable"`;
+- [x] **Four decisions, pure.** `claim_precheck`: `None` → `"unreadable"`;
   a ticket built with `status="done"` → `"already-done"`; a ticket with
   `status="ready-for-agent"` and `claim_refs=["claim/box-primary-worker/38"]`
   → `"already-claimed"`; the same ticket with `status="in-progress"` and
   `claim_refs=[]` → `"already-claimed"` (status alone is enough, no claim
   branch needed); a ticket with `status="ready-for-agent"` and `claim_refs=[]`
   → `"claimable"`.
-- [ ] **Script drives the three commands in order and parses the real file.**
+- [x] **Script drives the three commands in order and parses the real file.**
   With a fake `run_fn` scripted to return one matching path from
   `ls-tree`, that file's real content from `git show`, and one matching ref
   from `ls-remote`, `main(fake_run_fn, "box-primary-worker", 38)` returns `1`
@@ -83,18 +83,18 @@ touched). Write these tests first and watch them fail.
   zero-padded to `38` and the effort substituted correctly for a
   double-digit number (also test number `7` renders `07` in the paths and
   refs).
-- [ ] **No match is `unreadable`, not a crash.** `ls-tree` returning no
+- [x] **No match is `unreadable`, not a crash.** `ls-tree` returning no
   matching path, or two, makes `main` return `1` and print
   `unreadable: <effort> <NN>` without calling `git show` or `git ls-remote`.
-- [ ] **Claimable exits 0.** With `ls-remote` returning empty output and the
+- [x] **Claimable exits 0.** With `ls-remote` returning empty output and the
   real ticket status `ready-for-agent`, `main` returns `0` and prints
   `claimable: <effort> <NN>`.
-- [ ] **Skill text.** A test loads `ticket_skill.md` as text and asserts the
+- [x] **Skill text.** A test loads `ticket_skill.md` as text and asserts the
   "Claim the ticket" section contains the exact sentence "Run
   `python scripts/check_claimable.py <effort> <NN>` immediately before
   creating the claim branch." and the phrase "stop, do not claim it". Nothing
   else in the skill file is reworded by this ticket.
-- [ ] **Nothing existing is weakened.** `is_ticket_claimed` is unchanged in
+- [x] **Nothing existing is weakened.** `is_ticket_claimed` is unchanged in
   behavior (reused, not edited past what's needed to accept a plain `str`
   claim-ref list as it already does), and every existing test in
   `tests/test_dispatch_scenarios.py` and `tests/test_local_worker.py` passes
@@ -103,3 +103,27 @@ touched). Write these tests first and watch them fail.
 Gates, in CI order: `ruff check .`, `python scripts/check_tests_first.py`, `pytest -q`.
 
 ## Comments
+
+2026-09-26: Implemented. Added `dispatch.claim_precheck(ticket, claim_refs)`
+(pure, reuses `is_ticket_claimed`, no second claimed-check) and
+`scripts/check_claimable.py` (`main(run_fn, effort, number, default_branch)`),
+whose only I/O is through the injected `run_fn`: `git fetch`, `git ls-tree`
+to find the one matching ticket file on the default branch, `git show` to
+read it (parsed with the real `TicketParser`), and `git ls-remote` for any
+claiming ref, then `claim_precheck` decides. Added the mandatory first bullet
+to the "Claim the ticket" step of `ticket_skill.md`.
+
+Tests written first (watched fail before the implementation existed):
+`tests/test_dispatch_scenarios.py` gets 5 new `claim_precheck` cases (the four
+named decisions plus the status-alone `"already-claimed"` case); new
+`tests/test_check_claimable.py` drives the script end to end with a fake
+`run_fn` (argument-list assertions in order, no-match/two-match ->
+`"unreadable"`, empty `ls-remote` -> `"claimable"`, zero-padding for both `38`
+and `7`); new `tests/test_ticket_skill_claim_precheck.py` asserts the exact
+required sentence and phrase are present in the "Claim the ticket" section
+only.
+
+Gates: `ruff check .` clean; `python scripts/check_tests_first.py` OK (source
+changes accompanied by test changes); `pytest -q` — 488 passed, including
+every pre-existing test in `test_dispatch_scenarios.py` and
+`test_local_worker.py` unchanged.

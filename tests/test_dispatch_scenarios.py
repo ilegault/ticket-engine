@@ -24,6 +24,7 @@ from ticket_engine.dispatch import (
     ReleaseClaimAction,
     StartTicketAction,
     WorldSnapshot,
+    claim_precheck,
 )
 from ticket_engine.parser import Ticket
 
@@ -522,3 +523,31 @@ def test_dispatch_windows_ticket_never_started_in_any_box_state():
         result = core.evaluate(snapshot)
         assert not any(isinstance(a, StartTicketAction) for a in result.actions)
         assert result.skipped_windows_tickets == [t_win]
+
+
+# ---------------------------------------------------------------------------
+# claim_precheck (ticket 38): live-remote claimability check before claiming
+# ---------------------------------------------------------------------------
+
+def test_claim_precheck_unreadable_ticket_is_none():
+    assert claim_precheck(None, []) == "unreadable"
+
+
+def test_claim_precheck_already_done():
+    t = make_ticket(38, status="done")
+    assert claim_precheck(t, []) == "already-done"
+
+
+def test_claim_precheck_already_claimed_by_claim_ref():
+    t = make_ticket(38, status="ready-for-agent")
+    assert claim_precheck(t, ["claim/box-primary-worker/38"]) == "already-claimed"
+
+
+def test_claim_precheck_already_claimed_by_status_alone():
+    t = make_ticket(38, status="in-progress")
+    assert claim_precheck(t, []) == "already-claimed"
+
+
+def test_claim_precheck_claimable():
+    t = make_ticket(38, status="ready-for-agent")
+    assert claim_precheck(t, []) == "claimable"
