@@ -95,6 +95,7 @@ def _final_step_rule(ticket_path: str) -> str:
         "the ticket is not done, so escalate instead of ticking it.\n"
         "3. Under `## Comments`, replace any progress note with a dated summary: what was "
         "built and which tests cover which criterion.\n"
+        "Keep the ticket's Claimed-by: line exactly as it is.\n"
         "The integrity gate fails any PR that does not change its ticket file this way, "
         "and the PR cannot merge until it does."
     )

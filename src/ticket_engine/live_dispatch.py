@@ -44,6 +44,7 @@ from ticket_engine.dispatch import (
     apply_escalation_to_ticket_text,
     count_repo_starts,
     evaluate_waiting_sessions,
+    insert_claimed_by,
     is_live_session_state,
     session_resource_name,
 )
@@ -449,12 +450,40 @@ class LiveDispatcher:
                 )
                 continue
 
-            # 7. Assemble prompt (pure, no logging of content)
+            # Record Claimed-by: jules on the claim branch (ADR 0006 rule 4)
             ticket_path_str = (
                 str(ticket.path).replace("\\", "/")
                 if ticket.path
                 else f".scratch/{effort}/issues/{ticket.number:02d}-{ticket.slug}.md"
             )
+            claim_ref = f"claim/{effort}/{ticket.number:02d}"
+            try:
+                info = self.github_client.get_file_contents(
+                    repo=self.repo,
+                    path=ticket_path_str,
+                    ref=claim_ref,
+                )
+                current = (info.get("content") or "") if isinstance(info, dict) else ""
+                if not current or not isinstance(current, str):
+                    msg = f"{ticket_path_str} is empty or missing on {claim_ref}"
+                    raise ValueError(msg)
+                self.github_client.commit_file_change(
+                    repo=self.repo,
+                    path=ticket_path_str,
+                    content=insert_claimed_by(current, "jules"),
+                    message=f"Claim {ticket.number:02d} for jules",
+                    branch=claim_ref,
+                    sha=info.get("sha") if isinstance(info, dict) else None,
+                )
+            except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                logger.error(
+                    "Failed to record Claimed-by: jules on claim branch %s for ticket %02d: %s",
+                    claim_ref,
+                    ticket.number,
+                    exc,
+                )
+
+            # 7. Assemble prompt (pure, no logging of content)
             prompt = assemble_prompt(self.skill_text, self.repo, ticket_path_str)
 
             # 8. Create Jules session

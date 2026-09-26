@@ -14,6 +14,7 @@ Ticket 06 Acceptance Criteria 1, 2, 4, 6, 7 mandate that:
 """
 from __future__ import annotations
 
+import urllib.error
 from unittest.mock import MagicMock
 
 from ticket_engine.config import RepoConfig
@@ -210,3 +211,75 @@ def test_live_dispatch_does_not_release_claim_with_live_jules_session():
     dispatcher.dispatch(tickets=tickets)
 
     mock_github.delete_branch.assert_not_called()
+
+
+def test_live_dispatch_writes_claimed_by_jules_to_claim_branch():
+    mock_github = MagicMock()
+    mock_github.get_default_branch_sha.return_value = "base123sha"
+    mock_github.create_claim_branch.return_value = True
+    mock_github.get_file_contents.return_value = {
+        "content": "# 01: Test ticket\n\n**Status:** ready-for-agent\n\n**Runner:** any\n",
+        "sha": "file_sha_123",
+    }
+
+    mock_jules = MagicMock()
+    mock_jules.count_recent_sessions.return_value = 5
+    mock_jules.create_session.return_value = {"id": "sessions/test123", "state": "RUNNING"}
+
+    call_order: list[str] = []
+    mock_github.commit_file_change.side_effect = lambda **kwargs: call_order.append("commit")
+    mock_jules.create_session.side_effect = lambda **kwargs: (
+        call_order.append("session"),
+        {"id": "sessions/test123", "state": "RUNNING"},
+    )[1]
+
+    config = RepoConfig(default_branch="main", concurrency=2, daily_cap=10)
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=config,
+    )
+
+    tickets = [make_ticket(1, title="Test ticket", effort="phase-1")]
+    started = dispatcher.dispatch(tickets=tickets)
+
+    assert len(started) == 1
+    mock_github.commit_file_change.assert_called_once()
+    commit_kwargs = mock_github.commit_file_change.call_args.kwargs
+    assert commit_kwargs["repo"] == "owner/repo"
+    assert commit_kwargs["branch"] == "claim/phase-1/01"
+    assert commit_kwargs["message"] == "Claim 01 for jules"
+    assert commit_kwargs["sha"] == "file_sha_123"
+    assert "**Status:** ready-for-agent\n\n**Claimed-by:** jules" in commit_kwargs["content"]
+    assert call_order == ["commit", "session"]
+
+
+def test_live_dispatch_creates_session_even_if_claimed_by_commit_fails(caplog):
+    mock_github = MagicMock()
+    mock_github.get_default_branch_sha.return_value = "base123sha"
+    mock_github.create_claim_branch.return_value = True
+    mock_github.get_file_contents.side_effect = urllib.error.HTTPError(
+        "http://api.github.com", 500, "Server Error", {}, None
+    )
+
+    mock_jules = MagicMock()
+    mock_jules.count_recent_sessions.return_value = 5
+    mock_jules.create_session.return_value = {"id": "sessions/test123", "state": "RUNNING"}
+
+    config = RepoConfig(default_branch="main", concurrency=2, daily_cap=10)
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=config,
+    )
+
+    tickets = [make_ticket(1, title="Test ticket", effort="phase-1")]
+    with caplog.at_level("ERROR"):
+        started = dispatcher.dispatch(tickets=tickets)
+
+    assert len(started) == 1
+    mock_jules.create_session.assert_called_once()
+    assert any("Failed to record Claimed-by: jules" in record.message for record in caplog.records)
+

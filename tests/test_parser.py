@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 
 from ticket_engine.parser import TicketParser
+from ticket_engine.ticket_lint import lint_ticket
 
 
 def test_parser_reads_plain_metadata():
@@ -140,3 +141,64 @@ Blocked by: None
             assert ticket.is_done() is True
         else:
             assert ticket.is_done() is False
+
+
+def test_parser_reads_claimed_by_box():
+    for content in (
+        "# 01: Ticket\nStatus: ready-for-agent\nClaimed-by: box\nBlocked by: None\n",
+        "# 01: Ticket\n**Status:** ready-for-agent\n**Claimed-by:** box\n**Blocked by:** None\n",
+    ):
+        parser = TicketParser()
+        ticket = parser.parse_text(content, filename="01-ticket.md")
+        assert ticket.claimed_by == "box"
+        assert ticket.findings == []
+
+
+def test_parser_reads_claimed_by_jules():
+    for content in (
+        "# 01: Ticket\nStatus: ready-for-agent\nClaimed-by: jules\nBlocked by: None\n",
+        "# 01: Ticket\n**Status:** ready-for-agent\n**Claimed-by:** jules\n**Blocked by:** None\n",
+    ):
+        parser = TicketParser()
+        ticket = parser.parse_text(content, filename="01-ticket.md")
+        assert ticket.claimed_by == "jules"
+        assert ticket.findings == []
+
+
+def test_parser_missing_claimed_by_defaults_to_empty():
+    content = "# 01: Ticket\nStatus: ready-for-agent\nBlocked by: None\n"
+    parser = TicketParser()
+    ticket = parser.parse_text(content, filename="01-ticket.md")
+    assert ticket.claimed_by == ""
+    assert ticket.findings == []
+
+
+def test_parser_unknown_claimed_by_yields_finding_and_preserves_is_done():
+    content = (
+        "# 01: Ticket\n"
+        "**Status:** done\n"
+        "**Claimed-by:** someone-else\n"
+        "**Blocked by:** None\n"
+    )
+    parser = TicketParser()
+    ticket = parser.parse_text(content, filename="01-ticket.md")
+    assert ticket.claimed_by == ""
+    assert len(ticket.findings) == 1
+    assert "someone-else" in ticket.findings[0].message
+    assert ticket.is_done() is True
+
+
+def test_lint_ignores_claimed_by_box():
+    content = """# 01: Ticket
+**Status:** ready-for-agent
+**Claimed-by:** box
+**Blocked by:** None
+
+## Acceptance criteria
+- [ ] Criteria 1
+"""
+    parser = TicketParser()
+    ticket = parser.parse_text(content, filename="01-ticket.md")
+    assert ticket.claimed_by == "box"
+    assert lint_ticket(ticket) == []
+
