@@ -52,6 +52,17 @@ The stale claims sweep runs live on every dispatch run. A box claim with no
 checkpoint commit for `box_stale_claim_hours` (default 8) is released, whether
 or not anything looks live. A Jules claim keeps the 12-hour rule (`stale_claim_hours`)
 and is kept if a live session exists for the ticket.
+
+OVERFLOW (ADR 0006)
+-------------------
+The box (a Windows mini PC running the local worker permanently) is the primary worker
+and takes any ticket on the frontier, windows included. Jules is overflow: the dispatcher
+starts Jules only when the box cannot take work (paused on quota, silent, or unreadable).
+A missing or unreadable box status issue fails toward overflow (starting Jules) because a
+dead heartbeat should result in more work getting done, not an idle repo. While the box is
+available (working or idle, checked in within box_silent_hours), the dispatcher starts no
+Jules sessions and leaves the frontier to the box. `classify_box` is the one definition
+of the box's state; the morning report calls it too (ticket 27), so the two never disagree.
 """
 from __future__ import annotations
 
@@ -339,6 +350,31 @@ class DispatchResult:
     left_for_box: list[Ticket] = field(default_factory=list)
     box_state: str = "none"
 
+
+
+def classify_box(
+    box: BoxStatus | None | NoBox,
+    now: datetime.datetime,
+    box_silent_hours: int,
+) -> str:
+    """Classify the box as ``none``, ``available``, ``paused``, ``silent`` or ``unreadable``.
+
+    The one definition of the box's state (ADR 0006). The dispatcher's overflow gate
+    and the morning report both call this, so the two never disagree about the box.
+    ``NO_BOX`` means no box is configured; ``None`` means its status could not be read.
+    """
+    if isinstance(box, NoBox):
+        return "none"
+    if not isinstance(box, BoxStatus):
+        return "unreadable"
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=datetime.UTC)
+    if now_utc - box.checked_in_at >= datetime.timedelta(hours=box_silent_hours):
+        return "silent"
+    if box.state in (BoxState.working, BoxState.idle):
+        return "available"
+    if box.state in (BoxState.paused_quota, BoxState.paused_weekly_cap, BoxState.login_expired):
+        return "paused"
+    return "unreadable"
 
 
 def is_ticket_claimed(ticket: Ticket, claims: Sequence[Claim | str] | set[str]) -> bool:
@@ -781,34 +817,7 @@ class DispatchCore:
             )
 
         # Determine box state (ADR 0006)
-        if isinstance(snapshot.box, NoBox) or snapshot.box is NO_BOX:
-            box_state = "none"
-        elif snapshot.box is None:
-            box_state = "unreadable"
-        elif isinstance(snapshot.box, BoxStatus):
-            now_utc = now if now.tzinfo is not None else now.replace(tzinfo=datetime.UTC)
-            box_checkin = (
-                snapshot.box.checked_in_at
-                if snapshot.box.checked_in_at.tzinfo is not None
-                else snapshot.box.checked_in_at.replace(tzinfo=datetime.UTC)
-            )
-            if now_utc - box_checkin >= datetime.timedelta(hours=cfg.box_silent_hours):
-                box_state = "silent"
-            elif snapshot.box.state in (BoxState.working, BoxState.idle, "working", "idle"):
-                box_state = "available"
-            elif snapshot.box.state in (
-                BoxState.paused_quota,
-                BoxState.paused_weekly_cap,
-                BoxState.login_expired,
-                "paused_quota",
-                "paused_weekly_cap",
-                "login_expired",
-            ):
-                box_state = "paused"
-            else:
-                box_state = "unreadable"
-        else:
-            box_state = "unreadable"
+        box_state = classify_box(snapshot.box, now, cfg.box_silent_hours)
 
         # 4. Check if repo is paused or circuit broken
         if snapshot.paused or circuit_broken:
