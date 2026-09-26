@@ -10,7 +10,7 @@ Spec: `.scratch/box-primary-worker/spec.md` (§Local worker orchestration). ADR 
 
 **Blocked by:** 19, 21
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
