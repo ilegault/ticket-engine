@@ -18,7 +18,6 @@ import datetime
 import urllib.error
 from unittest.mock import MagicMock
 
-from ticket_engine.box_status import BoxState, BoxStatus, render_box_status
 from ticket_engine.config import RepoConfig
 from ticket_engine.live_dispatch import LiveDispatcher
 from ticket_engine.parser import Ticket
@@ -347,3 +346,122 @@ def test_live_dispatch_keeps_box_claim_at_1_hour():
     assert dispatcher.last_run.released_stale == []
 
 
+
+
+def test_live_dispatch_hands_off_box_checkpoint_to_jules():
+    checkpoint_branch = "ticket/phase-1-01-test-ticket-1"
+
+    mock_github = MagicMock()
+
+    def fake_sha(repo, branch):
+        return "checkpoint-sha" if branch == checkpoint_branch else "base123sha"
+
+    mock_github.get_default_branch_sha.side_effect = fake_sha
+    mock_github.list_claim_branches.return_value = []
+
+    def fake_head_time(repo, branch):
+        return datetime.datetime.now(datetime.UTC) if branch == checkpoint_branch else None
+
+    mock_github.get_branch_head_time.side_effect = fake_head_time
+
+    def fake_get_file_contents(repo, path, ref=None):
+        if ref == checkpoint_branch:
+            return {
+                "content": (
+                    "# 01: First Feature\n**Status:** in-progress\n\n"
+                    "## Comments\n\nProgress (2026-09-26 10:00): criteria 1 done.\n"
+                    "Next: criterion 2.\n"
+                ),
+                "sha": "filesha",
+            }
+        return {"content": "", "sha": ""}
+
+    mock_github.get_file_contents.side_effect = fake_get_file_contents
+    mock_github.create_claim_branch.return_value = True
+
+    mock_jules = MagicMock()
+    mock_jules.count_recent_sessions.return_value = 5
+    mock_jules.create_session.return_value = {"id": "sessions/x", "state": "RUNNING"}
+
+    config = RepoConfig(default_branch="master", concurrency=2)
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=config,
+    )
+
+    tickets = [make_ticket(1, title="First Feature")]
+    started = dispatcher.dispatch(tickets=tickets)
+
+    assert len(started) == 1
+    call_kwargs = mock_jules.create_session.call_args.kwargs
+    # The PR base stays the default branch even with a checkpoint to merge.
+    assert call_kwargs["starting_branch"] == "master"
+    assert checkpoint_branch in call_kwargs["prompt"]
+    assert "Next: criterion 2." in call_kwargs["prompt"]
+    assert "## HANDOFF — CONTINUE FROM A CHECKPOINT" in call_kwargs["prompt"]
+
+
+def test_live_dispatch_no_checkpoint_branch_leaves_prompt_unchanged():
+    mock_github = MagicMock()
+    mock_github.get_default_branch_sha.return_value = "base123sha"
+    mock_github.list_claim_branches.return_value = []
+    mock_github.get_branch_head_time.return_value = None  # No ticket branch pushed.
+    mock_github.create_claim_branch.return_value = True
+
+    mock_jules = MagicMock()
+    mock_jules.count_recent_sessions.return_value = 5
+    mock_jules.create_session.return_value = {"id": "sessions/x", "state": "RUNNING"}
+
+    config = RepoConfig(default_branch="master", concurrency=2)
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=config,
+    )
+
+    tickets = [make_ticket(1, title="First Feature")]
+    dispatcher.dispatch(tickets=tickets)
+
+    call_kwargs = mock_jules.create_session.call_args.kwargs
+    assert "HANDOFF" not in call_kwargs["prompt"]
+
+
+def test_live_dispatch_windows_ticket_checkpoint_never_starts_a_session():
+    checkpoint_branch = "ticket/phase-1-01-test-ticket-1"
+
+    mock_github = MagicMock()
+
+    def fake_sha(repo, branch):
+        return "checkpoint-sha" if branch == checkpoint_branch else "base123sha"
+
+    mock_github.get_default_branch_sha.side_effect = fake_sha
+    mock_github.list_claim_branches.return_value = []
+
+    def fake_head_time(repo, branch):
+        return datetime.datetime.now(datetime.UTC) if branch == checkpoint_branch else None
+
+    mock_github.get_branch_head_time.side_effect = fake_head_time
+    mock_github.get_file_contents.return_value = {
+        "content": "# 01\n**Status:** in-progress\n\n## Comments\n\nNext: x.\n",
+        "sha": "filesha",
+    }
+
+    mock_jules = MagicMock()
+    mock_jules.count_recent_sessions.return_value = 5
+
+    config = RepoConfig(default_branch="master", concurrency=2)
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=config,
+    )
+
+    tickets = [make_ticket(1, title="Windows Only", runner="windows")]
+    started = dispatcher.dispatch(tickets=tickets)
+
+    assert started == []
+    mock_jules.create_session.assert_not_called()
