@@ -451,4 +451,47 @@ class GitHubClient:
         this to find escalation issues to close once their ticket is resolved."""
         return self.list_issues(repo, state="open", labels=label)
 
+    def create_pull_request(
+        self,
+        repo: str,
+        head: str,
+        base: str,
+        title: str,
+        body: str,
+        draft: bool = False,
+    ) -> int:
+        """Open a pull request via `POST /repos/{repo}/pulls`.
+
+        Ticket 29 (spec §Local worker orchestration): the box opens its PR this
+        way once the worktree's ticket file reads `Status: done`. Returns the
+        created PR's number.
+        """
+        endpoint = f"/repos/{repo}/pulls"
+        payload = {"title": title, "head": head, "base": base, "body": body, "draft": draft}
+        res = self._request("POST", endpoint, payload)
+        if isinstance(res, dict) and "number" in res:
+            return int(res["number"])
+        msg = f"create_pull_request on {repo} returned no PR number: {res!r}"
+        raise ValueError(msg)
+
+    def find_open_pr(self, repo: str, head_branch: str) -> int | None:
+        """The number of the open PR for `head_branch`, or `None`.
+
+        Ticket 29: lets the box avoid opening a second PR for a ticket branch
+        it (or a prior run) already opened one for.
+        """
+        owner = repo.split("/", 1)[0]
+        endpoint = f"/repos/{repo}/pulls?state=open&head={urllib.parse.quote(owner)}:{urllib.parse.quote(head_branch)}"
+        try:
+            res = self._request("GET", endpoint)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            raise
+        if isinstance(res, list):
+            for item in res:
+                if isinstance(item, dict) and "number" in item:
+                    return int(item["number"])
+        return None
+
 

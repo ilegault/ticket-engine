@@ -17,6 +17,20 @@ rule 3) extends it to work any ticket and to push honestly:
   or logs (ADR 0007 rule 3).
 - A worktree with unpushed commits is never removed with --force. Only a
   clean, fully-pushed worktree is removed.
+
+Ticket 29 (spec §Local worker orchestration, ADR 0006 rule 7) extends this
+further:
+
+- A finished run (worktree ticket file at Status: done) opens the ticket's PR
+  through the GitHub API, base the repo's default branch, title
+  `<effort>-<NN>: <title>`, a fixed body. At most one PR per ticket branch:
+  `find_open_pr` is checked first.
+- Before every resume, push and PR, the orchestrator re-reads the claim
+  branch (`claim_still_mine`). If the claim branch is gone, or its ticket file
+  now reads `Claimed-by: jules`, the box has lost the ticket: it pushes and
+  PRs nothing more, force-removes its local worktree (the one place --force is
+  used, because the ticket is no longer the box's to keep), leaves the remote
+  ticket branch alone, and logs the loss.
 """
 from __future__ import annotations
 
@@ -29,7 +43,7 @@ import time
 from collections.abc import Callable
 
 from ticket_engine.agy import AgyDriver
-from ticket_engine.config import load_repo_config
+from ticket_engine.config import RepoConfig, load_repo_config
 from ticket_engine.dispatch import DispatchCore, WorldSnapshot, insert_claimed_by
 from ticket_engine.github import GitHubClient
 from ticket_engine.local_config import LocalRepoEntry, LocalWorkerConfig
@@ -135,7 +149,6 @@ class LocalWorker:
             return []
         repo_path = pathlib.Path(entry.path)
         repo_config = load_repo_config(repo_path) if repo_path.is_dir() else None
-        from ticket_engine.config import RepoConfig
         snapshot = WorldSnapshot(
             tickets=tickets,
             config=repo_config or RepoConfig(),
@@ -204,7 +217,9 @@ class LocalWorker:
         stop_event = threading.Event()
 
         def do_push() -> None:
-            self._push_branch(worktree_path, ticket_branch, push_env)
+            self._push_if_claimed(
+                entry.repo, claim_branch, ticket_path, worktree_path, ticket_branch, push_env
+            )
 
         interval_s = self.config.checkpoint_push_minutes * 60
         pusher = CheckpointPusher(do_push, interval_s, self._sleep)
@@ -221,6 +236,10 @@ class LocalWorker:
             pusher_thread.join(timeout=5)
             do_push()  # Always push after every run, whatever the outcome.
 
+        self._maybe_open_pull_request(
+            entry, ticket, ticket_path, worktree_path, ticket_branch, effort
+        )
+
         if result.success:
             self._cleanup_worktree(entry.path, worktree_path, ticket_branch)
             return True
@@ -232,6 +251,7 @@ class LocalWorker:
                 worktree_path=worktree_path,
                 ticket_path=ticket_path,
                 ticket_branch=ticket_branch,
+                claim_branch=claim_branch,
                 push_env=push_env,
                 result=result,
             )
@@ -402,6 +422,114 @@ class LocalWorker:
         if rc_rm != 0:
             logger.warning("git worktree remove returned %d: %s", rc_rm, out_rm)
 
+    def _force_remove_worktree(self, repo_path: str, worktree_path: str) -> None:
+        """Force-remove a worktree the box no longer holds the claim for.
+
+        Ticket 29 (ADR 0006 rule 7): the only place --force is passed. A ticket
+        whose claim is gone, or held by Jules, is no longer the box's to save;
+        any unpushed local commits here are discarded on purpose.
+        """
+        rc, out = self._git_runner(
+            ["git", "-C", repo_path, "worktree", "remove", "--force", worktree_path],
+            repo_path,
+            None,
+        )
+        if rc != 0:
+            logger.warning("git worktree remove --force returned %d: %s", rc, out)
+
+    def _claim_still_mine(self, repo: str, claim_branch: str, ticket_path: str) -> bool:
+        """True unless the claim branch is gone, or its ticket file now reads
+        `Claimed-by: jules` (ADR 0006 rule 7)."""
+        if claim_branch not in self.github_client.list_claim_branches(repo):
+            return False
+        try:
+            file_data = self.github_client.get_file_contents(
+                repo, ticket_path, ref=claim_branch
+            )
+        except (OSError, KeyError, RuntimeError) as exc:
+            logger.warning(
+                "Failed to read claim branch %s ticket file: %s", claim_branch, exc
+            )
+            return True
+        content = file_data.get("content", "")
+        parsed = TicketParser().parse_text(content)
+        return parsed.claimed_by != "jules"
+
+    def _push_if_claimed(
+        self,
+        repo: str,
+        claim_branch: str,
+        ticket_path: str,
+        worktree_path: str,
+        ticket_branch: str,
+        push_env: dict[str, str] | None,
+    ) -> None:
+        """Push the ticket branch, unless the box has lost the claim (ticket 29).
+
+        Every push, on the timer and the final push after a run, goes through
+        this same `claim_still_mine` check.
+        """
+        if not self._claim_still_mine(repo, claim_branch, ticket_path):
+            logger.info(
+                "Lost claim for %s; not pushing %s.", claim_branch, ticket_branch
+            )
+            return
+        self._push_branch(worktree_path, ticket_branch, push_env)
+
+    def _default_branch(self, entry: LocalRepoEntry) -> str:
+        """The repo's configured default branch, for a PR's base."""
+        repo_path = pathlib.Path(entry.path)
+        repo_config = load_repo_config(repo_path) if repo_path.is_dir() else None
+        return (repo_config or RepoConfig()).default_branch
+
+    def _maybe_open_pull_request(
+        self,
+        entry: LocalRepoEntry,
+        ticket: Ticket,
+        ticket_path: str,
+        worktree_path: str,
+        ticket_branch: str,
+        effort: str,
+    ) -> None:
+        """Open the ticket's PR once the worktree's ticket file reads Status: done.
+
+        Ticket 29 AC2: base is the repo's default branch, head is the ticket
+        branch, title `<effort>-<NN>: <title>`, a fixed body. At most one PR
+        per ticket branch (`find_open_pr` first). Skipped entirely if the box
+        has lost the claim (ADR 0006 rule 7).
+        """
+        full_path = pathlib.Path(worktree_path) / ticket_path
+        try:
+            content = self._read_ticket(full_path)
+        except (OSError, FileNotFoundError):
+            return
+        parsed = TicketParser().parse_text(content)
+        if parsed.status != "done":
+            return
+
+        claim_branch = f"claim/{effort}/{ticket.number:02d}"
+        if not self._claim_still_mine(entry.repo, claim_branch, ticket_path):
+            logger.info(
+                "Lost claim for %s; not opening a PR for %s.", claim_branch, ticket_branch
+            )
+            return
+
+        if self.github_client.find_open_pr(entry.repo, ticket_branch) is not None:
+            return
+
+        title = f"{effort}-{ticket.number:02d}: {ticket.title}"
+        body = (
+            f"Ticket {ticket.number:02d} worked by the box.\n\n"
+            f"Ticket file: {ticket_path}\nBranch: {ticket_branch}"
+        )
+        self.github_client.create_pull_request(
+            repo=entry.repo,
+            head=ticket_branch,
+            base=self._default_branch(entry),
+            title=title,
+            body=body,
+        )
+
     def _handle_quota_error(
         self,
         entry: LocalRepoEntry,
@@ -409,10 +537,26 @@ class LocalWorker:
         worktree_path: str,
         ticket_path: str,
         ticket_branch: str,
+        claim_branch: str,
         push_env: dict[str, str] | None,
         result: object,
     ) -> bool:
-        """Keep the claim and worktree, wait for quota reset, then resume."""
+        """Keep the claim and worktree, wait for quota reset, then resume.
+
+        Ticket 29 (ADR 0006 rule 7): before resuming, re-check that the box
+        still holds the claim. A ticket the box has lost is dropped: no more
+        pushes, no PR, the worktree force-removed, the loss logged.
+        """
+        effort = ticket.effort or "phase-1"
+        if not self._claim_still_mine(entry.repo, claim_branch, ticket_path):
+            logger.info(
+                "Lost claim for ticket %02d (%s); dropping worktree without resuming.",
+                ticket.number,
+                claim_branch,
+            )
+            self._force_remove_worktree(entry.path, worktree_path)
+            return False
+
         reset_at = getattr(result, "reset_at", None)
         wait_secs = _seconds_until_reset(reset_at)
         logger.info(
@@ -428,8 +572,13 @@ class LocalWorker:
         )
         fresh_result = self.agy_driver.start(checkpoint_prompt, cwd=worktree_path)
 
-        # Push after the resume run too.
-        self._push_branch(worktree_path, ticket_branch, push_env)
+        # Push after the resume run too, and only if the claim is still ours.
+        self._push_if_claimed(
+            entry.repo, claim_branch, ticket_path, worktree_path, ticket_branch, push_env
+        )
+        self._maybe_open_pull_request(
+            entry, ticket, ticket_path, worktree_path, ticket_branch, effort
+        )
 
         if fresh_result.success:
             self._cleanup_worktree(entry.path, worktree_path, ticket_branch)

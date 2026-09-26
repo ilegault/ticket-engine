@@ -286,6 +286,73 @@ def test_close_issue_sends_patch_state_closed():
     assert json.loads(req.data.decode("utf-8")) == {"state": "closed"}
 
 
+# --- pull requests (ticket 29) -----------------------------------------------
+
+
+def test_create_pull_request_posts_and_returns_number():
+    fixture_json = load_fixture("pull_create_success.json")
+    client = GitHubClient(token="mock_token")
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = fixture_json.encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        number = client.create_pull_request(
+            repo="owner/repo",
+            head="ticket/phase-1-09-add-feature",
+            base="master",
+            title="phase-1-09: Add feature",
+            body="Ticket 09 worked by the box.\n\nTicket file: .scratch/phase-1/issues/09-add-feature.md\nBranch: ticket/phase-1-09-add-feature",
+        )
+
+    assert number == 42
+    req = mock_urlopen.call_args[0][0]
+    assert req.method == "POST"
+    assert req.full_url == "https://api.github.com/repos/owner/repo/pulls"
+    payload = json.loads(req.data.decode("utf-8"))
+    assert payload == {
+        "title": "phase-1-09: Add feature",
+        "head": "ticket/phase-1-09-add-feature",
+        "base": "master",
+        "body": "Ticket 09 worked by the box.\n\nTicket file: .scratch/phase-1/issues/09-add-feature.md\nBranch: ticket/phase-1-09-add-feature",
+        "draft": False,
+    }
+
+
+def test_find_open_pr_returns_number_when_open_pr_exists():
+    fixture_json = load_fixture("pulls_open_list.json")
+    client = GitHubClient(token="mock_token")
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = fixture_json.encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        number = client.find_open_pr(repo="owner/repo", head_branch="ticket/phase-1-09-add-feature")
+
+    assert number == 43
+    req = mock_urlopen.call_args[0][0]
+    assert req.method == "GET"
+    assert req.full_url == (
+        "https://api.github.com/repos/owner/repo/pulls?state=open&head=owner:ticket/phase-1-09-add-feature"
+    )
+
+
+def test_find_open_pr_returns_none_when_no_open_pr():
+    fixture_json = load_fixture("pulls_open_list_empty.json")
+    client = GitHubClient(token="mock_token")
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = fixture_json.encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        number = client.find_open_pr(repo="owner/repo", head_branch="ticket/phase-1-09-add-feature")
+
+    assert number is None
+
+
 def test_list_open_issues_returns_the_recorded_list():
     fixture_json = load_fixture("issues_open_escalation_list.json")
     client = GitHubClient(token="mock_token")
