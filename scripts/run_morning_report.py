@@ -7,6 +7,12 @@ data from GitHub and the Jules API, renders the report via the pure
 render_morning_report() function, then creates or rewrites the single pinned
 issue in the engine repo.
 
+Ticket 27 (ADR 0006): the report also says whether the box is available. The
+box status issue (label ``engine:box-status``) lives in the engine repo this
+script already writes to; its body is parsed with ``parse_box_status`` and passed
+to the renderer. A failed read passes ``None``, which the report shows as
+``status unreadable`` rather than hiding it.
+
 ADR 0002 (privacy): this script never logs tokens, prompts, or denylist entries.
 The rendered report itself is ADR 0002-compliant: the renderer emits only PR
 numbers, ticket titles, repo names, and quota counts.
@@ -28,6 +34,7 @@ _REPORT_ISSUE_TITLE = "Morning Report"
 _REPORT_HOURS = 24  # how far back to look for merged PRs
 _LABEL_ESCALATED = "engine:escalated"
 _LABEL_HOLD = "engine:hold"
+_LABEL_BOX_STATUS = "engine:box-status"
 
 
 def _gh_request(
@@ -177,6 +184,27 @@ def _fetch_tickets(repo: str, token: str) -> list:
     return tickets
 
 
+def _fetch_box_status(engine_repo: str, token: str):
+    """Return the parsed box status from the engine repo, or None when it cannot be read."""
+    from ticket_engine.box_status import parse_box_status
+
+    path = f"/repos/{engine_repo}/issues?state=open&labels={_LABEL_BOX_STATUS}&per_page=10"
+    try:
+        issues = _gh_request(path, token)
+    except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
+        logger.warning("Could not read the box status issue: %s", exc)
+        return None
+    if isinstance(issues, list):
+        for issue in issues:
+            if isinstance(issue, dict):
+                box = parse_box_status(str(issue.get("body") or ""))
+                if box is None:
+                    logger.warning("The box status issue body could not be parsed")
+                return box
+    logger.warning("No open issue labelled %s found", _LABEL_BOX_STATUS)
+    return None
+
+
 def _count_jules_sessions(api_key: str) -> tuple[int, int]:
     """Return (sessions_24h, limit=100) by querying the Jules API."""
     try:
@@ -273,7 +301,8 @@ def main() -> int:
         jules_limit=jules_limit,
         now=now,
     )
-    report_text = render_morning_report(report_data)
+    box = _fetch_box_status(engine_repo, token)
+    report_text = render_morning_report(report_data, box=box)
 
     issue_number = _find_or_create_issue(engine_repo, token, report_text)
     _update_issue(engine_repo, token, issue_number, report_text)

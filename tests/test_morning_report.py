@@ -10,9 +10,19 @@ WorldSnapshot and asserts on the returned string — no I/O, no mocking.
 from __future__ import annotations
 
 import datetime
+import importlib.util
 import pathlib
+import urllib.error
 
-from ticket_engine.dispatch import MergedPR, OpenPR, WorldSnapshot
+from ticket_engine.box_status import BoxState, BoxStatus, render_box_status
+from ticket_engine.config import RepoConfig
+from ticket_engine.dispatch import (
+    DispatchCore,
+    MergedPR,
+    OpenPR,
+    WorldSnapshot,
+    classify_box,
+)
 from ticket_engine.morning_report import MorningReportData, render_morning_report
 from ticket_engine.parser import ParseFinding, Ticket, TicketParser
 from ticket_engine.run_report import RunFacts, build_run_report
@@ -173,7 +183,7 @@ def test_render_morning_report_held_shows_ticket_title():
 
 
 # ---------------------------------------------------------------------------
-# AC 4: windows-waiting tickets appear (frontier tickets with runner=windows)
+# AC 4: tickets waiting for the box appear (frontier tickets with runner=windows)
 # ---------------------------------------------------------------------------
 
 
@@ -185,8 +195,9 @@ def test_render_morning_report_shows_windows_waiting_tickets():
         tickets=[windows_ticket],
     )
     report = render_morning_report(_data([snapshot]))
-    assert "windows" in report.lower()
-    assert "Ticket 9" in report
+    lines = report.splitlines()
+    idx = lines.index("**Waiting for the box:** 1")
+    assert lines[idx + 1] == "- 09: Ticket 9"
 
 
 def test_render_morning_report_blocked_windows_ticket_not_shown():
@@ -198,21 +209,11 @@ def test_render_morning_report_blocked_windows_ticket_not_shown():
         tickets=[blocker, windows_ticket],
     )
     report = render_morning_report(_data([snapshot]))
-    # "Ticket 9" should not appear in windows-waiting since its blocker is in-progress
-    # The section should show 0 or be absent for Ticket 9
-    lines = report.lower().split("\n")
-    # Find the windows section and verify Ticket 9 isn't listed there
-    # We check that "ticket 9" does not appear adjacent to "windows"
-    windows_section_lines: list[str] = []
-    in_windows = False
-    for line in lines:
-        if "windows" in line:
-            in_windows = True
-        elif in_windows and line.startswith(("###", "**")):
-            in_windows = False
-        if in_windows:
-            windows_section_lines.append(line)
-    assert not any("ticket 9" in ln for ln in windows_section_lines)
+    # Ticket 9's blocker is in-progress, so it is not waiting for the box yet.
+    lines = report.splitlines()
+    idx = lines.index("**Waiting for the box:** 0")
+    assert lines[idx + 1] == ""
+    assert "- 09: Ticket 9" not in lines
 
 
 # ---------------------------------------------------------------------------
@@ -368,18 +369,18 @@ def test_render_morning_report_needs_you_placement_and_count():
 
     held_idx = report.find("**Held (awaiting approval):**")
     needs_idx = report.find("**Needs you (ready-for-developer):** 2")
-    windows_idx = report.find("**Windows-waiting:**")
+    windows_idx = report.find("**Waiting for the box:**")
 
     assert held_idx != -1
     assert needs_idx != -1
     assert windows_idx != -1
     assert held_idx < needs_idx < windows_idx
 
-    # Lead line followed by table and trailing blank line before Windows-waiting
+    # Lead line followed by table and trailing blank line before Waiting for the box
     lines = report.splitlines()
     needs_line_idx = lines.index("**Needs you (ready-for-developer):** 2")
     assert lines[needs_line_idx + 1] == "| Ticket | Title | Waiting on | Holding up |"
-    windows_line_idx = lines.index("**Windows-waiting:** 0")
+    windows_line_idx = lines.index("**Waiting for the box:** 0")
     assert lines[windows_line_idx - 1] == ""
 
 
@@ -424,4 +425,142 @@ def test_render_morning_report_needs_you_zero_shown_not_hidden():
     lines = report.splitlines()
     idx = lines.index("**Needs you (ready-for-developer):** 0")
     assert lines[idx + 1] == ""
-    assert lines[idx + 2] == "**Windows-waiting:** 0"
+    assert lines[idx + 2] == "**Waiting for the box:** 0"
+
+
+# ---------------------------------------------------------------------------
+# Ticket 27: the Box line, under the report's title
+# ---------------------------------------------------------------------------
+
+_BOX_NOW = datetime.datetime(2026, 9, 26, 12, 0, tzinfo=datetime.UTC)
+_CHECKED_IN = datetime.datetime(2026, 9, 26, 3, 12, tzinfo=datetime.UTC)
+
+
+def _box_report(box: BoxStatus | None) -> str:
+    data = MorningReportData(
+        repo_snapshots=[WorldSnapshot(repo_name="owner/repo")],
+        now=_BOX_NOW,
+    )
+    return render_morning_report(data, box=box)
+
+
+def _line_under_title(report: str) -> str:
+    lines = report.splitlines()
+    assert lines[0].startswith("## Morning Report — ")
+    assert lines[1] == ""
+    return lines[2]
+
+
+def _box_lines(report: str) -> list[str]:
+    return [ln for ln in report.splitlines() if ln.startswith("**Box:**")]
+
+
+def test_render_morning_report_box_available():
+    box = BoxStatus(checked_in_at=_CHECKED_IN, state=BoxState.idle)
+    report = _box_report(box)
+    expected = "**Box:** available — last check-in 2026-09-26 03:12 UTC"
+    assert _line_under_title(report) == expected
+    assert _box_lines(report) == [expected]
+
+
+def test_render_morning_report_box_paused():
+    box = BoxStatus(checked_in_at=_CHECKED_IN, state=BoxState.paused_quota)
+    report = _box_report(box)
+    expected = "**Box:** paused — last check-in 2026-09-26 03:12 UTC"
+    assert _line_under_title(report) == expected
+    assert _box_lines(report) == [expected]
+
+
+def test_render_morning_report_box_silent():
+    # Checked in 12 hours before the report: box_silent_hours (default 12) elapsed.
+    checked_in = _BOX_NOW - datetime.timedelta(hours=12)
+    box = BoxStatus(checked_in_at=checked_in, state=BoxState.working)
+    report = _box_report(box)
+    expected = "**Box:** silent — last check-in 2026-09-26 00:00 UTC"
+    assert _line_under_title(report) == expected
+    assert _box_lines(report) == [expected]
+
+
+def test_render_morning_report_box_unreadable():
+    report = _box_report(None)
+    expected = "**Box:** status unreadable"
+    assert _line_under_title(report) == expected
+    assert _box_lines(report) == [expected]
+
+
+def test_render_morning_report_box_uses_dispatch_classification():
+    # One definition of the box's state: the morning report agrees with the dispatcher.
+    for state in BoxState:
+        box = BoxStatus(checked_in_at=_CHECKED_IN, state=state)
+        word = classify_box(box, _BOX_NOW, RepoConfig().box_silent_hours)
+        snapshot = WorldSnapshot(box=box, now=_BOX_NOW)
+        assert DispatchCore().evaluate(snapshot).box_state == word
+        assert _line_under_title(_box_report(box)).startswith(f"**Box:** {word} — ")
+
+
+# ---------------------------------------------------------------------------
+# Ticket 27: runner wiring — scripts/run_morning_report.py
+# ---------------------------------------------------------------------------
+
+_SCRIPT = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "run_morning_report.py"
+
+
+def _load_runner():
+    spec = importlib.util.spec_from_file_location("run_morning_report_under_test", _SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _run_main(monkeypatch, box_issues) -> tuple[list[str], list[str]]:
+    """Run the script's main with GitHub faked; return (updated bodies, requested paths)."""
+    runner = _load_runner()
+    requested: list[str] = []
+    updated: list[str] = []
+
+    def fake_gh_request(path, token, method="GET", body=None):
+        requested.append(path)
+        if "labels=engine:box-status" in path:
+            if isinstance(box_issues, Exception):
+                raise box_issues
+            return box_issues
+        if "labels=engine:morning-report" in path:
+            return [{"title": "Morning Report", "number": 5}]
+        if "/git/trees/" in path or "/actions/variables/" in path:
+            return {}
+        return []
+
+    def fake_update_issue(engine_repo, token, issue_number, body):
+        updated.append(body)
+
+    monkeypatch.setenv("PIPELINE_TOKEN", "fake-token")
+    monkeypatch.setenv("ENGINE_REPO", "owner/engine")
+    monkeypatch.delenv("JULES_API_KEY", raising=False)
+    monkeypatch.setattr(runner, "_gh_request", fake_gh_request)
+    monkeypatch.setattr(runner, "_update_issue", fake_update_issue)
+
+    assert runner.main() == 0
+    return updated, requested
+
+
+def test_run_morning_report_main_passes_box_status(monkeypatch):
+    # A check-in years before any real clock the runner reads: always silent.
+    checked_in = datetime.datetime(2020, 1, 1, 3, 12, tzinfo=datetime.UTC)
+    body = render_box_status(BoxStatus(checked_in_at=checked_in, state=BoxState.idle))
+    updated, requested = _run_main(
+        monkeypatch, [{"number": 9, "title": "Box status", "body": body}]
+    )
+    assert any(
+        p.startswith("/repos/owner/engine/issues") and "labels=engine:box-status" in p
+        for p in requested
+    )
+    assert len(updated) == 1
+    assert _line_under_title(updated[0]) == "**Box:** silent — last check-in 2020-01-01 03:12 UTC"
+
+
+def test_run_morning_report_main_failed_box_fetch_is_unreadable(monkeypatch):
+    error = urllib.error.URLError("network down")
+    updated, _ = _run_main(monkeypatch, error)
+    assert len(updated) == 1
+    assert _line_under_title(updated[0]) == "**Box:** status unreadable"
