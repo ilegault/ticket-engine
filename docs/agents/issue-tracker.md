@@ -20,6 +20,7 @@ reviewer needs may be written there.
   `None`
 - Acceptance criteria are `- [ ]` checkboxes, ticked individually as they are met
 - Conversation appends at the bottom under a `## Comments` heading, dated `YYYY-MM-DD`
+- A `Claimed-by:` line (`box` or `jules`) is written under `Status:` when a worker claims the ticket. Workers keep it; status words are unchanged.
 
 ## Writing acceptance criteria
 
