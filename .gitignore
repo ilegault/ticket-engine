@@ -26,6 +26,11 @@ requests.json
 .DS_Store
 Thumbs.db
 
+# The box-worker's local ledger, quota-pause record and rotating logs
+# (ticket 31). Never committed: it is box-local operational state, not repo
+# state, and may hold agy output the box must never post publicly.
+logs/
+
 build/
 dist/
 

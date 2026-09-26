@@ -31,6 +31,23 @@ further:
   PRs nothing more, force-removes its local worktree (the one place --force is
   used, because the ticket is no longer the box's to keep), leaves the remote
   ticket branch alone, and logs the loss.
+
+Ticket 31 (spec §The box loop, §Quota protocol) adds two things the box-worker
+loop (`box_worker.py`) needs and `work-windows` must never see:
+
+- `list_box_claims`: reads every `claim/<effort>/<NN>` branch's `Claimed-by`
+  line, so `box_worker.BoxLoop` can build a `BoxWorld` without duplicating the
+  claim-branch/`Claimed-by` reading `_claim_still_mine` already does.
+- `run_one(..., box_mode=True)`: `work-windows` runs once and is meant to sit
+  and wait out a quota pause inside a single `run_one` call (ticket 29's
+  behaviour, unchanged: `box_mode` defaults to `False`). The box-worker loop
+  cannot do that — it also has to keep rewriting the pinned status issue and
+  reacting to alerts while paused, which only happens between ticks. So in
+  `box_mode`, a `quota` or `auth` outcome is handed straight back to the
+  caller instead of being slept out here; `BoxCore`'s own timeline
+  (`after_quota_error`) and the box-worker's login-expired handling own the
+  retry pacing instead. Every other outcome (`waiting`, `timeout`, `failed`,
+  and their resume/auto-reply/escalation handling) is unchanged in both modes.
 """
 from __future__ import annotations
 
@@ -38,6 +55,7 @@ import base64
 import datetime
 import logging
 import pathlib
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -173,7 +191,8 @@ class LocalWorker:
         entry: LocalRepoEntry,
         ticket: Ticket,
         now: datetime.datetime | None = None,
-    ) -> bool:
+        box_mode: bool = False,
+    ) -> bool | object | None:
         """Claim one ticket (any runner), work it in a worktree with agy.
 
         Steps:
@@ -262,14 +281,15 @@ class LocalWorker:
             worktree_path=worktree_path,
             push_env=push_env,
             result=result,
+            box_mode=box_mode,
         )
 
         if result is None:
-            return False
+            return None if box_mode else False
 
         if result.success:
             self._cleanup_worktree(entry.path, worktree_path, ticket_branch)
-            return True
+            return result if box_mode else True
 
         logger.error(
             "agy failed for ticket %02d (outcome: %s)",
@@ -277,7 +297,7 @@ class LocalWorker:
             result.outcome,
         )
         self._cleanup_worktree(entry.path, worktree_path, ticket_branch)
-        return False
+        return result if box_mode else False
 
     def fix_ci(
         self, entry: LocalRepoEntry, ticket: Ticket, pr_number: int
@@ -325,6 +345,7 @@ class LocalWorker:
         worktree_path: str,
         push_env: dict[str, str] | None,
         result: object,
+        box_mode: bool = False,
     ) -> object | None:
         """Classify each agy outcome and decide whether to resume, answer, or escalate.
 
@@ -338,6 +359,11 @@ class LocalWorker:
           `LocalWorkerConfig.max_resumes_per_ticket` times; the run that
           reaches the bound escalates with reason `resumes_exhausted`.
 
+        Ticket 31: in `box_mode`, a `quota` or `auth` outcome is returned to
+        the caller immediately rather than slept out here (see the module
+        docstring). The claim and worktree are left exactly as they are —
+        the box-worker loop resumes them on a later tick via `ResumeClaim`.
+
         Returns the final `AgyResult` (success or exhausted-but-not-escalated),
         or `None` once escalation or a lost claim has already settled the run.
         """
@@ -350,6 +376,9 @@ class LocalWorker:
 
         while not result.success:
             if result.quota_error:
+                if box_mode:
+                    return result
+
                 if not self._claim_still_mine(entry.repo, claim_branch, ticket_path):
                     logger.info(
                         "Lost claim for ticket %02d (%s); dropping worktree without resuming.",
@@ -374,6 +403,9 @@ class LocalWorker:
                     entry, ticket, ticket_path, worktree_path, ticket_branch, effort
                 )
                 continue
+
+            if box_mode and result.outcome == "auth":
+                return result
 
             if result.outcome == "waiting":
                 if auto_replies < cfg.max_auto_replies:
@@ -790,6 +822,46 @@ class LocalWorker:
     def _default_ticket_loader(self, entry: LocalRepoEntry) -> list[Ticket]:
         repo_path = pathlib.Path(entry.path)
         return _load_tickets_from_path(repo_path)
+
+    def list_box_claims(
+        self, entry: LocalRepoEntry, tickets: list[Ticket]
+    ) -> dict[int, str]:
+        """Read every `claim/<effort>/<NN>` branch's `Claimed-by` value.
+
+        Ticket 31 (spec §The box loop AC2): the box-worker loop builds
+        `BoxWorld.claims` from this, so the claim-branch/`Claimed-by` reading
+        `_claim_still_mine` already does is not duplicated a third time
+        (AGENTS.md §3 invariant 3). `tickets` are the repo's freshly pulled
+        tickets, used to resolve a claimed ticket number to its file path
+        (slug included) on the claim branch. A branch whose ticket file
+        cannot be read is skipped rather than guessed at.
+        """
+        claims: dict[int, str] = {}
+        for branch in self.github_client.list_claim_branches(entry.repo):
+            match = re.match(r"^claim/([\w.-]+)/(\d+)$", branch)
+            if not match:
+                continue
+            effort, number_str = match.groups()
+            number = int(number_str)
+            ticket = next((t for t in tickets if t.number == number), None)
+            ticket_path = (
+                _ticket_path_str(ticket, effort)
+                if ticket is not None
+                else f".scratch/{effort}/issues/{number:02d}.md"
+            )
+            try:
+                file_data = self.github_client.get_file_contents(
+                    entry.repo, ticket_path, ref=branch
+                )
+            except (OSError, KeyError, RuntimeError) as exc:
+                logger.warning(
+                    "Failed to read claim branch %s ticket file: %s", branch, exc
+                )
+                continue
+            content = file_data.get("content", "")
+            parsed = TicketParser().parse_text(content)
+            claims[number] = parsed.claimed_by or ""
+        return claims
 
 
 # ------------------------------------------------------------------
