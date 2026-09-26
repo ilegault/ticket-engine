@@ -1,4 +1,4 @@
-# 37: Any worker checks claimability against the live remote before claiming
+# 38: Any worker checks claimability against the live remote before claiming
 
 **What to build:** The race this effort just hit: a session working a ticket
 outside the dispatcher's own loop (an ad hoc human/agent session, not a
@@ -31,7 +31,7 @@ stops being a matter of individual carefulness.
      output lines become the `claim_refs` passed to `claim_precheck` (empty output
      is an empty list, not an error).
   `main` prints exactly one line, `<decision>: <effort> <NN>` (e.g.
-  `claimable: box-primary-worker 37`), and returns `0` for `"claimable"`, `1`
+  `claimable: box-primary-worker 38`), and returns `0` for `"claimable"`, `1`
   for anything else. A worker (or a human) runs it and checks the exit code;
   it makes no GitHub API call and needs no token, only the git remote the
   worktree already has.
@@ -69,7 +69,7 @@ touched). Write these tests first and watch them fail.
 
 - [ ] **Four decisions, pure.** `claim_precheck`: `None` → `"unreadable"`;
   a ticket built with `status="done"` → `"already-done"`; a ticket with
-  `status="ready-for-agent"` and `claim_refs=["claim/box-primary-worker/37"]`
+  `status="ready-for-agent"` and `claim_refs=["claim/box-primary-worker/38"]`
   → `"already-claimed"`; the same ticket with `status="in-progress"` and
   `claim_refs=[]` → `"already-claimed"` (status alone is enough, no claim
   branch needed); a ticket with `status="ready-for-agent"` and `claim_refs=[]`
@@ -77,10 +77,10 @@ touched). Write these tests first and watch them fail.
 - [ ] **Script drives the three commands in order and parses the real file.**
   With a fake `run_fn` scripted to return one matching path from
   `ls-tree`, that file's real content from `git show`, and one matching ref
-  from `ls-remote`, `main(fake_run_fn, "box-primary-worker", 37)` returns `1`
-  and prints `already-claimed: box-primary-worker 37`. Assert the three
-  recorded argument lists, in order, match the commands above with `37`
-  zero-padded to `37` and the effort substituted correctly for a
+  from `ls-remote`, `main(fake_run_fn, "box-primary-worker", 38)` returns `1`
+  and prints `already-claimed: box-primary-worker 38`. Assert the three
+  recorded argument lists, in order, match the commands above with `38`
+  zero-padded to `38` and the effort substituted correctly for a
   double-digit number (also test number `7` renders `07` in the paths and
   refs).
 - [ ] **No match is `unreadable`, not a crash.** `ls-tree` returning no
