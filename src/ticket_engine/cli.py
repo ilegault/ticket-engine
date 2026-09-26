@@ -25,9 +25,9 @@ from ticket_engine.dispatch import DispatchCore, StartTicketAction, WorldSnapsho
 from ticket_engine.github import GitHubClient
 from ticket_engine.jules import JulesClient
 from ticket_engine.live_dispatch import LiveDispatcher
-from ticket_engine.ticket_lint import lint_tickets
 from ticket_engine.parser import Ticket, TicketParser
 from ticket_engine.run_report import build_run_report, write_step_summary
+from ticket_engine.ticket_lint import lint_tickets
 
 logger = logging.getLogger(__name__)
 
