@@ -68,8 +68,8 @@ by* ticket is `done`. First by number wins. The frontier is computed from
 **Worker** — anything that implements a ticket. Two kinds exist:
 - **Jules worker** — a Jules session in Google's cloud. Linux. Takes `Runner: any`.
 - **Local worker** — the Antigravity CLI (`agy`) on one of the developer's
-  machines, started by the engine's local command. Takes `windows` tickets when
-  run on Windows.
+  machines, started by the engine's local command. Since ticket 31, it takes
+  any ticket, `windows` included, when run as *Box*.
 
 **Box** — the developer's Windows mini PC, running the local worker permanently.
 The highest-priority worker: it takes any ticket, `windows` included (ADR 0006).
@@ -108,14 +108,16 @@ paused on quota or dead (ADR 0006).
 checkpoint if one was pushed, and otherwise starts the ticket fresh. `windows`
 tickets are never handed off. A box that finds its claim gone drops the ticket.
 
-**Checkpoint** — a local worker's work-in-progress commit pushed to the ticket
-branch, plus a progress note of five lines or fewer under `## Comments`. What a
-resumed worker continues from. Jules workers do not checkpoint: a running Jules
-session is never cut off by quota.
+**Checkpoint** — `agy` commits at each acceptance-criterion boundary and the
+local worker pushes that commit to the ticket branch, plus a progress note of
+five lines or fewer under `## Comments`. What a resumed worker continues from.
+Jules workers do not checkpoint: a running Jules session is never cut off by
+quota.
 
 **Quota reserve** — the headroom the dispatcher keeps. Jules: never start a
-session when fewer than 10 of the rolling-24-hour allowance remain. Local worker:
-never start a ticket below 20% remaining; pause (not abandon) when quota runs out.
+session when fewer than 10 of the rolling-24-hour allowance remain. Local
+worker: no pre-flight reserve (agy exposes no quota reading); it pauses on a
+quota error and keeps its claim.
 
 **Daily cap** — the most tickets the dispatcher will start in one target repo in
 24 hours. A blast-radius limit, not a quota limit. Configured per repo.
