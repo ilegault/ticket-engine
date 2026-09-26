@@ -1,0 +1,20 @@
+[
+  {
+    "id": 111,
+    "number": 101,
+    "title": "Escalation: phase-1-07 test-ticket-7",
+    "state": "open",
+    "labels": [
+      {"id": 1, "name": "escalation"}
+    ]
+  },
+  {
+    "id": 112,
+    "number": 102,
+    "title": "Escalation: phase-1-09 other-ticket",
+    "state": "open",
+    "labels": [
+      {"id": 1, "name": "escalation"}
+    ]
+  }
+]

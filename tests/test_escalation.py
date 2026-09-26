@@ -27,7 +27,7 @@ from ticket_engine.dispatch import (
 )
 from ticket_engine.github import GitHubClient
 from ticket_engine.live_dispatch import LiveDispatcher
-from ticket_engine.parser import Ticket
+from ticket_engine.parser import Ticket, TicketParser
 
 
 def make_ticket(
@@ -182,6 +182,268 @@ def test_live_dispatch_orchestrates_escalation_commit_draft_and_label():
         issue_number=42,
         labels=["engine:escalated"],
     )
+
+
+def test_pr_escalation_opens_an_escalation_issue_when_none_is_open():
+    mock_github = MagicMock()
+    mock_github.get_default_branch_sha.return_value = "sha123"
+    mock_github.list_claim_branches.return_value = []
+    mock_github.get_file_contents.return_value = {
+        "content": (
+            "# 07: Feature\n\n"
+            "**What to build:** Test feature.\n\n"
+            "**Status:** in-progress\n\n"
+            "## Comments\n"
+        ),
+        "sha": "file_sha_123",
+    }
+    mock_github.find_open_issue.return_value = None
+    mock_github.create_issue.return_value = 101
+
+    mock_jules = MagicMock()
+
+    ticket = make_ticket(7, title="Failing Feature")
+    ticket = Ticket(**{**ticket.__dict__, "slug": "failing-feature"})
+    open_pr = OpenPR(
+        number=42,
+        branch="ticket/phase-1-07-failing-feature",
+        ticket_number=7,
+        failed_ci_count=3,
+        ci_log_excerpt="pytest failure output",
+    )
+
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=RepoConfig(default_branch="master"),
+    )
+
+    dispatcher.dispatch_escalations_and_stale_claims(
+        tickets=[ticket],
+        open_prs=[open_pr],
+    )
+
+    mock_github.find_open_issue.assert_called_once_with(
+        "owner/repo", "escalation", "Escalation: phase-1-07 failing-feature"
+    )
+    mock_github.create_issue.assert_called_once()
+    call = mock_github.create_issue.call_args
+    args, kwargs = call.args, call.kwargs
+    all_args = list(args) + list(kwargs.values())
+    assert "owner/repo" in all_args
+    assert "Escalation: phase-1-07 failing-feature" in all_args
+    body = next(a for a in all_args if isinstance(a, str) and a.startswith("@"))
+    assert body.startswith("@owner")
+    labels = next(a for a in all_args if isinstance(a, list))
+    assert labels == ["escalation"]
+    assert dispatcher.last_run.issue_failures == []
+
+
+def test_pr_escalation_creates_nothing_when_an_issue_is_already_open():
+    mock_github = MagicMock()
+    mock_github.get_default_branch_sha.return_value = "sha123"
+    mock_github.list_claim_branches.return_value = []
+    mock_github.get_file_contents.return_value = {
+        "content": "# 07: Feature\n\n**Status:** in-progress\n\n## Comments\n",
+        "sha": "file_sha_123",
+    }
+    mock_github.find_open_issue.return_value = 101
+
+    mock_jules = MagicMock()
+
+    ticket = make_ticket(7, title="Failing Feature")
+    ticket = Ticket(**{**ticket.__dict__, "slug": "failing-feature"})
+    open_pr = OpenPR(
+        number=42,
+        branch="ticket/phase-1-07-failing-feature",
+        ticket_number=7,
+        failed_ci_count=3,
+        ci_log_excerpt="pytest failure output",
+    )
+
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+    )
+
+    dispatcher.dispatch_escalations_and_stale_claims(
+        tickets=[ticket],
+        open_prs=[open_pr],
+    )
+
+    mock_github.find_open_issue.assert_called_once()
+    mock_github.create_issue.assert_not_called()
+
+
+def test_pr_escalation_issue_never_carries_the_ci_log_excerpt_and_a_failed_create_is_recorded():
+    mock_github = MagicMock()
+    mock_github.get_default_branch_sha.return_value = "sha123"
+    mock_github.list_claim_branches.return_value = []
+    mock_github.get_file_contents.return_value = {
+        "content": "# 07: Feature\n\n**Status:** in-progress\n\n## Comments\n",
+        "sha": "file_sha_123",
+    }
+    mock_github.find_open_issue.return_value = None
+    mock_github.create_issue.side_effect = OSError("HTTP 500")
+
+    mock_jules = MagicMock()
+
+    secret = "SECRET-TOKEN-abc"
+    ticket = make_ticket(7, title="Failing Feature")
+    ticket = Ticket(**{**ticket.__dict__, "slug": "failing-feature"})
+    open_pr = OpenPR(
+        number=42,
+        branch="ticket/phase-1-07-failing-feature",
+        ticket_number=7,
+        failed_ci_count=3,
+        ci_log_excerpt=secret,
+    )
+
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+    )
+
+    dispatcher.dispatch_escalations_and_stale_claims(
+        tickets=[ticket],
+        open_prs=[open_pr],
+    )
+
+    # The failed create_issue call is recorded, never raised.
+    assert dispatcher.last_run.issue_failures == [(7, "HTTP 500")]
+
+    for call in mock_github.find_open_issue.call_args_list + mock_github.create_issue.call_args_list:
+        for value in list(call.args) + list(call.kwargs.values()):
+            if isinstance(value, str):
+                assert secret not in value
+            if isinstance(value, list):
+                assert secret not in value
+
+
+def test_dispatch_closes_escalation_issue_once_ticket_is_done_on_default_branch():
+    mock_github = MagicMock()
+    mock_github.get_default_branch_sha.return_value = "sha_base"
+    mock_github.list_claim_branches.return_value = ["claim/phase-1/09"]
+    mock_github.get_repo_variable.return_value = None
+
+    mock_jules = MagicMock()
+    mock_jules.count_recent_sessions.return_value = 0
+    mock_jules.list_sessions.return_value = []
+
+    done_ticket = TicketParser().parse_text(
+        (
+            "# 07: Failing Feature\n\n"
+            "**Status:** done\n\n"
+            "**Blocked by:** None\n\n"
+            "## Acceptance criteria\n\n"
+            "- [x] Criterion\n\n"
+            "## Comments\n"
+        ),
+        filename="07-failing-feature.md",
+    )
+    unresolved_ticket = TicketParser().parse_text(
+        (
+            "# 09: Other Feature\n\n"
+            "**Status:** blocked\n\n"
+            "**Blocked by:** None\n\n"
+            "## Acceptance criteria\n\n"
+            "- [ ] Criterion\n\n"
+            "## Comments\n"
+        ),
+        filename="09-other-feature.md",
+    )
+
+    mock_github.list_open_issues.return_value = [
+        {"number": 101, "title": "Escalation: phase-1-07 failing-feature"},
+        {"number": 102, "title": "Escalation: phase-1-09 other-feature"},
+    ]
+
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=RepoConfig(default_branch="master"),
+    )
+    dispatcher.dispatch(tickets=[done_ticket, unresolved_ticket])
+
+    mock_github.close_issue.assert_called_once_with("owner/repo", 101)
+
+
+def test_dispatch_closes_escalation_issue_once_its_claim_branch_is_gone():
+    mock_github = MagicMock()
+    mock_github.get_default_branch_sha.return_value = "sha_base"
+    mock_github.list_claim_branches.return_value = []
+    mock_github.get_repo_variable.return_value = None
+
+    mock_jules = MagicMock()
+    mock_jules.count_recent_sessions.return_value = 0
+    mock_jules.list_sessions.return_value = []
+
+    unresolved_ticket = TicketParser().parse_text(
+        (
+            "# 07: Failing Feature\n\n"
+            "**Status:** blocked\n\n"
+            "**Blocked by:** None\n\n"
+            "## Acceptance criteria\n\n"
+            "- [ ] Criterion\n\n"
+            "## Comments\n"
+        ),
+        filename="07-failing-feature.md",
+    )
+
+    mock_github.list_open_issues.return_value = [
+        {"number": 101, "title": "Escalation: phase-1-07 failing-feature"},
+    ]
+
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=RepoConfig(default_branch="master"),
+    )
+    dispatcher.dispatch(tickets=[unresolved_ticket])
+
+    mock_github.close_issue.assert_called_once_with("owner/repo", 101)
+
+
+def test_dispatch_leaves_an_unresolved_escalation_issue_open():
+    mock_github = MagicMock()
+    mock_github.get_default_branch_sha.return_value = "sha_base"
+    mock_github.list_claim_branches.return_value = ["claim/phase-1/07"]
+    mock_github.get_repo_variable.return_value = None
+
+    mock_jules = MagicMock()
+    mock_jules.count_recent_sessions.return_value = 0
+    mock_jules.list_sessions.return_value = []
+
+    unresolved_ticket = TicketParser().parse_text(
+        (
+            "# 07: Failing Feature\n\n"
+            "**Status:** blocked\n\n"
+            "**Blocked by:** None\n\n"
+            "## Acceptance criteria\n\n"
+            "- [ ] Criterion\n\n"
+            "## Comments\n"
+        ),
+        filename="07-failing-feature.md",
+    )
+
+    mock_github.list_open_issues.return_value = [
+        {"number": 101, "title": "Escalation: phase-1-07 failing-feature"},
+    ]
+
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=RepoConfig(default_branch="master"),
+    )
+    dispatcher.dispatch(tickets=[unresolved_ticket])
+
+    mock_github.close_issue.assert_not_called()
 
 
 def test_live_dispatch_releases_stale_claim_via_github():

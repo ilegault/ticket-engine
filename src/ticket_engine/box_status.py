@@ -40,6 +40,7 @@ __all__ = [
     "EscalationReason",
     "TicketRef",
     "parse_box_status",
+    "parse_escalation_issue_title",
     "render_box_alert",
     "render_box_status",
     "render_escalation_issue",
@@ -271,3 +272,23 @@ def render_escalation_issue(
         f"Reason: {escalation_reason.value}",
     ]
     return title, "\n".join(lines) + "\n"
+
+
+_ESCALATION_TITLE_RE = re.compile(r"^Escalation: ([\w.-]+)-(\d+) (.+)$")
+
+
+def parse_escalation_issue_title(title: str) -> tuple[str, int, str] | None:
+    """Parse an escalation issue title back into (effort, ticket number, slug).
+
+    Ticket 26 (§Escalation issues): each dispatch run closes an open escalation
+    issue once its ticket is done or its claim branch is gone, and it identifies
+    the ticket only from the fixed title `render_escalation_issue` writes. This is
+    the one place that reads that title back, so a run never guesses at an issue
+    it did not open itself; anything that does not match the template returns
+    `None` rather than a wrong ticket number.
+    """
+    match = _ESCALATION_TITLE_RE.match(title.strip())
+    if not match:
+        return None
+    effort, number_str, title_slug = match.groups()
+    return effort, int(number_str), title_slug

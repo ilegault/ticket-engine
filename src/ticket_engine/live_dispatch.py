@@ -30,6 +30,16 @@ Phase 1 Spec §Implementation Decisions and Ticket 06 / Ticket 07 Acceptance Cri
     `Handoff` to the `StartTicketAction` it hands Jules. This detection is the
     adapter's job, not the core's, because it needs a branch-head SHA comparison and
     a file read that a pure function cannot do.
+11. Ticket 26 (§Escalation issues), CONTEXT *Escalation*: every escalation the
+    dispatcher carries out (`EscalatePRAction`, `EscalateWaitingSessionAction`)
+    also opens one GitHub issue in the ticket's target repo, labelled
+    `escalation`, so GitHub Mobile can notify the developer without email. Text
+    comes only from `box_status.render_escalation_issue`; at most one issue
+    stays open per ticket (`find_open_issue` before `create_issue`). Each
+    `dispatch` run also closes any open escalation issue whose ticket is done
+    on the default branch or whose claim branch is gone
+    (`_close_resolved_escalations`). A failed issue call is logged and recorded
+    in `RunFacts.issue_failures`, never raised.
 """
 from __future__ import annotations
 
@@ -38,7 +48,14 @@ import logging
 import urllib.error
 from typing import TYPE_CHECKING, Any
 
-from ticket_engine.box_status import BoxStatus, parse_box_status
+from ticket_engine.box_status import (
+    BoxStatus,
+    EscalationReason,
+    TicketRef,
+    parse_box_status,
+    parse_escalation_issue_title,
+    render_escalation_issue,
+)
 from ticket_engine.config import RepoConfig
 from ticket_engine.dispatch import (
     NO_BOX,
@@ -218,6 +235,17 @@ class LiveDispatcher:
                 except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
                     logger.warning("Failed to add label to PR #%s: %s", action.pr_number, exc)
 
+                # 6. Open an escalation issue in the target repo, at most one per
+                # ticket (ticket 26, CONTEXT *Escalation*). Text comes only from
+                # `render_escalation_issue`; a failed create is logged and
+                # recorded, never raised.
+                self._open_escalation_issue(
+                    ticket=ticket,
+                    link=f"https://github.com/{self.repo}/pull/{action.pr_number}",
+                    reason=EscalationReason.ci_failed,
+                    failures=self.last_run.issue_failures,
+                )
+
                 executed_actions.append(action)
 
             elif isinstance(action, ReleaseClaimAction):
@@ -242,6 +270,84 @@ class LiveDispatcher:
                     logger.error("Failed to set TICKET_ENGINE_PAUSED variable: %s", exc)
 
         return executed_actions
+
+    def _open_escalation_issue(
+        self,
+        ticket: Ticket,
+        link: str,
+        reason: EscalationReason,
+        failures: list[tuple[int, str]],
+    ) -> None:
+        """Open an escalation issue for `ticket` unless one is already open.
+
+        Ticket 26 (§Escalation issues): text comes only from
+        `box_status.render_escalation_issue`, never from free text such as a CI
+        log excerpt. At most one issue stays open per ticket, so this always
+        checks `find_open_issue` by the exact title first. A failed call is
+        logged and recorded in `failures`, never raised: an escalation issue is
+        a notification, not something the run should die over.
+        """
+        effort = ticket.effort or "phase-1"
+        try:
+            title, body = render_escalation_issue(
+                ref=TicketRef(repo=self.repo, number=ticket.number),
+                effort=effort,
+                title_slug=ticket.slug,
+                link=link,
+                reason=reason,
+                owner=self.repo.split("/")[0],
+            )
+            existing_issue = self.github_client.find_open_issue(self.repo, "escalation", title)
+            if existing_issue is None:
+                self.github_client.create_issue(self.repo, title, body, ["escalation"])
+        except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+            logger.error("Failed to open escalation issue for ticket %02d: %s", ticket.number, exc)
+            failures.append((ticket.number, str(exc)))
+
+    def _close_resolved_escalations(
+        self, tickets: list[Ticket], claim_branches: set[str], facts: RunFacts
+    ) -> None:
+        """Close open `escalation` issues once their ticket is resolved.
+
+        Ticket 26: an issue is resolved once its ticket is `done` on the
+        default branch, or its claim branch is gone (merged, superseded, or
+        reworked and released). The ticket number and effort are read back only
+        from the issue's own title via `parse_escalation_issue_title`, never
+        guessed, so a run never closes an issue it cannot identify.
+        """
+        try:
+            open_issues = self.github_client.list_open_issues(self.repo, "escalation")
+        except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+            logger.warning("Failed to list open escalation issues for %s: %s", self.repo, exc)
+            return
+        if not isinstance(open_issues, list) or not open_issues:
+            return
+
+        ticket_by_number = {t.number: t for t in tickets}
+        for issue in open_issues:
+            if not isinstance(issue, dict):
+                continue
+            number = issue.get("number")
+            parsed = parse_escalation_issue_title(str(issue.get("title") or ""))
+            if number is None or parsed is None:
+                continue
+            effort, ticket_number, _slug = parsed
+            ticket = ticket_by_number.get(ticket_number)
+            ticket_done = ticket is not None and ticket.is_done()
+            claim_gone = f"claim/{effort}/{ticket_number:02d}" not in claim_branches
+            if not (ticket_done or claim_gone):
+                continue
+            try:
+                self.github_client.close_issue(self.repo, int(number))
+                logger.info(
+                    "Closed resolved escalation issue #%s for ticket %02d", number, ticket_number
+                )
+            except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                logger.error(
+                    "Failed to close escalation issue #%s for ticket %02d: %s",
+                    number, ticket_number, exc,
+                )
+                facts.issue_failures.append((ticket_number, str(exc)))
 
     def _with_waiting_activities(self, sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Copy of `sessions` where this repo's waiting sessions carry `activities`.
@@ -319,6 +425,12 @@ class LiveDispatcher:
                     facts.session_failures.append((num, "escalate", str(exc)))
                     continue
                 facts.session_escalations.append((num, action.claim_ref, action.replies))
+                self._open_escalation_issue(
+                    ticket=action.ticket,
+                    link=f"https://github.com/{self.repo}/tree/{action.claim_ref}",
+                    reason=EscalationReason.kept_asking,
+                    failures=facts.issue_failures,
+                )
                 try:
                     self.jules_client.send_message(action.session_name, action.stop_message)
                 except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
@@ -448,6 +560,9 @@ class LiveDispatcher:
         facts.repo_starts_24h = repo_starts_24h
         facts.claims_in_flight = sorted(existing_claims)
 
+        # 4b-2. Close escalation issues whose ticket is now resolved (ticket 26).
+        self._close_resolved_escalations(tickets, existing_claims, facts)
+
         # 4c. Build Claim objects for remaining claim branches
         built_claims: list[Claim] = []
         for claim_ref in existing_claims:
@@ -557,6 +672,77 @@ class LiveDispatcher:
                 logger.warning("Failed to read box status issue from %s: %s", ENGINE_REPO, exc)
                 box = None
                 box_status_error = str(exc)
+
+        # 4e. Detect a box checkpoint for an unclaimed frontier ticket, to hand off
+        # to Jules (ADR 0006 rule 6, ticket 25). `Runner: windows` tickets are never
+        # handed to Jules, so their checkpoints (if any) are not worth reading here.
+        #
+        # Restored here: this block (and the `checkpoints` variable it defines) was
+        # dropped by the merge that landed ticket 25 on master, leaving every call to
+        # `dispatch()` raise `NameError: name 'checkpoints' is not defined` below.
+        # Ticket 26 needs `dispatch()` working end to end to test escalation-issue
+        # closing, so it is restored verbatim from commit 919964b rather than left
+        # broken for a separate fix.
+        checkpoints: dict[int, Handoff] = {}
+        frontier_for_checkpoints = self.core.compute_frontier(WorldSnapshot(tickets=tickets))
+        for ticket in frontier_for_checkpoints:
+            if ticket.runner == "windows" or not ticket.slug:
+                continue
+            effort = ticket.effort or "phase-1"
+            if f"claim/{effort}/{ticket.number:02d}" in existing_claims:
+                continue
+            ticket_branch = f"ticket/{effort}-{ticket.number:02d}-{ticket.slug}"
+            try:
+                branch_head_time = self.github_client.get_branch_head_time(self.repo, ticket_branch)
+            except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                logger.warning(
+                    "Failed to check ticket branch %s for a box checkpoint on %s: %s",
+                    ticket_branch,
+                    self.repo,
+                    exc,
+                )
+                continue
+            if branch_head_time is None:
+                continue  # No box checkpoint branch pushed for this ticket.
+
+            try:
+                branch_sha = self.github_client.get_default_branch_sha(self.repo, ticket_branch)
+            except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                logger.warning(
+                    "Failed to read head SHA for ticket branch %s on %s: %s",
+                    ticket_branch,
+                    self.repo,
+                    exc,
+                )
+                continue
+            if branch_sha == base_sha:
+                continue  # Ticket branch never diverged from the default branch.
+
+            ticket_path_str = (
+                str(ticket.path).replace("\\", "/")
+                if ticket.path
+                else f".scratch/{effort}/issues/{ticket.number:02d}-{ticket.slug}.md"
+            )
+            try:
+                info = self.github_client.get_file_contents(
+                    repo=self.repo,
+                    path=ticket_path_str,
+                    ref=ticket_branch,
+                )
+            except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                logger.warning(
+                    "Failed to read ticket file on branch %s for %s: %s",
+                    ticket_branch,
+                    self.repo,
+                    exc,
+                )
+                continue
+            content = (info.get("content") or "") if isinstance(info, dict) else ""
+            if not content:
+                continue
+            checkpoints[ticket.number] = Handoff(
+                branch=ticket_branch, note=extract_progress_note(content)
+            )
 
         # 5. Build WorldSnapshot and evaluate pure core
         snapshot = WorldSnapshot(

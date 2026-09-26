@@ -64,6 +64,9 @@ class RunFacts:
     still_escalated: list[tuple[int, str]] = field(default_factory=list)
     # (ticket number, what failed: "reply to" / "escalate" / "stop", error text)
     session_failures: list[tuple[int, str, str]] = field(default_factory=list)
+    # A failed create_issue/close_issue call for an escalation issue (ticket 26):
+    # (ticket number, error text). Logged and recorded, never raised.
+    issue_failures: list[tuple[int, str]] = field(default_factory=list)
     # Ticket lint findings by ticket number (ADR 0005); these tickets are not started.
     lint_findings: dict[int, list[str]] = field(default_factory=dict)
     # Box primary worker (ADR 0006)
@@ -73,11 +76,6 @@ class RunFacts:
     box_status_error: str = ""
     # Stale claims released on this run: (ticket number, reason)
     released_stale: list[tuple[int, str]] = field(default_factory=list)
-    # Box primary worker (ADR 0006)
-    box_state: str = "none"
-    box_checked_in: datetime.datetime | None = None
-    left_for_box: list[Ticket] = field(default_factory=list)
-    box_status_error: str = ""
 
 
 def _label(ticket: Ticket) -> str:
