@@ -1,0 +1,10 @@
+{
+  "id": 987654321,
+  "number": 101,
+  "title": "Escalation: phase-1-07 test-ticket-7",
+  "state": "closed",
+  "labels": [
+    {"id": 1, "name": "escalation"}
+  ],
+  "html_url": "https://github.com/owner/repo/issues/101"
+}

@@ -414,4 +414,41 @@ class GitHubClient:
                 return []
             raise
 
+    def create_issue(
+        self, repo: str, title: str, body: str, labels: list[str]
+    ) -> int:
+        """Create an issue via REST `POST /repos/{repo}/issues`.
+
+        Returns the created issue's number. Ticket 26: this is how an
+        escalation issue is opened in a ticket's target repo (§Escalation
+        issues); the title and body always come from
+        `box_status.render_escalation_issue`, never from free text.
+        """
+        endpoint = f"/repos/{repo}/issues"
+        payload = {"title": title, "body": body, "labels": labels}
+        res = self._request("POST", endpoint, payload)
+        if isinstance(res, dict) and "number" in res:
+            return int(res["number"])
+        msg = f"create_issue on {repo} returned no issue number: {res!r}"
+        raise ValueError(msg)
+
+    def find_open_issue(self, repo: str, label: str, title: str) -> int | None:
+        """The number of the open issue carrying `label` whose title exactly
+        matches `title`, or `None`. Used to keep at most one escalation issue
+        open per ticket (ticket 26)."""
+        for item in self.list_issues(repo, state="open", labels=label):
+            if isinstance(item, dict) and item.get("title") == title:
+                return int(item["number"])
+        return None
+
+    def close_issue(self, repo: str, number: int) -> dict[str, Any]:
+        """Close an issue via `PATCH` with `state: closed`."""
+        endpoint = f"/repos/{repo}/issues/{number}"
+        return self._request("PATCH", endpoint, {"state": "closed"})
+
+    def list_open_issues(self, repo: str, label: str) -> list[dict[str, Any]]:
+        """List open issues carrying `label`. Ticket 26: each dispatch run uses
+        this to find escalation issues to close once their ticket is resolved."""
+        return self.list_issues(repo, state="open", labels=label)
+
 

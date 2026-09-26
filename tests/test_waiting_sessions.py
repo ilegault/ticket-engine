@@ -314,6 +314,36 @@ def test_live_dispatch_escalates_on_the_claim_branch_then_stops_the_session():
     github.delete_branch.assert_not_called()
 
 
+def test_live_dispatch_opens_an_escalation_issue_when_a_session_is_escalated():
+    acts = [agent_asks(1), engine_replied(2), agent_asks(3), engine_replied(4), agent_asks(5)]
+    github, jules = fakes([waiting_session(None)], {SESSION: acts})
+    github.find_open_issue.return_value = None
+    github.create_issue.return_value = 55
+    run(github, jules)
+
+    claim = f"claim/{EFFORT}/46"
+    github.find_open_issue.assert_called_once_with(
+        REPO, "escalation", f"Escalation: {EFFORT}-46 epif-dm"
+    )
+    github.create_issue.assert_called_once_with(
+        REPO,
+        f"Escalation: {EFFORT}-46 epif-dm",
+        f"@owner\nTicket: {REPO} #46\nLink: https://github.com/{REPO}/tree/{claim}\n"
+        "Reason: kept_asking\n",
+        ["escalation"],
+    )
+
+
+def test_live_dispatch_opens_no_second_issue_when_one_is_already_open():
+    acts = [agent_asks(1), engine_replied(2), agent_asks(3), engine_replied(4), agent_asks(5)]
+    github, jules = fakes([waiting_session(None)], {SESSION: acts})
+    github.find_open_issue.return_value = 55
+    run(github, jules)
+
+    github.find_open_issue.assert_called_once()
+    github.create_issue.assert_not_called()
+
+
 def test_failed_escalation_commit_does_not_stop_the_session():
     acts = [agent_asks(1), engine_replied(2), agent_asks(3), engine_replied(4), agent_asks(5)]
     github, jules = fakes([waiting_session(None)], {SESSION: acts})

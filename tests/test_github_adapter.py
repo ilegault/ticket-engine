@@ -199,3 +199,108 @@ def test_get_branch_head_time_404_returns_none():
         result = client.get_branch_head_time(repo="owner/repo", branch="missing")
         assert result is None
 
+
+# --- escalation issues (ticket 26) -------------------------------------------
+
+
+def test_create_issue_posts_title_body_labels_and_returns_number():
+    fixture_json = load_fixture("issue_create_success.json")
+    client = GitHubClient(token="mock_token")
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = fixture_json.encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        number = client.create_issue(
+            repo="owner/repo",
+            title="Escalation: phase-1-07 test-ticket-7",
+            body="@owner\nTicket: owner/repo #07\n",
+            labels=["escalation"],
+        )
+
+    assert number == 101
+    req = mock_urlopen.call_args[0][0]
+    assert req.method == "POST"
+    assert req.full_url == "https://api.github.com/repos/owner/repo/issues"
+    payload = json.loads(req.data.decode("utf-8"))
+    assert payload == {
+        "title": "Escalation: phase-1-07 test-ticket-7",
+        "body": "@owner\nTicket: owner/repo #07\n",
+        "labels": ["escalation"],
+    }
+
+
+def test_find_open_issue_matches_exact_title():
+    fixture_json = load_fixture("issues_open_escalation_list.json")
+    client = GitHubClient(token="mock_token")
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = fixture_json.encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        number = client.find_open_issue(
+            repo="owner/repo", label="escalation", title="Escalation: phase-1-07 test-ticket-7"
+        )
+
+    assert number == 101
+    req = mock_urlopen.call_args[0][0]
+    assert req.method == "GET"
+    assert req.full_url == (
+        "https://api.github.com/repos/owner/repo/issues?state=open&labels=escalation"
+    )
+
+
+def test_find_open_issue_returns_none_when_no_exact_title_match():
+    fixture_json = load_fixture("issues_open_escalation_list.json")
+    client = GitHubClient(token="mock_token")
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = fixture_json.encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        number = client.find_open_issue(
+            repo="owner/repo", label="escalation", title="Escalation: phase-1-99 nope"
+        )
+
+    assert number is None
+
+
+def test_close_issue_sends_patch_state_closed():
+    fixture_json = load_fixture("issue_close_success.json")
+    client = GitHubClient(token="mock_token")
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = fixture_json.encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        res = client.close_issue(repo="owner/repo", number=101)
+
+    assert res["state"] == "closed"
+    req = mock_urlopen.call_args[0][0]
+    assert req.method == "PATCH"
+    assert req.full_url == "https://api.github.com/repos/owner/repo/issues/101"
+    assert json.loads(req.data.decode("utf-8")) == {"state": "closed"}
+
+
+def test_list_open_issues_returns_the_recorded_list():
+    fixture_json = load_fixture("issues_open_escalation_list.json")
+    client = GitHubClient(token="mock_token")
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = fixture_json.encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        issues = client.list_open_issues(repo="owner/repo", label="escalation")
+
+    assert [i["number"] for i in issues] == [101, 102]
+    req = mock_urlopen.call_args[0][0]
+    assert req.method == "GET"
+    assert req.full_url == (
+        "https://api.github.com/repos/owner/repo/issues?state=open&labels=escalation"
+    )
+

@@ -22,6 +22,7 @@ from ticket_engine.box_status import (
     EscalationReason,
     TicketRef,
     parse_box_status,
+    parse_escalation_issue_title,
     render_box_alert,
     render_box_status,
     render_escalation_issue,
@@ -370,6 +371,29 @@ def test_render_escalation_issue():
             reason=EscalationReason.ci_failed,
             owner="owner with space",
         )
+
+
+def test_parse_escalation_issue_title_round_trips_render_escalation_issue():
+    ref = TicketRef("owner/repo", 26)
+    title, _body = render_escalation_issue(
+        ref=ref,
+        effort="box-primary-worker",
+        title_slug="escalation-issues-from-the-dispatcher",
+        link="https://github.com/owner/repo/pull/42",
+        reason=EscalationReason.ci_failed,
+        owner="owner",
+    )
+    assert parse_escalation_issue_title(title) == (
+        "box-primary-worker",
+        26,
+        "escalation-issues-from-the-dispatcher",
+    )
+
+
+def test_parse_escalation_issue_title_returns_none_for_unrecognised_text():
+    assert parse_escalation_issue_title("") is None
+    assert parse_escalation_issue_title("Some other issue title") is None
+    assert parse_escalation_issue_title("Escalation: missing-the-number") is None
 
 
 # ---------------------------------------------------------------------------
