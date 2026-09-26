@@ -494,6 +494,52 @@ class GitHubClient:
             if isinstance(item, dict)
         ]
 
+    def update_issue_body(self, repo: str, number: int, body: str) -> dict[str, Any]:
+        """Replace an issue's body via `PATCH /repos/{repo}/issues/{n}`.
+
+        Ticket 31 (spec §Box status issue and alerts): the box rewrites the
+        pinned, locked box status issue's body every `status_interval_minutes`
+        with `box_status.render_box_status(...)`, never any other text.
+        """
+        endpoint = f"/repos/{repo}/issues/{number}"
+        return self._request("PATCH", endpoint, {"body": body})
+
+    def _issue_node_id(self, repo: str, number: int) -> str:
+        issue = self._request("GET", f"/repos/{repo}/issues/{number}")
+        node_id = issue.get("node_id") if isinstance(issue, dict) else None
+        if not node_id:
+            msg = f"Issue #{number} on {repo} has no node_id"
+            raise ValueError(msg)
+        return str(node_id)
+
+    def lock_issue(self, repo: str, number: int) -> bool:
+        """Lock an issue's conversation via `PUT /repos/{repo}/issues/{n}/lock`.
+
+        Ticket 31: the box locks the status issue it creates so nobody else can
+        post into its heartbeat (spec §Box status issue and alerts).
+        """
+        endpoint = f"/repos/{repo}/issues/{number}/lock"
+        self._request("PUT", endpoint)
+        return True
+
+    def pin_issue(self, repo: str, number: int) -> bool:
+        """Pin an issue via the GraphQL `pinIssue` mutation.
+
+        Ticket 31: the box pins the status issue it creates, the same way
+        `enable_auto_merge` reuses `_graphql` for a mutation that has no plain
+        REST equivalent (see this module's WHY note).
+        """
+        node_id = self._issue_node_id(repo, number)
+        data = self._graphql(
+            "mutation($id: ID!) {"
+            " pinIssue(input: {issueId: $id}) { issue { id } } }",
+            {"id": node_id},
+        )
+        if data is None:
+            logger.warning("Could not pin issue #%s (%s)", number, repo)
+            return False
+        return True
+
     def find_open_pr(self, repo: str, head_branch: str) -> int | None:
         """The number of the open PR for `head_branch`, or `None`.
 

@@ -31,6 +31,16 @@ further:
   PRs nothing more, force-removes its local worktree (the one place --force is
   used, because the ticket is no longer the box's to keep), leaves the remote
   ticket branch alone, and logs the loss.
+
+Ticket 31 (spec §The box loop) adds an optional `on_outcome` observer to
+`run_one` and `fix_ci`. `run_one`'s own quota handling (ticket 29/30) sleeps
+and resumes *inside* one call, which can block for hours in production; the
+box-worker loop (ticket 31) still needs to see each `AgyResult` the moment it
+happens, so it can update its local quota-pause record and the public box
+status/alert issues without waiting for `run_one` to return. `on_outcome` is
+a pure observation hook: it never changes `run_one`'s control flow or return
+value, so every call site and test that does not pass it keeps behaving
+exactly as before.
 """
 from __future__ import annotations
 
@@ -173,6 +183,7 @@ class LocalWorker:
         entry: LocalRepoEntry,
         ticket: Ticket,
         now: datetime.datetime | None = None,
+        on_outcome: Callable[[object], None] | None = None,
     ) -> bool:
         """Claim one ticket (any runner), work it in a worktree with agy.
 
@@ -186,6 +197,10 @@ class LocalWorker:
         6. Stop the pusher; push once more after agy returns regardless of outcome.
         7. On quota error: keep claim and worktree, sleep until reset, resume.
         8. Remove the worktree only when all commits are pushed and the tree is clean.
+
+        `on_outcome`, if given, is called with each raw `AgyResult` as soon as
+        it is produced (ticket 31): a pure observer, never consulted for any
+        decision here.
 
         Returns True on success, False on refusal (claim collision) or failure.
         """
@@ -248,6 +263,9 @@ class LocalWorker:
             pusher_thread.join(timeout=5)
             do_push()  # Always push after every run, whatever the outcome.
 
+        if on_outcome is not None:
+            on_outcome(result)
+
         self._maybe_open_pull_request(
             entry, ticket, ticket_path, worktree_path, ticket_branch, effort
         )
@@ -262,6 +280,7 @@ class LocalWorker:
             worktree_path=worktree_path,
             push_env=push_env,
             result=result,
+            on_outcome=on_outcome,
         )
 
         if result is None:
@@ -280,7 +299,11 @@ class LocalWorker:
         return False
 
     def fix_ci(
-        self, entry: LocalRepoEntry, ticket: Ticket, pr_number: int
+        self,
+        entry: LocalRepoEntry,
+        ticket: Ticket,
+        pr_number: int,
+        on_outcome: Callable[[object], None] | None = None,
     ) -> object:
         """Run agy again on the ticket branch, naming the PR's failing checks.
 
@@ -307,6 +330,8 @@ class LocalWorker:
             f"- {name}" for name in failing
         )
         result = self.agy_driver.start(base_prompt + fix_section, cwd=worktree_path)
+        if on_outcome is not None:
+            on_outcome(result)
 
         push_env = _make_push_env(self.config.github_token) if self.config.github_token else None
         self._push_if_claimed(
@@ -325,6 +350,7 @@ class LocalWorker:
         worktree_path: str,
         push_env: dict[str, str] | None,
         result: object,
+        on_outcome: Callable[[object], None] | None = None,
     ) -> object | None:
         """Classify each agy outcome and decide whether to resume, answer, or escalate.
 
@@ -367,6 +393,8 @@ class LocalWorker:
                 )
                 self._sleep(wait_secs)
                 result = self._resume_from_checkpoint(entry, ticket_path, worktree_path)
+                if on_outcome is not None:
+                    on_outcome(result)
                 self._push_if_claimed(
                     entry.repo, claim_branch, ticket_path, worktree_path, ticket_branch, push_env
                 )
@@ -379,6 +407,8 @@ class LocalWorker:
                 if auto_replies < cfg.max_auto_replies:
                     auto_replies += 1
                     result = self._send_auto_reply(entry, ticket_path, worktree_path)
+                    if on_outcome is not None:
+                        on_outcome(result)
                     self._push_if_claimed(
                         entry.repo, claim_branch, ticket_path, worktree_path, ticket_branch, push_env
                     )
@@ -415,6 +445,8 @@ class LocalWorker:
                 return None
 
             result = self._resume_from_checkpoint(entry, ticket_path, worktree_path)
+            if on_outcome is not None:
+                on_outcome(result)
             self._push_if_claimed(
                 entry.repo, claim_branch, ticket_path, worktree_path, ticket_branch, push_env
             )

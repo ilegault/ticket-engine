@@ -1364,4 +1364,74 @@ def test_quota_outcomes_never_count_toward_resumes_or_escalate():
     assert state["i"] == 6, "five quota attempts plus the final success"
     mock_github.create_issue.assert_not_called()
     mock_github.convert_pr_to_draft.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Ticket 31: on_outcome observes every AgyResult without changing behaviour
+# ---------------------------------------------------------------------------
+
+def test_run_one_on_outcome_observes_quota_then_success_without_changing_result():
+    """The box-worker loop (ticket 31) needs to see each AgyResult the moment
+    it happens, since run_one's own quota handling can block for a long time.
+    on_outcome is a pure observer: run_one's return value is unaffected."""
+    outcomes = ["quota", "success"]
+    state = {"i": 0}
+
+    def run_fn(args, cwd=None):
+        outcome = outcomes[state["i"]]
+        state["i"] += 1
+        if outcome == "quota":
+            return 1, json.dumps(
+                {
+                    "status": "ERROR",
+                    "message": "quota exceeded",
+                    "reset_at": "2026-09-23T06:00:00Z",
+                }
+            )
+        return 0, json.dumps({"status": "SUCCESS"})
+
+    seen: list[str] = []
+    ticket = make_ticket(9, effort="phase-1")
+    mock_github = make_fake_github()
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=run_fn),
+        git_runner=_make_git_runner([]),
+        sleep_fn=lambda s: None,
+        read_ticket_fn=lambda p: "# 09: Test\n**Status:** in-progress\n\n## Comments\n",
+    )
+    success = worker.run_one(
+        make_repo_entry(), ticket, on_outcome=lambda result: seen.append(result.outcome)
+    )
+
+    assert success is True
+    assert seen == ["quota", "success"]
+
+
+def test_fix_ci_on_outcome_observes_the_agy_result():
+    """fix_ci's own on_outcome fires once, with the raw AgyResult from that attempt."""
+    def run_fn(args, cwd=None):
+        return 0, json.dumps({"status": "SUCCESS"})
+
+    seen: list[object] = []
+    mock_github = make_fake_github()
+    mock_github.list_check_runs.return_value = [("integrity-gate", "failure")]
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=run_fn),
+        git_runner=_make_git_runner([]),
+    )
+    worker.fix_ci(
+        make_repo_entry(repo="owner/repo"),
+        make_ticket(30, effort="box-primary-worker"),
+        pr_number=12,
+        on_outcome=seen.append,
+    )
+
+    assert len(seen) == 1
+    assert seen[0].outcome == "success"
     mock_github.create_pull_request.assert_not_called()

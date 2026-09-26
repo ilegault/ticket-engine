@@ -41,3 +41,6 @@ run_agent*.bat
 
 # The request index store is not in use; if it ever runs, its file is local state.
 requests.json
+
+# The box's full logs, ledger and quota-pause record stay on the box (ADR 0007 rule 5).
+logs/

@@ -392,3 +392,65 @@ def test_list_open_issues_returns_the_recorded_list():
         "https://api.github.com/repos/owner/repo/issues?state=open&labels=escalation"
     )
 
+
+# --- box status issue (ticket 31) --------------------------------------------
+
+
+def test_update_issue_body_sends_patch_with_body():
+    fixture_json = load_fixture("issue_create_success.json")
+    client = GitHubClient(token="mock_token")
+
+    with patch("urllib.request.urlopen", return_value=_resp(json.loads(fixture_json))) as mock_urlopen:
+        res = client.update_issue_body(repo="owner/repo", number=101, body="## Box status\n")
+
+    assert res["number"] == 101
+    req = mock_urlopen.call_args[0][0]
+    assert req.method == "PATCH"
+    assert req.full_url == "https://api.github.com/repos/owner/repo/issues/101"
+    assert json.loads(req.data.decode("utf-8")) == {"body": "## Box status\n"}
+
+
+def test_lock_issue_sends_put_to_lock_endpoint():
+    client = GitHubClient(token="mock_token")
+
+    with patch("urllib.request.urlopen", return_value=_resp(None)) as mock_urlopen:
+        ok = client.lock_issue(repo="owner/repo", number=101)
+
+    assert ok is True
+    req = mock_urlopen.call_args[0][0]
+    assert req.method == "PUT"
+    assert req.full_url == "https://api.github.com/repos/owner/repo/issues/101/lock"
+
+
+def test_pin_issue_looks_up_node_id_and_calls_graphql():
+    client = GitHubClient(token="mock_token")
+    responses = [
+        _resp({"number": 101, "node_id": "I_kwDOnode101"}),
+        _resp({"data": {"pinIssue": {"issue": {"id": "I_kwDOnode101"}}}}),
+    ]
+
+    with patch("urllib.request.urlopen", side_effect=responses) as mock_urlopen:
+        ok = client.pin_issue(repo="owner/repo", number=101)
+
+    assert ok is True
+    get_req = mock_urlopen.call_args_list[0][0][0]
+    assert get_req.method == "GET"
+    assert get_req.full_url == "https://api.github.com/repos/owner/repo/issues/101"
+    gql_req = mock_urlopen.call_args_list[1][0][0]
+    assert gql_req.method == "POST"
+    assert gql_req.full_url == "https://api.github.com/graphql"
+    body = json.loads(gql_req.data.decode("utf-8"))
+    assert "pinIssue" in body["query"]
+    assert body["variables"] == {"id": "I_kwDOnode101"}
+
+
+def test_pin_issue_returns_false_when_github_refuses():
+    client = GitHubClient(token="mock_token")
+    responses = [
+        _resp({"number": 101, "node_id": "I_x"}),
+        _resp({"data": None, "errors": [{"message": "Resource not accessible"}]}),
+    ]
+
+    with patch("urllib.request.urlopen", side_effect=responses):
+        assert client.pin_issue(repo="owner/repo", number=101) is False
+
