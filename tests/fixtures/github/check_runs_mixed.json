@@ -1,0 +1,17 @@
+{
+  "total_count": 2,
+  "check_runs": [
+    {
+      "id": 1,
+      "name": "integrity-gate",
+      "status": "completed",
+      "conclusion": "failure"
+    },
+    {
+      "id": 2,
+      "name": "pytest",
+      "status": "completed",
+      "conclusion": "success"
+    }
+  ]
+}

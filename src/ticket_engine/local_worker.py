@@ -43,8 +43,16 @@ import time
 from collections.abc import Callable
 
 from ticket_engine.agy import AgyDriver
+from ticket_engine.box_status import EscalationReason, TicketRef, render_escalation_issue
 from ticket_engine.config import RepoConfig, load_repo_config
-from ticket_engine.dispatch import DispatchCore, WorldSnapshot, insert_claimed_by
+from ticket_engine.dispatch import (
+    AUTO_REPLY_TEXT,
+    DispatchCore,
+    WorldSnapshot,
+    apply_escalation_to_ticket_text,
+    assemble_escalation_brief,
+    insert_claimed_by,
+)
 from ticket_engine.github import GitHubClient
 from ticket_engine.local_config import LocalRepoEntry, LocalWorkerConfig
 from ticket_engine.parser import Ticket, TicketParser
@@ -111,6 +119,7 @@ class LocalWorker:
         skill_text: str | None = None,
         ticket_loader: Callable[[LocalRepoEntry], list[Ticket]] | None = None,
         read_ticket_fn: Callable[[str | pathlib.Path], str] | None = None,
+        write_ticket_fn: Callable[[str | pathlib.Path, str], None] | None = None,
     ) -> None:
         self.config = config
         self.github_client = github_client
@@ -125,6 +134,9 @@ class LocalWorker:
         )
         self._read_ticket = (
             read_ticket_fn if read_ticket_fn is not None else _default_read_ticket
+        )
+        self._write_ticket = (
+            write_ticket_fn if write_ticket_fn is not None else _default_write_ticket
         )
 
     @property
@@ -240,21 +252,24 @@ class LocalWorker:
             entry, ticket, ticket_path, worktree_path, ticket_branch, effort
         )
 
+        result = self._resolve_outcome(
+            entry=entry,
+            ticket=ticket,
+            effort=effort,
+            ticket_path=ticket_path,
+            ticket_branch=ticket_branch,
+            claim_branch=claim_branch,
+            worktree_path=worktree_path,
+            push_env=push_env,
+            result=result,
+        )
+
+        if result is None:
+            return False
+
         if result.success:
             self._cleanup_worktree(entry.path, worktree_path, ticket_branch)
             return True
-
-        if result.quota_error:
-            return self._handle_quota_error(
-                entry=entry,
-                ticket=ticket,
-                worktree_path=worktree_path,
-                ticket_path=ticket_path,
-                ticket_branch=ticket_branch,
-                claim_branch=claim_branch,
-                push_env=push_env,
-                result=result,
-            )
 
         logger.error(
             "agy failed for ticket %02d (outcome: %s)",
@@ -263,6 +278,239 @@ class LocalWorker:
         )
         self._cleanup_worktree(entry.path, worktree_path, ticket_branch)
         return False
+
+    def fix_ci(
+        self, entry: LocalRepoEntry, ticket: Ticket, pr_number: int
+    ) -> object:
+        """Run agy again on the ticket branch, naming the PR's failing checks.
+
+        Ticket 30 (spec §Local worker orchestration): the dispatcher's own
+        `max_fix_attempts`/`EscalatePRAction` (dispatch.py) is the authority on
+        how many times to try and when to escalate a red-CI PR; this method is
+        the box's one fix attempt, called by the caller that owns that count.
+        The prompt is the normal one plus a fixed `## CI FAILED — FIX IT`
+        section listing one `- <check name>` line per check whose conclusion
+        is `failure`, so agy sees only what actually broke.
+        """
+        effort = ticket.effort or "phase-1"
+        ticket_branch = f"ticket/{effort}-{ticket.number:02d}-{ticket.slug}"
+        ticket_path = _ticket_path_str(ticket, effort)
+        worktree_path = self._worktree_path(entry, ticket)
+        claim_branch = f"claim/{effort}/{ticket.number:02d}"
+
+        logger.info("Fixing CI for ticket %02d PR #%s", ticket.number, pr_number)
+        checks = self.github_client.list_check_runs(entry.repo, ticket_branch)
+        failing = [name for name, conclusion in checks if conclusion == "failure"]
+
+        base_prompt = assemble_prompt(self.skill_text, entry.repo, ticket_path)
+        fix_section = "\n\n## CI FAILED — FIX IT\n" + "\n".join(
+            f"- {name}" for name in failing
+        )
+        result = self.agy_driver.start(base_prompt + fix_section, cwd=worktree_path)
+
+        push_env = _make_push_env(self.config.github_token) if self.config.github_token else None
+        self._push_if_claimed(
+            entry.repo, claim_branch, ticket_path, worktree_path, ticket_branch, push_env
+        )
+        return result
+
+    def _resolve_outcome(
+        self,
+        entry: LocalRepoEntry,
+        ticket: Ticket,
+        effort: str,
+        ticket_path: str,
+        ticket_branch: str,
+        claim_branch: str,
+        worktree_path: str,
+        push_env: dict[str, str] | None,
+        result: object,
+    ) -> object | None:
+        """Classify each agy outcome and decide whether to resume, answer, or escalate.
+
+        Ticket 30 (spec §Local worker orchestration, ADR 0004):
+        - `quota` never counts toward anything: it waits for the reset and
+          resumes, however many times it recurs (ticket 29 behaviour, unchanged).
+        - `waiting` gets a fresh auto-reply run, up to
+          `RepoConfig.max_auto_replies` times; the next `waiting` past that
+          escalates with reason `kept_asking`.
+        - `timeout`/`failed` resumes from checkpoint, up to
+          `LocalWorkerConfig.max_resumes_per_ticket` times; the run that
+          reaches the bound escalates with reason `resumes_exhausted`.
+
+        Returns the final `AgyResult` (success or exhausted-but-not-escalated),
+        or `None` once escalation or a lost claim has already settled the run.
+        """
+        repo_path = pathlib.Path(entry.path)
+        repo_config = load_repo_config(repo_path) if repo_path.is_dir() else None
+        cfg = repo_config or RepoConfig()
+
+        resumes = 0
+        auto_replies = 0
+
+        while not result.success:
+            if result.quota_error:
+                if not self._claim_still_mine(entry.repo, claim_branch, ticket_path):
+                    logger.info(
+                        "Lost claim for ticket %02d (%s); dropping worktree without resuming.",
+                        ticket.number,
+                        claim_branch,
+                    )
+                    self._force_remove_worktree(entry.path, worktree_path)
+                    return None
+
+                wait_secs = _seconds_until_reset(getattr(result, "reset_at", None))
+                logger.info(
+                    "Quota error for ticket %02d. Waiting %.0f seconds for quota reset.",
+                    ticket.number,
+                    wait_secs,
+                )
+                self._sleep(wait_secs)
+                result = self._resume_from_checkpoint(entry, ticket_path, worktree_path)
+                self._push_if_claimed(
+                    entry.repo, claim_branch, ticket_path, worktree_path, ticket_branch, push_env
+                )
+                self._maybe_open_pull_request(
+                    entry, ticket, ticket_path, worktree_path, ticket_branch, effort
+                )
+                continue
+
+            if result.outcome == "waiting":
+                if auto_replies < cfg.max_auto_replies:
+                    auto_replies += 1
+                    result = self._send_auto_reply(entry, ticket_path, worktree_path)
+                    self._push_if_claimed(
+                        entry.repo, claim_branch, ticket_path, worktree_path, ticket_branch, push_env
+                    )
+                    self._maybe_open_pull_request(
+                        entry, ticket, ticket_path, worktree_path, ticket_branch, effort
+                    )
+                    continue
+
+                self._escalate(
+                    entry=entry,
+                    ticket=ticket,
+                    effort=effort,
+                    ticket_path=ticket_path,
+                    ticket_branch=ticket_branch,
+                    worktree_path=worktree_path,
+                    push_env=push_env,
+                    reason=EscalationReason.kept_asking,
+                )
+                return None
+
+            # "timeout" or "failed"
+            resumes += 1
+            if resumes >= self.config.max_resumes_per_ticket:
+                self._escalate(
+                    entry=entry,
+                    ticket=ticket,
+                    effort=effort,
+                    ticket_path=ticket_path,
+                    ticket_branch=ticket_branch,
+                    worktree_path=worktree_path,
+                    push_env=push_env,
+                    reason=EscalationReason.resumes_exhausted,
+                )
+                return None
+
+            result = self._resume_from_checkpoint(entry, ticket_path, worktree_path)
+            self._push_if_claimed(
+                entry.repo, claim_branch, ticket_path, worktree_path, ticket_branch, push_env
+            )
+            self._maybe_open_pull_request(
+                entry, ticket, ticket_path, worktree_path, ticket_branch, effort
+            )
+
+        return result
+
+    def _resume_from_checkpoint(
+        self, entry: LocalRepoEntry, ticket_path: str, worktree_path: str
+    ) -> object:
+        """Start a fresh agy session that includes the ticket's checkpoint progress note."""
+        progress_note = self._read_progress_note(worktree_path, ticket_path)
+        checkpoint_prompt = _assemble_checkpoint_prompt(
+            self.skill_text, entry.repo, ticket_path, progress_note
+        )
+        return self.agy_driver.start(checkpoint_prompt, cwd=worktree_path)
+
+    def _send_auto_reply(
+        self, entry: LocalRepoEntry, ticket_path: str, worktree_path: str
+    ) -> object:
+        """Start a fresh agy session whose prompt ends with `dispatch.AUTO_REPLY_TEXT`
+        (ADR 0004: answer a waiting worker exactly as the engine answers Jules)."""
+        prompt = assemble_prompt(self.skill_text, entry.repo, ticket_path)
+        return self.agy_driver.start(f"{prompt}\n\n{AUTO_REPLY_TEXT}", cwd=worktree_path)
+
+    def _escalate(
+        self,
+        entry: LocalRepoEntry,
+        ticket: Ticket,
+        effort: str,
+        ticket_path: str,
+        ticket_branch: str,
+        worktree_path: str,
+        push_env: dict[str, str] | None,
+        reason: EscalationReason,
+    ) -> None:
+        """Escalate a ticket the box cannot finish honestly.
+
+        Ticket 30 (§Escalation): writes the escalation brief into the worktree
+        ticket file, commits and pushes it, opens the PR as a draft (or
+        converts an already-open one), labels it `engine:escalated`, and opens
+        one escalation issue (never a second one for the same ticket — ticket 26).
+        """
+        full_path = pathlib.Path(worktree_path) / ticket_path
+        try:
+            content = self._read_ticket(full_path)
+        except (OSError, FileNotFoundError):
+            content = ticket.raw_text or ""
+
+        brief = assemble_escalation_brief(ticket=ticket, branch=ticket_branch)
+        updated = apply_escalation_to_ticket_text(content, brief)
+        self._write_ticket(full_path, updated)
+
+        reason_text = "resumes exhausted" if reason == EscalationReason.resumes_exhausted else "kept asking"
+        commit_message = f"Escalate {ticket.number:02d}: {reason_text}"
+        self._git_runner(["git", "-C", worktree_path, "add", ticket_path], worktree_path, None)
+        self._git_runner(
+            ["git", "-C", worktree_path, "commit", "-m", commit_message], worktree_path, None
+        )
+        self._push_branch(worktree_path, ticket_branch, push_env)
+
+        existing_pr = self.github_client.find_open_pr(entry.repo, ticket_branch)
+        if existing_pr is None:
+            title = f"{effort}-{ticket.number:02d}: {ticket.title}"
+            body = (
+                f"Ticket {ticket.number:02d} worked by the box.\n\n"
+                f"Ticket file: {ticket_path}\nBranch: {ticket_branch}"
+            )
+            pr_number = self.github_client.create_pull_request(
+                repo=entry.repo,
+                head=ticket_branch,
+                base=self._default_branch(entry),
+                title=title,
+                body=body,
+                draft=True,
+            )
+        else:
+            pr_number = existing_pr
+            self.github_client.convert_pr_to_draft(entry.repo, pr_number)
+
+        self.github_client.add_issue_labels(entry.repo, pr_number, ["engine:escalated"])
+
+        link = f"https://github.com/{entry.repo}/pull/{pr_number}"
+        owner = entry.repo.split("/")[0]
+        title, body = render_escalation_issue(
+            ref=TicketRef(repo=entry.repo, number=ticket.number),
+            effort=effort,
+            title_slug=ticket.slug,
+            link=link,
+            reason=reason,
+            owner=owner,
+        )
+        if self.github_client.find_open_issue(entry.repo, "escalation", title) is None:
+            self.github_client.create_issue(entry.repo, title, body, ["escalation"])
 
     def run(self) -> int:
         """Find the first windows ticket across all configured repos and run it.
@@ -530,60 +778,6 @@ class LocalWorker:
             body=body,
         )
 
-    def _handle_quota_error(
-        self,
-        entry: LocalRepoEntry,
-        ticket: Ticket,
-        worktree_path: str,
-        ticket_path: str,
-        ticket_branch: str,
-        claim_branch: str,
-        push_env: dict[str, str] | None,
-        result: object,
-    ) -> bool:
-        """Keep the claim and worktree, wait for quota reset, then resume.
-
-        Ticket 29 (ADR 0006 rule 7): before resuming, re-check that the box
-        still holds the claim. A ticket the box has lost is dropped: no more
-        pushes, no PR, the worktree force-removed, the loss logged.
-        """
-        effort = ticket.effort or "phase-1"
-        if not self._claim_still_mine(entry.repo, claim_branch, ticket_path):
-            logger.info(
-                "Lost claim for ticket %02d (%s); dropping worktree without resuming.",
-                ticket.number,
-                claim_branch,
-            )
-            self._force_remove_worktree(entry.path, worktree_path)
-            return False
-
-        reset_at = getattr(result, "reset_at", None)
-        wait_secs = _seconds_until_reset(reset_at)
-        logger.info(
-            "Quota error for ticket %02d. Waiting %.0f seconds for quota reset.",
-            ticket.number,
-            wait_secs,
-        )
-        self._sleep(wait_secs)
-
-        progress_note = self._read_progress_note(worktree_path, ticket_path)
-        checkpoint_prompt = _assemble_checkpoint_prompt(
-            self.skill_text, entry.repo, ticket_path, progress_note
-        )
-        fresh_result = self.agy_driver.start(checkpoint_prompt, cwd=worktree_path)
-
-        # Push after the resume run too, and only if the claim is still ours.
-        self._push_if_claimed(
-            entry.repo, claim_branch, ticket_path, worktree_path, ticket_branch, push_env
-        )
-        self._maybe_open_pull_request(
-            entry, ticket, ticket_path, worktree_path, ticket_branch, effort
-        )
-
-        if fresh_result.success:
-            self._cleanup_worktree(entry.path, worktree_path, ticket_branch)
-        return fresh_result.success
-
     def _read_progress_note(self, worktree_path: str, ticket_path: str) -> str:
         """Read the progress note from the ticket file inside the worktree."""
         full_path = pathlib.Path(worktree_path) / ticket_path
@@ -633,6 +827,10 @@ def _default_git_runner(
 
 def _default_read_ticket(path: str | pathlib.Path) -> str:
     return pathlib.Path(path).read_text(encoding="utf-8")
+
+
+def _default_write_ticket(path: str | pathlib.Path, content: str) -> None:
+    pathlib.Path(path).write_text(content, encoding="utf-8")
 
 
 def _default_branch_for(entry: LocalRepoEntry) -> str:

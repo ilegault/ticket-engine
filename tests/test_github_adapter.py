@@ -353,6 +353,27 @@ def test_find_open_pr_returns_none_when_no_open_pr():
     assert number is None
 
 
+def test_list_check_runs_returns_name_conclusion_pairs():
+    """Ticket 30 AC1: list_check_runs returns (name, conclusion) pairs from the
+    recorded GET /repos/{repo}/commits/{ref}/check-runs response."""
+    fixture_json = load_fixture("check_runs_mixed.json")
+    client = GitHubClient(token="mock_token")
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = fixture_json.encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        runs = client.list_check_runs(repo="owner/repo", ref="ticket/phase-1-30-fix-ci")
+
+    assert runs == [("integrity-gate", "failure"), ("pytest", "success")]
+    req = mock_urlopen.call_args[0][0]
+    assert req.method == "GET"
+    assert req.full_url == (
+        "https://api.github.com/repos/owner/repo/commits/ticket/phase-1-30-fix-ci/check-runs"
+    )
+
+
 def test_list_open_issues_returns_the_recorded_list():
     fixture_json = load_fixture("issues_open_escalation_list.json")
     client = GitHubClient(token="mock_token")

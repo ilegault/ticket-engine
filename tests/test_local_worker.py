@@ -19,6 +19,7 @@ import json
 import pytest
 
 from ticket_engine.agy import AgyDriver
+from ticket_engine.dispatch import AUTO_REPLY_TEXT
 from ticket_engine.local_config import LocalRepoEntry, LocalWorkerConfig, load_local_config
 from ticket_engine.local_worker import LocalWorker
 from ticket_engine.parser import Ticket
@@ -1106,3 +1107,261 @@ def test_pusher_stops_pushing_once_claim_is_lost_mid_run():
 
     push_calls = [c for c in git_calls if "push" in c]
     assert len(push_calls) == 1, "Only the first push (while claimed) should have happened"
+
+
+# ---------------------------------------------------------------------------
+# Ticket 30 AC1: fix_ci reads check runs, prompts naming only failing checks
+# ---------------------------------------------------------------------------
+
+def test_fix_ci_prompt_names_only_failing_checks():
+    """fix_ci reads the PR head's check runs and adds a CI FAILED section
+    naming one `- <check name>` line per check whose conclusion is failure."""
+    prompts_seen = []
+    git_calls = []
+
+    def run_fn(args, cwd=None):
+        p_idx = args.index("-p")
+        prompts_seen.append(args[p_idx + 1])
+        return 0, json.dumps({"status": "SUCCESS"})
+
+    mock_github = make_fake_github()
+    mock_github.list_check_runs.return_value = [
+        ("integrity-gate", "failure"),
+        ("pytest", "success"),
+    ]
+
+    ticket = make_ticket(30, effort="box-primary-worker")
+    entry = make_repo_entry(repo="owner/repo")
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=run_fn),
+        git_runner=_make_git_runner(git_calls),
+    )
+    worker.fix_ci(entry, ticket, pr_number=12)
+
+    assert prompts_seen, "agy must be invoked"
+    prompt = prompts_seen[0]
+    assert "## CI FAILED — FIX IT" in prompt
+    assert "- integrity-gate" in prompt
+    assert "- pytest" not in prompt
+    mock_github.list_check_runs.assert_called_once()
+    assert mock_github.list_check_runs.call_args.args[0] == "owner/repo"
+
+    push_calls = [c for c in git_calls if "push" in c]
+    assert push_calls, "fix_ci must push the branch after agy runs"
+
+
+# ---------------------------------------------------------------------------
+# Ticket 30 AC2: a waiting run gets auto-replies, then escalates kept_asking
+# ---------------------------------------------------------------------------
+
+def test_waiting_gets_auto_replies_then_escalates_kept_asking():
+    """Three waiting outcomes: two auto-reply prompts, then a kept_asking escalation."""
+    prompts_seen = []
+    git_calls = []
+    written: dict[str, str] = {}
+
+    def run_fn(args, cwd=None):
+        p_idx = args.index("-p")
+        prompts_seen.append(args[p_idx + 1])
+        return 0, json.dumps({"status": "WAITING"})
+
+    ticket = make_ticket(9, effort="phase-1")
+    mock_github = make_fake_github()
+    mock_github.find_open_pr.return_value = None
+    mock_github.create_pull_request.return_value = 55
+    mock_github.find_open_issue.return_value = None
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=run_fn),
+        git_runner=_make_git_runner(git_calls),
+        sleep_fn=lambda s: None,
+        read_ticket_fn=lambda p: "# 09: Test\n**Status:** in-progress\n\n## Comments\n",
+        write_ticket_fn=lambda p, c: written.__setitem__("content", c),
+    )
+    success = worker.run_one(make_repo_entry(repo="owner/repo"), ticket)
+
+    assert success is False
+    assert len(prompts_seen) == 3, "initial run + two allowed auto-replies (max_auto_replies=2)"
+    for prompt in prompts_seen[1:]:
+        assert prompt.endswith(AUTO_REPLY_TEXT)
+
+    assert "**Status:** blocked" in written["content"]
+    assert "## Escalation —" in written["content"]
+
+    mock_github.create_pull_request.assert_called_once()
+    assert mock_github.create_pull_request.call_args.kwargs["draft"] is True
+
+    mock_github.add_issue_labels.assert_called_once_with(
+        "owner/repo", 55, ["engine:escalated"]
+    )
+    mock_github.create_issue.assert_called_once()
+    title = mock_github.create_issue.call_args.args[1]
+    assert "kept_asking" in mock_github.create_issue.call_args.args[2]
+    assert title.startswith("Escalation: phase-1-09")
+
+
+# ---------------------------------------------------------------------------
+# Ticket 30 AC3: resumes exhausted escalates with the five documented effects
+# ---------------------------------------------------------------------------
+
+def test_resumes_exhausted_escalates_with_all_five_effects():
+    """max_resumes_per_ticket failed/timeout runs: brief written, committed,
+    pushed, a draft PR opened, and the PR labelled engine:escalated."""
+    git_calls = []
+    written: dict[str, str] = {}
+    call_count = [0]
+
+    def run_fn(args, cwd=None):
+        call_count[0] += 1
+        return 1, json.dumps({"status": "ERROR", "message": "boom"})
+
+    ticket = make_ticket(9, effort="phase-1")
+    mock_github = make_fake_github()
+    mock_github.find_open_pr.return_value = None
+    mock_github.create_pull_request.return_value = 77
+    mock_github.find_open_issue.return_value = None
+
+    worker = LocalWorker(
+        config=make_config(max_resumes_per_ticket=3),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=run_fn),
+        git_runner=_make_git_runner(git_calls),
+        sleep_fn=lambda s: None,
+        read_ticket_fn=lambda p: "# 09: Test\n**Status:** in-progress\n\n## Comments\n",
+        write_ticket_fn=lambda p, c: written.__setitem__("content", c),
+    )
+    success = worker.run_one(make_repo_entry(repo="owner/repo"), ticket)
+
+    assert success is False
+    assert call_count[0] == 3, "initial run plus two resumes before escalating"
+
+    assert "**Status:** blocked" in written["content"]
+    assert "## Escalation —" in written["content"]
+
+    commit_calls = [c for c in git_calls if "commit" in c and "-m" in c]
+    assert commit_calls, "escalation commit must happen"
+    msg_idx = commit_calls[0].index("-m")
+    assert commit_calls[0][msg_idx + 1] == "Escalate 09: resumes exhausted"
+
+    push_calls = [c for c in git_calls if "push" in c]
+    assert push_calls, "escalation branch must be pushed"
+
+    mock_github.create_pull_request.assert_called_once()
+    assert mock_github.create_pull_request.call_args.kwargs["draft"] is True
+
+    mock_github.add_issue_labels.assert_called_once_with(
+        "owner/repo", 77, ["engine:escalated"]
+    )
+    mock_github.create_issue.assert_called_once()
+    assert mock_github.create_issue.call_args.args[0] == "owner/repo"
+    assert "resumes_exhausted" in mock_github.create_issue.call_args.args[2]
+
+
+def test_resumes_exhausted_converts_existing_open_pr_to_draft():
+    """When a PR is already open on the ticket branch, escalation converts it
+    to draft instead of opening a second one."""
+    git_calls = []
+
+    def run_fn(args, cwd=None):
+        return 1, json.dumps({"status": "ERROR", "message": "boom"})
+
+    ticket = make_ticket(9, effort="phase-1")
+    mock_github = make_fake_github()
+    mock_github.find_open_pr.return_value = 88
+    mock_github.find_open_issue.return_value = None
+
+    worker = LocalWorker(
+        config=make_config(max_resumes_per_ticket=1),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=run_fn),
+        git_runner=_make_git_runner(git_calls),
+        sleep_fn=lambda s: None,
+        read_ticket_fn=lambda p: "# 09: Test\n**Status:** in-progress\n\n## Comments\n",
+        write_ticket_fn=lambda p, c: None,
+    )
+    success = worker.run_one(make_repo_entry(repo="owner/repo"), ticket)
+
+    assert success is False
+    mock_github.create_pull_request.assert_not_called()
+    mock_github.convert_pr_to_draft.assert_called_once_with("owner/repo", 88)
+    mock_github.add_issue_labels.assert_called_once_with(
+        "owner/repo", 88, ["engine:escalated"]
+    )
+
+
+# ---------------------------------------------------------------------------
+# Ticket 30 AC4: one escalation issue per ticket
+# ---------------------------------------------------------------------------
+
+def test_second_escalation_of_same_ticket_creates_no_second_issue():
+    """A second escalation finds the still-open issue and does not create another."""
+    git_calls = []
+
+    def run_fn(args, cwd=None):
+        return 1, json.dumps({"status": "ERROR", "message": "boom"})
+
+    ticket = make_ticket(9, effort="phase-1")
+    mock_github = make_fake_github()
+    mock_github.find_open_pr.return_value = 88
+    mock_github.find_open_issue.return_value = 200  # already open
+
+    worker = LocalWorker(
+        config=make_config(max_resumes_per_ticket=1),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=run_fn),
+        git_runner=_make_git_runner(git_calls),
+        sleep_fn=lambda s: None,
+        read_ticket_fn=lambda p: "# 09: Test\n**Status:** in-progress\n\n## Comments\n",
+        write_ticket_fn=lambda p, c: None,
+    )
+    worker.run_one(make_repo_entry(repo="owner/repo"), ticket)
+
+    mock_github.create_issue.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Ticket 30 AC5: quota outcomes never count toward resumes or escalate
+# ---------------------------------------------------------------------------
+
+def test_quota_outcomes_never_count_toward_resumes_or_escalate():
+    """Five quota outcomes followed by success: no resume counted (even with
+    max_resumes_per_ticket=1) and no escalation effect recorded."""
+    outcomes = ["quota"] * 5 + ["success"]
+    state = {"i": 0}
+
+    def run_fn(args, cwd=None):
+        outcome = outcomes[state["i"]]
+        state["i"] += 1
+        if outcome == "quota":
+            return 1, json.dumps(
+                {
+                    "status": "ERROR",
+                    "message": "quota exceeded",
+                    "reset_at": "2026-09-23T06:00:00Z",
+                }
+            )
+        return 0, json.dumps({"status": "SUCCESS"})
+
+    ticket = make_ticket(9, effort="phase-1")
+    mock_github = make_fake_github()
+
+    worker = LocalWorker(
+        config=make_config(max_resumes_per_ticket=1),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=run_fn),
+        git_runner=_make_git_runner([]),
+        sleep_fn=lambda s: None,
+        read_ticket_fn=lambda p: "# 09: Test\n**Status:** in-progress\n\n## Comments\n",
+    )
+    success = worker.run_one(make_repo_entry(), ticket)
+
+    assert success is True
+    assert state["i"] == 6, "five quota attempts plus the final success"
+    mock_github.create_issue.assert_not_called()
+    mock_github.convert_pr_to_draft.assert_not_called()
+    mock_github.create_pull_request.assert_not_called()
