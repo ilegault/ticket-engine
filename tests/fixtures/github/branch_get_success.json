@@ -1,0 +1,30 @@
+{
+  "name": "ticket/phase-1-01-feature",
+  "commit": {
+    "sha": "75fbea6cad021b9719ba895edb1fba0952ef1e84",
+    "commit": {
+      "author": {
+        "name": "developer",
+        "email": "dev@example.com",
+        "date": "2026-09-26T12:00:00Z"
+      },
+      "committer": {
+        "name": "developer",
+        "email": "dev@example.com",
+        "date": "2026-09-26T12:00:00Z"
+      },
+      "message": "Checkpoint commit"
+    },
+    "author": {
+      "login": "developer"
+    },
+    "committer": {
+      "login": "developer"
+    }
+  },
+  "_links": {
+    "self": "https://api.github.com/repos/owner/repo/branches/ticket/phase-1-01-feature",
+    "html": "https://github.com/owner/repo/tree/ticket/phase-1-01-feature"
+  },
+  "protected": false
+}

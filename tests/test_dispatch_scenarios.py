@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import datetime
 
-from ticket_engine.config import RepoConfig
+from ticket_engine.config import RepoConfig, load_repo_config
 from ticket_engine.dispatch import (
     Claim,
     DispatchCore,
@@ -298,4 +298,82 @@ def test_scenario_held_or_escalated_blocker_keeps_dependents_off_frontier_indepe
     assert [t.number for t in result.frontier] == [3]
     assert len(result.actions) == 1
     assert result.actions[0].ticket.number == 3
+
+
+def test_config_loads_box_stale_claim_hours(tmp_path):
+    config_file = tmp_path / ".ticket-engine.toml"
+    config_file.write_text("box_stale_claim_hours = 6\n", encoding="utf-8")
+    cfg = load_repo_config(tmp_path)
+    assert cfg.box_stale_claim_hours == 6
+
+    assert RepoConfig().box_stale_claim_hours == 8
+    default_cfg = load_repo_config(tmp_path / "nonexistent")
+    assert default_cfg.box_stale_claim_hours == 8
+
+
+def test_claim_claimed_by_default():
+    claim = Claim(ref="claim/phase-1/01", ticket_number=1)
+    assert claim.claimed_by == ""
+
+
+def test_scenario_box_stale_claim_evaluated():
+    core = DispatchCore()
+    now = datetime.datetime(2026, 9, 22, 12, 0, 0, tzinfo=datetime.UTC)
+    config = RepoConfig(box_stale_claim_hours=8)
+
+    # 1. Box claim at exactly now - 8h gives ReleaseClaimAction even with a matching live Jules session
+    claim_8h = Claim(
+        ref="claim/box-primary-worker/01",
+        ticket_number=1,
+        effort="box-primary-worker",
+        claimed_by="box",
+        last_commit_time=now - datetime.timedelta(hours=8),
+    )
+    # 2. Box claim at now - 7h59m is NOT released
+    claim_7h59m = Claim(
+        ref="claim/box-primary-worker/02",
+        ticket_number=2,
+        effort="box-primary-worker",
+        claimed_by="box",
+        last_commit_time=now - datetime.timedelta(hours=7, minutes=59),
+    )
+    # 3. Claims with last_commit_time=None are never released
+    claim_none_box = Claim(
+        ref="claim/box-primary-worker/03",
+        ticket_number=3,
+        effort="box-primary-worker",
+        claimed_by="box",
+        last_commit_time=None,
+    )
+    claim_none_jules = Claim(
+        ref="claim/phase-1/04",
+        ticket_number=4,
+        effort="phase-1",
+        claimed_by="jules",
+        last_commit_time=None,
+    )
+
+    # Live Jules session matching ticket 1
+    matching_session = {
+        "id": "sessions/test1",
+        "title": "box-primary-worker-01: First Ticket",
+        "state": "RUNNING",
+    }
+
+    tickets = [make_ticket(1), make_ticket(2), make_ticket(3), make_ticket(4)]
+    snapshot = WorldSnapshot(
+        tickets=tickets,
+        claims=[claim_8h, claim_7h59m, claim_none_box, claim_none_jules],
+        jules_sessions=[matching_session],
+        config=config,
+        now=now,
+    )
+
+    result = core.evaluate(snapshot)
+    releases = [a for a in result.actions if isinstance(a, ReleaseClaimAction)]
+    assert len(releases) == 1
+    assert releases[0].ticket_number == 1
+    assert releases[0].claim_ref == "claim/box-primary-worker/01"
+    assert releases[0].reason == "Stale box claim: no checkpoint in 8 hours"
+
 

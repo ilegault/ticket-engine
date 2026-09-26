@@ -45,6 +45,13 @@ is unknown. A session whose newest activity is the engine's own reply has not
 processed it yet and is left alone, so two runs a minute apart do not spend two
 replies on one question. The agent's question is never copied into the brief: it is
 an API response body and the brief lands in a public repo (ADR 0002).
+
+STALE CLAIMS (ADR 0006)
+-----------------------
+The stale claims sweep runs live on every dispatch run. A box claim with no
+checkpoint commit for `box_stale_claim_hours` (default 8) is released, whether
+or not anything looks live. A Jules claim keeps the 12-hour rule (`stale_claim_hours`)
+and is kept if a live session exists for the ticket.
 """
 from __future__ import annotations
 
@@ -67,8 +74,10 @@ class Claim:
     ref: str
     ticket_number: int
     effort: str = "phase-1"
+    # Meaning widens to last progress time (ticket branch head, or fallback to claim branch head).
     last_commit_time: datetime.datetime | None = None
     has_live_session: bool = False
+    claimed_by: str = ""  # "" means pre-Phase-2 claim and is treated as jules
 
 
 @dataclass(frozen=True)
@@ -621,6 +630,7 @@ class DispatchCore:
                 effort = c.effort
                 last_commit = c.last_commit_time
                 has_live = c.has_live_session
+                claimed_by = (c.claimed_by or "").strip().lower()
             else:
                 ref = str(c).strip()
                 parts = ref.split("/")
@@ -628,30 +638,47 @@ class DispatchCore:
                 effort = parts[-2] if len(parts) >= 2 else "phase-1"
                 last_commit = None
                 has_live = False
+                claimed_by = ""
 
-            if not has_live and snapshot.jules_sessions:
-                for sess in snapshot.jules_sessions:
-                    if isinstance(sess, dict):
-                        title = sess.get("title", "")
-                        if (
-                            is_live_session_state(sess.get("state"))
-                            and (f"-{ticket_num:02d}:" in title or f"-{ticket_num}:" in title)
-                        ):
-                            has_live = True
-                            break
+            if last_commit is None:
+                continue
 
-            if not has_live and last_commit is not None:
+            if claimed_by == "box":
                 age = now - last_commit
-                if age >= datetime.timedelta(hours=cfg.stale_claim_hours):
+                if age >= datetime.timedelta(hours=cfg.box_stale_claim_hours):
                     stale_claim_refs.add(ref)
                     actions.append(
                         ReleaseClaimAction(
                             claim_ref=ref,
                             ticket_number=ticket_num,
                             effort=effort,
-                            reason=f"Stale claim: no live Jules session and no ticket-branch commit in {cfg.stale_claim_hours} hours",
+                            reason=f"Stale box claim: no checkpoint in {cfg.box_stale_claim_hours} hours",
                         )
                     )
+            else:
+                if not has_live and snapshot.jules_sessions:
+                    for sess in snapshot.jules_sessions:
+                        if isinstance(sess, dict):
+                            title = sess.get("title", "")
+                            if (
+                                is_live_session_state(sess.get("state"))
+                                and (f"-{ticket_num:02d}:" in title or f"-{ticket_num}:" in title)
+                            ):
+                                has_live = True
+                                break
+
+                if not has_live:
+                    age = now - last_commit
+                    if age >= datetime.timedelta(hours=cfg.stale_claim_hours):
+                        stale_claim_refs.add(ref)
+                        actions.append(
+                            ReleaseClaimAction(
+                                claim_ref=ref,
+                                ticket_number=ticket_num,
+                                effort=effort,
+                                reason=f"Stale claim: no live Jules session and no ticket-branch commit in {cfg.stale_claim_hours} hours",
+                            )
+                        )
 
         # 1b. Sessions waiting on a question (ADR 0004). Before the pause check:
         # a paused repo starts nothing new, but work in flight still finishes.

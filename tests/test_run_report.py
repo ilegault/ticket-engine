@@ -323,3 +323,18 @@ def test_cli_live_dispatch_writes_report_to_step_summary(
     # The same report goes to the job log.
     assert "Needs you (`ready-for-developer`)" in capsys.readouterr().out
     github.create_claim_branch.assert_not_called()
+
+
+def test_build_run_report_renders_released_stale_claims():
+    facts = RunFacts(
+        repo="owner/repo",
+        released_stale=[
+            (5, "Stale box claim: no checkpoint in 8 hours"),
+            (12, "Stale claim: no live Jules session and no ticket-branch commit in 12 hours"),
+        ],
+    )
+    report = build_run_report([], facts)
+    assert "**Released stale claims:**" in report
+    assert "- 05 — Stale box claim: no checkpoint in 8 hours" in report
+    assert "- 12 — Stale claim: no live Jules session and no ticket-branch commit in 12 hours" in report
+
