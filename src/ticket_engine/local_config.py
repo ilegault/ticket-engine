@@ -35,6 +35,7 @@ class LocalWorkerConfig:
     worktree_base: str = ""   # empty → sibling directory named "worktrees"
     github_token: str = ""    # falls back to PIPELINE_TOKEN env var
     print_timeout: str = "7200"
+    checkpoint_push_minutes: int = 20
     quota_error_patterns: list[str] = field(
         default_factory=lambda: ["quota", "rate limit", "exhausted"]
     )
@@ -86,6 +87,7 @@ def load_local_config(path: pathlib.Path | str | None = None) -> LocalWorkerConf
         worktree_base=str(data.get("worktree_base", "")),
         github_token=str(data.get("github_token", "")),
         print_timeout=str(agy.get("print_timeout", "7200")),
+        checkpoint_push_minutes=int(data.get("checkpoint_push_minutes", 20)),
         quota_error_patterns=(
             [str(p) for p in quota_patterns]
             if quota_patterns is not None

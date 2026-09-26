@@ -218,25 +218,25 @@ This section applies when executing as a Jules cloud worker:
 This section applies when executing as a local Antigravity CLI worker:
 
 - **Checkpoint at every acceptance-criterion boundary.** Once each criterion's
-  tests pass, commit and push the work in progress to the ticket branch, then
-  overwrite the progress note under the ticket's `## Comments` (five lines or
-  fewer):
+  tests pass, commit the work in progress to the ticket branch, then overwrite
+  the progress note under the ticket's `## Comments` (five lines or fewer):
   ```
   Progress (YYYY-MM-DD HH:MM): criteria 1–N done, tests green.
   Next: criterion M — <brief description>.
   ```
-- **Do not push or open PRs yourself.** The local worker orchestrator monitors
-  your output and handles quota errors.
-- **Quota may pause you mid-ticket.** The orchestrator will resume you with
-  `agy --continue`. If that is not possible, it will start a fresh session
-  that includes your last progress note. Your next session should read that
-  note (under `## Comments`) and continue from "Next:".
+- **Do not push or open PRs yourself.** The local worker pushes your commits
+  and opens the PR.
+- **Quota may pause you mid-ticket.** It will start a fresh session on the
+  same branch that includes your last progress note. Your next session should
+  read that note (under `## Comments`) and continue from "Next:".
 
 ---
 
 ## 7. Landing or escalating (for local / human workers)
 
 When running locally (outside of Jules):
+
+**The box's local worker does steps 3–5 for you; skip them when running under it.**
 
 ### Landing the ticket
 1. In the ticket file: set `Status: done`, tick every criterion (`- [x]`), and
