@@ -522,6 +522,34 @@ class LiveDispatcher:
                 )
             )
 
+        # 4d. Read box status issue if box is enabled (ADR 0006)
+        box: BoxStatus | None | NoBox = NO_BOX
+        box_status_error = ""
+        if self.config.box_enabled:
+            try:
+                issues = self.github_client.list_issues(
+                    repo=ENGINE_REPO,
+                    state="open",
+                    labels="engine:box-status",
+                )
+                box_issue = None
+                for iss in issues:
+                    if isinstance(iss, dict):
+                        box_issue = iss
+                        break
+                if box_issue:
+                    body = str(box_issue.get("body") or "")
+                    box = parse_box_status(body)
+                    if box is None:
+                        box_status_error = "unparseable box status body"
+                else:
+                    box = None
+                    box_status_error = "no open issue labelled engine:box-status found"
+            except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                logger.warning("Failed to read box status issue from %s: %s", ENGINE_REPO, exc)
+                box = None
+                box_status_error = str(exc)
+
         # 5. Build WorldSnapshot and evaluate pure core
         snapshot = WorldSnapshot(
             tickets=tickets,
@@ -535,6 +563,11 @@ class LiveDispatcher:
             box_status_error=box_status_error,
         )
         result = self.core.evaluate(snapshot)
+
+        facts.box_state = result.box_state
+        facts.box_checked_in = box.checked_in_at if isinstance(box, BoxStatus) else None
+        facts.left_for_box = result.left_for_box
+        facts.box_status_error = box_status_error
 
         # Carry out stale claim releases
         for action in result.actions:
