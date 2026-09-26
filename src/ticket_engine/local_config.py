@@ -10,6 +10,12 @@ print_timeout and error patterns.
 
 There is no documented quota source for agy, so the previous pre-flight quota
 reserve is removed. Timeout and pattern tunables live here, never hardcoded in logic.
+
+Ticket 31 (spec §Local config) adds the box-worker loop's own tunables:
+concurrency, poll/status intervals, the weekly-cap timeline, the engine repo
+the box posts its status and alerts to, and the local folder its ledger,
+quota-pause record and rotating logs live in. Every one of these is a home
+for a literal that used to have none (AGENTS.md §3 invariant 6).
 """
 from __future__ import annotations
 
@@ -29,6 +35,10 @@ class LocalRepoEntry:
     repo: str  # "owner/repo" on GitHub
 
 
+def _default_logs_dir() -> str:
+    return str(pathlib.Path.home() / "ticket-engine-box" / "logs")
+
+
 @dataclass(frozen=True)
 class LocalWorkerConfig:
     repos: list[LocalRepoEntry] = field(default_factory=list)
@@ -43,6 +53,13 @@ class LocalWorkerConfig:
     auth_error_patterns: list[str] = field(
         default_factory=lambda: ["auth", "login", "credential"]
     )
+    concurrency: int = 1
+    poll_interval_minutes: int = 10
+    status_interval_minutes: int = 30
+    weekly_cap_after_hours: int = 5
+    weekly_cap_backoff_hours: int = 12
+    engine_repo: str = "ilegault/ticket-engine"
+    logs_dir: str = field(default_factory=_default_logs_dir)
 
 
 def load_local_config(path: pathlib.Path | str | None = None) -> LocalWorkerConfig:
@@ -100,4 +117,11 @@ def load_local_config(path: pathlib.Path | str | None = None) -> LocalWorkerConf
             if auth_patterns is not None
             else ["auth", "login", "credential"]
         ),
+        concurrency=int(data.get("concurrency", 1)),
+        poll_interval_minutes=int(data.get("poll_interval_minutes", 10)),
+        status_interval_minutes=int(data.get("status_interval_minutes", 30)),
+        weekly_cap_after_hours=int(data.get("weekly_cap_after_hours", 5)),
+        weekly_cap_backoff_hours=int(data.get("weekly_cap_backoff_hours", 12)),
+        engine_repo=str(data.get("engine_repo", "ilegault/ticket-engine")),
+        logs_dir=str(data.get("logs_dir", "")) or _default_logs_dir(),
     )
