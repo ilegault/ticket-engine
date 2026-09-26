@@ -9,7 +9,7 @@ The run report shows the box's state on every run. Spec: `.scratch/box-primary-w
 
 **Blocked by:** 20
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
