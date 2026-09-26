@@ -194,3 +194,9 @@ def test_bundled_skill_tells_jules_workers_to_update_the_ticket():
     jules_section = skill[skill.index("## 6. If you are a Jules worker"):skill.index("## 6b.")]
     assert "Status: done" in jules_section
     assert "- [x]" in jules_section
+
+
+def test_assemble_prompt_tells_workers_to_keep_claimed_by_line():
+    prompt = assemble_prompt("# A repo-local skill", "owner/repo", ".scratch/effort/issues/21-slug.md")
+    assert "Keep the ticket's Claimed-by: line exactly as it is." in prompt
+

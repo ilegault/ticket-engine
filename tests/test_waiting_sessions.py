@@ -274,6 +274,7 @@ def test_live_dispatch_replies_to_a_waiting_session_and_reports_it():
     github, jules = fakes(
         [waiting_session(None), working], {SESSION: [agent_asks(1)]}
     )
+    github.list_claim_branches.return_value = [f"claim/{EFFORT}/46", f"claim/{EFFORT}/47"]
     _, report = run(github, jules, tickets=[ticket(), ticket(47)])
 
     jules.list_activities.assert_called_once_with(SESSION)

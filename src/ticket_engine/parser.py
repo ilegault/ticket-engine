@@ -10,6 +10,8 @@ Legacy words (such as 'complete', 'human-task') are recorded as findings and
 never treated as 'done', preventing unverified work from advancing the frontier.
 ADR 0005 adds the optional `Deletes tests:` line: the test functions (as
 `path.py::name`) a ticket authorises its worker to delete.
+ADR 0006 rule 4 adds the optional `Claimed-by:` line ('box' or 'jules') so that
+a finished ticket records which worker implemented it.
 """
 from __future__ import annotations
 
@@ -37,6 +39,10 @@ _AUTO_MERGE_RE = re.compile(r"^(?:\*\*)?Auto-merge:(?:\*\*)?\s*(.+)$", re.IGNORE
 _DELETES_TESTS_RE = re.compile(
     r"^(?:\*\*)?Deletes tests:(?:\*\*)?\s*(.+)$", re.IGNORECASE | re.MULTILINE
 )
+# ADR 0006 rule 4: worker recording for claims ('box' or 'jules').
+_CLAIMED_BY_RE = re.compile(
+    r"^(?:\*\*)?Claimed-by:(?:\*\*)?\s*(.+)$", re.IGNORECASE | re.MULTILINE
+)
 
 
 @dataclass(frozen=True)
@@ -60,6 +66,8 @@ class Ticket:
     raw_text: str = ""
     # Tests this ticket authorises its worker to delete (ADR 0005), `path.py::name`.
     deletes_tests: list[str] = field(default_factory=list)
+    # Worker recording for claims (ADR 0006 rule 4), e.g. "box" or "jules".
+    claimed_by: str = ""
 
     def is_done(self) -> bool:
         if self.status != "done":
@@ -165,6 +173,24 @@ class TicketParser:
                     if entry:
                         deletes_tests.append(entry)
 
+        # 7. Parse Claimed-by (ADR 0006 rule 4). Missing defaults to "".
+        claimed_by_match = _CLAIMED_BY_RE.search(content)
+        if claimed_by_match:
+            raw_claimed = claimed_by_match.group(1).strip().strip("*_").strip()
+            claimed_lower = raw_claimed.lower()
+            if claimed_lower in ("box", "jules"):
+                claimed_by = claimed_lower
+            else:
+                findings.append(
+                    ParseFinding(
+                        message=f"Unknown Claimed-by value '{raw_claimed}'",
+                        file=filename,
+                    )
+                )
+                claimed_by = ""
+        else:
+            claimed_by = ""
+
         effort = ""
         if path is not None:
             parts = path.parts
@@ -186,4 +212,5 @@ class TicketParser:
             effort=effort,
             raw_text=content,
             deletes_tests=deletes_tests,
+            claimed_by=claimed_by,
         )

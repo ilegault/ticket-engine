@@ -415,6 +415,36 @@ def apply_escalation_to_ticket_text(ticket_text: str, brief: str) -> str:
     return updated
 
 
+def insert_claimed_by(ticket_text: str, worker: str = "jules") -> str:
+    """Insert or update a Claimed-by line directly under Status (ADR 0006 rule 4)."""
+    if re.search(r"^(?:\*\*)?Claimed-by:", ticket_text, re.MULTILINE | re.IGNORECASE):
+        return re.sub(
+            r"^((\*\*?)?Claimed-by:(\*\*?)\s*)[^\r\n]+",
+            rf"\g<1>{worker}",
+            ticket_text,
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
+    pattern = re.compile(
+        r"^((\*\*?)?Status:(\*\*?)[^\r\n]*)(\r?\n\r?\n|\r?\n|$)",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    match = pattern.search(ticket_text)
+    if match:
+        status_line = match.group(1)
+        sep = match.group(4) or "\n\n"
+        insertion = f"**Claimed-by:** {worker}"
+        return (
+            ticket_text[: match.start()]
+            + status_line
+            + sep
+            + insertion
+            + sep
+            + ticket_text[match.end() :]
+        )
+    return ticket_text
+
+
+
 def assemble_waiting_session_brief(
     ticket: Ticket,
     claim_ref: str,
