@@ -10,7 +10,7 @@ Spec: `.scratch/box-primary-worker/spec.md` (§Local worker orchestration). ADR 
 
 **Blocked by:** 19, 21
 
-**Status:** in-progress
+**Status:** done
 
 **Runner:** any
 
@@ -20,17 +20,17 @@ Spec: `.scratch/box-primary-worker/spec.md` (§Local worker orchestration). ADR 
 
 Tests go in `tests/test_local_worker.py`, using a fake `git_runner` that records argument lists and environments and returns scripted results, a fake GitHub client that records calls, and a fake `AgyDriver` (`run_fn`). The pusher's timer takes an injectable `clock`/`sleep`. `LocalWorker`, `assemble_prompt` and the parser are real. Write these tests first and watch them fail.
 
-- [ ] **Claim with Claimed-by, then branch from it.** `run_one(entry, ticket)` calls `create_claim_branch`, then commits the ticket file on `claim/<effort>/<NN>` with `**Claimed-by:** box` inserted after the `Status:` line. Reuse the helper ticket 21 added for the Jules path; do not write a second one. It then creates the worktree with `git worktree add <path> -b ticket/<effort>-<NN>-<slug> origin/claim/<effort>/<NN>` after a `git fetch origin claim/<effort>/<NN>`.
+- [x] **Claim with Claimed-by, then branch from it.** `run_one(entry, ticket)` calls `create_claim_branch`, then commits the ticket file on `claim/<effort>/<NN>` with `**Claimed-by:** box` inserted after the `Status:` line. Reuse the helper ticket 21 added for the Jules path; do not write a second one. It then creates the worktree with `git worktree add <path> -b ticket/<effort>-<NN>-<slug> origin/claim/<effort>/<NN>` after a `git fetch origin claim/<effort>/<NN>`.
   - If `git ls-remote --heads origin ticket/<effort>-<NN>-<slug>` returns a line, the worktree is instead added on `origin/ticket/...` with `--track`, and no new branch is created.
   - Assert the recorded git argument lists in order.
-- [ ] **Push after every run, and on a timer.** After each `AgyDriver.start` returns, whatever the outcome (`success`, `quota`, `timeout`, `failed`), the orchestrator runs `git -C <worktree> push origin HEAD:refs/heads/ticket/<effort>-<NN>-<slug>`. While `agy` runs, a background pusher runs the same command every `LocalWorkerConfig.checkpoint_push_minutes` (default 20).
+- [x] **Push after every run, and on a timer.** After each `AgyDriver.start` returns, whatever the outcome (`success`, `quota`, `timeout`, `failed`), the orchestrator runs `git -C <worktree> push origin HEAD:refs/heads/ticket/<effort>-<NN>-<slug>`. While `agy` runs, a background pusher runs the same command every `LocalWorkerConfig.checkpoint_push_minutes` (default 20).
   - Test the pusher on its own, with a fake clock, as `CheckpointPusher(push_fn, interval_s, sleep_fn).run_until(stop_event)`. It pushes at 0, 20 and 40 minutes and stops when the event is set.
   - A failed push is logged and does not stop the run.
-- [ ] **Token never on disk or in logs.** Every push passes the environment variables `GIT_CONFIG_COUNT=1`, `GIT_CONFIG_KEY_0=http.https://github.com/.extraheader` and `GIT_CONFIG_VALUE_0=AUTHORIZATION: basic <base64 of x-access-token:TOKEN>` through the git runner's environment argument; extend the runner signature to `(args, cwd, env)`.
+- [x] **Token never on disk or in logs.** Every push passes the environment variables `GIT_CONFIG_COUNT=1`, `GIT_CONFIG_KEY_0=http.https://github.com/.extraheader` and `GIT_CONFIG_VALUE_0=AUTHORIZATION: basic <base64 of x-access-token:TOKEN>` through the git runner's environment argument; extend the runner signature to `(args, cwd, env)`.
   - No git argument list contains the token.
   - A test with token `tok-123` asserts `tok-123` and its base64 form are absent from every recorded argument list and from every captured log record (`caplog`).
-- [ ] **Never remove a worktree with unpushed work.** Before any `git worktree remove`, the orchestrator runs `git -C <worktree> rev-list --count origin/ticket/...@{u}..HEAD` or the equivalent `status -sb` check. It removes only when the count is `0` and the worktree is clean. Otherwise it keeps the worktree and logs the path. `--force` is never passed. A test with the fake returning `2` asserts no remove call was recorded.
-- [ ] **Skill section 6b is consistent.** In `src/ticket_engine/resources/ticket_skill.md` §6b:
+- [x] **Never remove a worktree with unpushed work.** Before any `git worktree remove`, the orchestrator runs `git -C <worktree> rev-list --count origin/ticket/...@{u}..HEAD` or the equivalent `status -sb` check. It removes only when the count is `0` and the worktree is clean. Otherwise it keeps the worktree and logs the path. `--force` is never passed. A test with the fake returning `2` asserts no remove call was recorded.
+- [x] **Skill section 6b is consistent.** In `src/ticket_engine/resources/ticket_skill.md` §6b:
   - "commit and push the work in progress" becomes "commit the work in progress";
   - the bullet reads "**Do not push or open PRs yourself.** The local worker pushes your commits and opens the PR.";
   - the `--continue` sentence becomes "it will start a fresh session on the same branch that includes your last progress note."
@@ -40,3 +40,10 @@ Tests go in `tests/test_local_worker.py`, using a fake `git_runner` that records
 Gates, in CI order: `ruff check .`, `python scripts/check_tests_first.py`, `pytest -q`.
 
 ## Comments
+
+2026-09-26: All 5 criteria implemented and tested (30 tests pass, 12 new).
+- AC1: `_commit_claimed_by` via GitHub API + `insert_claimed_by`; `_create_worktree` ls-remote→fetch→worktree-add (or --track resume). Tests: `test_run_one_commits_claimed_by_to_claim_branch`, `test_run_one_git_arg_order_for_fresh_claim`, `test_run_one_resumes_from_existing_ticket_branch`.
+- AC2: `CheckpointPusher.run_until` in daemon thread; explicit post-run push. Tests: `test_checkpoint_pusher_pushes_on_timer`, `test_push_after_agy_success`, `test_push_after_agy_quota_failure`, `test_failed_push_is_logged_not_fatal`.
+- AC3: `_make_push_env` builds GIT_CONFIG env vars; token stays in env, never in args. Tests: `test_token_not_in_git_args_or_logs`.
+- AC4: `_cleanup_worktree` checks rev-list before remove; --force absent. Tests: `test_worktree_not_removed_when_unpushed_commits`, `test_force_never_passed_to_worktree_remove`.
+- AC5: §6b says "commit the work", no "--continue"; §7 notes box does steps 3–5. Tests: `test_skill_6b_no_push_the_work_no_continue`, `test_run_one_works_any_runner`.
