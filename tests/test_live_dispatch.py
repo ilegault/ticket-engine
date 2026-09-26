@@ -14,9 +14,11 @@ Ticket 06 Acceptance Criteria 1, 2, 4, 6, 7 mandate that:
 """
 from __future__ import annotations
 
+import datetime
 import urllib.error
 from unittest.mock import MagicMock
 
+from ticket_engine.box_status import BoxState, BoxStatus, render_box_status
 from ticket_engine.config import RepoConfig
 from ticket_engine.live_dispatch import LiveDispatcher
 from ticket_engine.parser import Ticket
@@ -282,4 +284,104 @@ def test_live_dispatch_creates_session_even_if_claimed_by_commit_fails(caplog):
     assert len(started) == 1
     mock_jules.create_session.assert_called_once()
     assert any("Failed to record Claimed-by: jules" in record.message for record in caplog.records)
+
+
+def test_live_dispatch_reads_box_status_when_enabled():
+    mock_github = MagicMock()
+    mock_github.get_default_branch_sha.return_value = "base123sha"
+    now = datetime.datetime.now(datetime.UTC)
+    box_body = render_box_status(
+        BoxStatus(
+            checked_in_at=now - datetime.timedelta(hours=1),
+            state=BoxState.idle,
+        )
+    )
+    mock_github.list_issues.return_value = [
+        {
+            "number": 100,
+            "title": "Box Status",
+            "body": box_body,
+        }
+    ]
+
+    mock_jules = MagicMock()
+    mock_jules.count_recent_sessions.return_value = 5
+
+    config = RepoConfig(default_branch="main", concurrency=2, box_enabled=True)
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=config,
+    )
+
+    t1 = make_ticket(1, title="First Feature")
+    started = dispatcher.dispatch(tickets=[t1])
+
+    # Box is available -> starts 0, left for box
+    assert len(started) == 0
+    mock_github.list_issues.assert_called_once_with(
+        repo="ilegault/ticket-engine",
+        state="open",
+        labels="engine:box-status",
+    )
+    assert dispatcher.last_run.box_state == "available"
+    assert dispatcher.last_run.left_for_box == [t1]
+    mock_jules.create_session.assert_not_called()
+
+
+def test_live_dispatch_box_status_read_failure_sets_box_none_and_never_raises():
+    mock_github = MagicMock()
+    mock_github.get_default_branch_sha.return_value = "base123sha"
+    mock_github.create_claim_branch.return_value = True
+    mock_github.list_issues.side_effect = urllib.error.HTTPError(
+        "http://api.github.com", 500, "Server Error", {}, None
+    )
+
+    mock_jules = MagicMock()
+    mock_jules.count_recent_sessions.return_value = 5
+    mock_jules.create_session.return_value = {"id": "sessions/test123", "state": "RUNNING"}
+
+    config = RepoConfig(default_branch="main", concurrency=2, box_enabled=True)
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=config,
+    )
+
+    t1 = make_ticket(1, title="First Feature")
+    started = dispatcher.dispatch(tickets=[t1])
+
+    assert len(started) == 1
+    assert dispatcher.last_run.box_state == "unreadable"
+    assert "Server Error" in dispatcher.last_run.box_status_error
+    mock_jules.create_session.assert_called_once()
+
+
+def test_live_dispatch_box_disabled_passes_no_box_and_makes_no_issues_request():
+    mock_github = MagicMock()
+    mock_github.get_default_branch_sha.return_value = "base123sha"
+    mock_github.create_claim_branch.return_value = True
+
+    mock_jules = MagicMock()
+    mock_jules.count_recent_sessions.return_value = 5
+    mock_jules.create_session.return_value = {"id": "sessions/test123", "state": "RUNNING"}
+
+    config = RepoConfig(default_branch="main", concurrency=2, box_enabled=False)
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=config,
+    )
+
+    t1 = make_ticket(1, title="First Feature")
+    started = dispatcher.dispatch(tickets=[t1])
+
+    assert len(started) == 1
+    mock_github.list_issues.assert_not_called()
+    assert dispatcher.last_run.box_state == "none"
+    mock_jules.create_session.assert_called_once()
+
 
