@@ -24,7 +24,6 @@ import base64
 import datetime
 import logging
 import pathlib
-import re
 import threading
 import time
 from collections.abc import Callable
@@ -517,16 +516,6 @@ def _seconds_until_reset(reset_at: datetime.datetime | None) -> float:
     now = datetime.datetime.now(datetime.UTC)
     delta = (reset_at - now).total_seconds() + _QUOTA_RESET_BUFFER_SECS
     return max(delta, 0.0)
-
-
-def _extract_progress_note(ticket_text: str) -> str:
-    """Extract the most recent progress note from the ## Comments section."""
-    match = re.search(
-        r"^##\s+Comments\s*\n(.*?)(?=^##|\Z)", ticket_text, re.MULTILINE | re.DOTALL
-    )
-    if not match:
-        return ""
-    return match.group(1).strip()
 
 
 def _assemble_checkpoint_prompt(
