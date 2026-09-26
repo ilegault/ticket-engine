@@ -14,7 +14,8 @@ import logging
 
 import pytest
 
-from ticket_engine.prompt import assemble_prompt, load_ticket_skill
+from ticket_engine.dispatch import Handoff
+from ticket_engine.prompt import assemble_prompt, extract_progress_note, load_ticket_skill
 
 
 def test_prompt_assembly_includes_required_elements():
@@ -199,4 +200,76 @@ def test_bundled_skill_tells_jules_workers_to_update_the_ticket():
 def test_assemble_prompt_tells_workers_to_keep_claimed_by_line():
     prompt = assemble_prompt("# A repo-local skill", "owner/repo", ".scratch/effort/issues/21-slug.md")
     assert "Keep the ticket's Claimed-by: line exactly as it is." in prompt
+
+
+# --- Handoff (ticket 25 / ADR 0006 rule 6) ---------------------------------
+
+
+def test_assemble_prompt_without_handoff_is_byte_identical_to_no_handoff_arg():
+    skill_text = "# A repo-local skill"
+    repo = "owner/repo"
+    ticket_path = ".scratch/box-primary-worker/issues/25-handoff-to-jules.md"
+
+    with_default = assemble_prompt(skill_text, repo, ticket_path)
+    with_explicit_none = assemble_prompt(skill_text, repo, ticket_path, handoff=None)
+
+    assert with_default == with_explicit_none
+    assert "HANDOFF" not in with_default
+
+
+def test_assemble_prompt_with_handoff_adds_section_before_final_step():
+    handoff = Handoff(
+        branch="ticket/box-primary-worker-25-handoff-to-jules",
+        note="Progress (2026-09-26 12:00): criteria 1-2 done, tests green.\nNext: criterion 3.",
+    )
+    prompt = assemble_prompt(
+        "# A repo-local skill", "owner/repo", ".scratch/effort/issues/25-slug.md", handoff=handoff
+    )
+
+    assert "## HANDOFF — CONTINUE FROM A CHECKPOINT" in prompt
+    assert prompt.index("## HANDOFF") < prompt.index("## FINAL STEP")
+
+    handoff_section = prompt[prompt.index("## HANDOFF"):prompt.index("## FINAL STEP")]
+    assert f"A previous worker pushed a checkpoint to branch {handoff.branch}." in handoff_section
+    assert (
+        f"Run: git fetch origin {handoff.branch} && git merge --no-edit FETCH_HEAD"
+        in handoff_section
+    )
+    assert (
+        "If that fails, start the ticket fresh from the default branch and say so under ## Comments."
+        in handoff_section
+    )
+    assert handoff.note in handoff_section
+
+
+def test_existing_prompt_tests_pass_unchanged_with_no_handoff_argument():
+    # Guards acceptance criterion: "Without a handoff, the output is byte-identical
+    # to today's." Re-run through assemble_prompt with the positional-args call
+    # shape every earlier test in this file uses.
+    prompt = assemble_prompt("# Skill", "Slackbot", ".scratch/phase-1/issues/02-x.md")
+    assert "HANDOFF" not in prompt
+
+
+# --- extract_progress_note (moved here from local_worker, ticket 25) -------
+
+
+def test_extract_progress_note_returns_comments_section_stripped():
+    text = (
+        "# 09: Test\n**Status:** in-progress\n\n"
+        "## Comments\n\n"
+        "Progress (2026-09-26 10:00): criteria 1 done.\nNext: criterion 2.\n"
+    )
+    assert extract_progress_note(text) == (
+        "Progress (2026-09-26 10:00): criteria 1 done.\nNext: criterion 2."
+    )
+
+
+def test_extract_progress_note_no_comments_section_returns_empty():
+    assert extract_progress_note("# 09: Test\n**Status:** in-progress\n") == ""
+
+
+def test_local_worker_re_exports_extract_progress_note():
+    from ticket_engine import local_worker
+
+    assert local_worker._extract_progress_note is extract_progress_note
 

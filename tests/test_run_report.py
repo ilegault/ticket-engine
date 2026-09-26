@@ -12,7 +12,6 @@ point, and the summary file (a temp file standing in for $GITHUB_STEP_SUMMARY).
 """
 from __future__ import annotations
 
-import datetime
 import io
 import pathlib
 import urllib.error

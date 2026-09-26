@@ -135,9 +135,18 @@ class MergedPR:
 
 
 @dataclass(frozen=True)
+class Handoff:
+    """A checkpoint a released box ticket left behind, for Jules to continue (ADR 0006 rule 6)."""
+
+    branch: str
+    note: str
+
+
+@dataclass(frozen=True)
 class StartTicketAction:
     ticket: Ticket
     runner: str = "any"
+    handoff: Handoff | None = None
 
 
 @dataclass(frozen=True)
@@ -326,6 +335,8 @@ class WorldSnapshot:
     merged_prs: Sequence[MergedPR | object] = field(default_factory=list)
     box: BoxStatus | None | NoBox = NO_BOX
     box_status_error: str = ""
+    # A released box ticket's checkpoint (ADR 0006 rule 6), filled by the adapter.
+    checkpoints: dict[int, Handoff] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -885,7 +896,13 @@ class DispatchCore:
                 lint_held.append(ticket)
             else:
                 if len([a for a in actions if isinstance(a, StartTicketAction)]) < available_slots:
-                    actions.append(StartTicketAction(ticket=ticket, runner=ticket.runner))
+                    actions.append(
+                        StartTicketAction(
+                            ticket=ticket,
+                            runner=ticket.runner,
+                            handoff=snapshot.checkpoints.get(ticket.number),
+                        )
+                    )
 
         return DispatchResult(
             frontier=frontier,

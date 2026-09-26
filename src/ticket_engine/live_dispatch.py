@@ -23,6 +23,13 @@ Phase 1 Spec §Implementation Decisions and Ticket 06 / Ticket 07 Acceptance Cri
    to the claim branch and then send the stop message. The stop message is sent only
    after the commit lands, because the stop marker is what tells later runs the
    ticket is already escalated.
+10. ADR 0006 rule 6 / ticket 25: before evaluating, an unclaimed frontier ticket is
+    checked for a box checkpoint — a ticket branch the box pushed and released whose
+    head differs from the default branch. When one exists, its progress note is read
+    and carried into `WorldSnapshot.checkpoints`, so the pure core can attach a
+    `Handoff` to the `StartTicketAction` it hands Jules. This detection is the
+    adapter's job, not the core's, because it needs a branch-head SHA comparison and
+    a file read that a pure function cannot do.
 """
 from __future__ import annotations
 
@@ -41,6 +48,7 @@ from ticket_engine.dispatch import (
     EscalatedSessionStillWaiting,
     EscalatePRAction,
     EscalateWaitingSessionAction,
+    Handoff,
     NoBox,
     OpenPR,
     PauseRepoAction,
@@ -56,7 +64,7 @@ from ticket_engine.dispatch import (
     ticket_repo_path,
 )
 from ticket_engine.parser import TicketParser
-from ticket_engine.prompt import assemble_prompt, load_ticket_skill
+from ticket_engine.prompt import assemble_prompt, extract_progress_note, load_ticket_skill
 from ticket_engine.run_report import RunFacts
 from ticket_engine.ticket_lint import lint_tickets
 
@@ -561,6 +569,7 @@ class LiveDispatcher:
             paused=self.paused,
             box=box,
             box_status_error=box_status_error,
+            checkpoints=checkpoints,
         )
         result = self.core.evaluate(snapshot)
 
@@ -637,7 +646,9 @@ class LiveDispatcher:
                 )
 
             # 7. Assemble prompt (pure, no logging of content)
-            prompt = assemble_prompt(self.skill_text, self.repo, ticket_path_str)
+            prompt = assemble_prompt(
+                self.skill_text, self.repo, ticket_path_str, handoff=action.handoff
+            )
 
             # 8. Create Jules session
             title = f"{effort}-{ticket.number:02d}: {ticket.title}"
