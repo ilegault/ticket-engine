@@ -14,6 +14,7 @@ from __future__ import annotations
 import textwrap
 
 from ticket_engine.integrity import (
+    ESCALATED_REASON_PREFIX,
     BaseTestResults,
     IntegrityConfig,
     IntegrityCore,
@@ -414,6 +415,67 @@ def test_check_6_unticked_acceptance_box_fails():
 
     assert verdict.verdict == Verdict.FAIL
     assert any("Second item still pending" in r or "unticked" in r.lower() for r in verdict.reasons)
+
+
+def test_check_6_blocked_ticket_is_an_escalation_hold_not_a_fail():
+    # ADR 0004: an escalation commits `Status: blocked` and a brief to the claim
+    # branch. That PR is waiting on the developer, not broken by the worker, so it
+    # must be a hold (green, never auto-merged) rather than a red fail that also
+    # counts toward the fix-attempt limit and re-escalates.
+    base_tree = {"tests/test_sample.py": "def test_a(): assert True\n"}
+    ticket_content = textwrap.dedent("""
+        # 41: Ticket
+        **Status:** blocked
+        ## Acceptance criteria
+        - [ ] First item
+        - [ ] Second item
+        ## Comments
+        ## Escalation — 2026-09-26
+        Decision needed: answer the session's question.
+    """)
+    ticket = TicketParser().parse_text(ticket_content, filename="41-ticket.md")
+
+    verdict = IntegrityCore().evaluate(base_tree=base_tree, pr_diff="", ticket=ticket)
+
+    assert verdict.verdict == Verdict.HOLD
+    assert any(r.startswith(ESCALATED_REASON_PREFIX) for r in verdict.reasons)
+    assert not any(r.startswith("Check 6 fail") for r in verdict.reasons)
+
+
+def test_check_6_blocked_ticket_does_not_excuse_other_failures():
+    # Marking a ticket blocked must not become a way around the other checks.
+    base_tree = {
+        "tests/test_sample.py": textwrap.dedent("""
+            def test_keep():
+                assert True
+
+            def test_remove():
+                assert True
+        """),
+    }
+    pr_diff = textwrap.dedent("""
+        diff --git a/tests/test_sample.py b/tests/test_sample.py
+        --- a/tests/test_sample.py
+        +++ b/tests/test_sample.py
+        @@ -3,4 +3,1 @@
+         def test_keep():
+             assert True
+        -
+        -def test_remove():
+        -    assert True
+    """)
+    ticket_content = textwrap.dedent("""
+        # 41: Ticket
+        **Status:** blocked
+        ## Acceptance criteria
+        - [ ] First item
+    """)
+    ticket = TicketParser().parse_text(ticket_content, filename="41-ticket.md")
+
+    verdict = IntegrityCore().evaluate(base_tree=base_tree, pr_diff=pr_diff, ticket=ticket)
+
+    assert verdict.verdict == Verdict.FAIL
+    assert any("test_remove" in r for r in verdict.reasons)
 
 
 def test_auto_merge_no_produces_hold():

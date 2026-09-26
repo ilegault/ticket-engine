@@ -41,6 +41,7 @@ from typing import Any
 from ticket_engine.config import load_repo_config
 from ticket_engine.github import INTEGRITY_COMMENT_MARKER, GitHubClient
 from ticket_engine.integrity import (
+    ESCALATED_REASON_PREFIX,
     BaseTestResults,
     IntegrityConfig,
     IntegrityCore,
@@ -522,7 +523,16 @@ def run_integrity_gate(
                 else f"Verdict: {verdict.verdict.value}"
             )
             if verdict.is_hold():
-                desc = f"HOLD, merge by hand: {desc}"
+                # An escalation is waiting for an answer, not for approval: merging it
+                # would land a blocked ticket and any half-done work.
+                escalated = next(
+                    (r for r in verdict.reasons if r.startswith(ESCALATED_REASON_PREFIX)),
+                    None,
+                )
+                if escalated:
+                    desc = f"ESCALATED, do not merge: {escalated}"
+                else:
+                    desc = f"HOLD, merge by hand: {desc}"
             desc = desc[:_STATUS_DESCRIPTION_LIMIT]
             try:
                 client.set_commit_status(

@@ -69,7 +69,25 @@ by* ticket is `done`. First by number wins. The frontier is computed from
 - **Jules worker** — a Jules session in Google's cloud. Linux. Takes `Runner: any`.
 - **Local worker** — the Antigravity CLI (`agy`) on one of the developer's
   machines, started by the engine's local command. Takes `windows` tickets when
-  run on Windows. (Phase 2 makes the ProDesk a permanent local worker.)
+  run on Windows.
+
+**Box** — the developer's Windows mini PC, running the local worker permanently.
+The highest-priority worker: it takes any ticket, `windows` included (ADR 0006).
+The model runs in Google's cloud; the box runs only `agy`, git and the tests.
+
+**Overflow** — Jules taking fresh `Runner: any` tickets because the box is
+paused on quota or silent. Jules is not started otherwise (ADR 0006).
+
+**Box status issue** — one pinned, locked issue in the engine repo. The box
+rewrites it every 30 minutes with its last check-in time, its current ticket, and
+whether it is paused on quota and until when. The dispatcher reads it to decide
+overflow. Fixed-template text only (ADR 0007).
+
+**Box silent** — the box status issue's check-in time is more than 12 hours
+old. A scheduled check then @mentions the developer.
+
+**Box alert** — a fixed-template issue in the engine repo about the box as a
+whole, not one ticket: weekly cap reached, box silent, login expired.
 
 **Dispatcher** — the part of the engine that looks at a target repo, computes the
 frontier, and starts workers on it. It keeps **no state of its own**: everything
@@ -78,10 +96,17 @@ it knows it reads from GitHub and the Jules API on each run.
 **Claim** — a branch named `claim/<effort>/<NN>` in the target repo, created
 through the GitHub API before any work starts. Creation fails if it already
 exists, so two workers cannot claim one ticket. Deleted when the ticket's PR
-merges or the claim is released.
+merges or the claim is released. The ticket file on the claim branch carries a
+`Claimed-by:` line (`box` or `jules`), so a finished ticket records who did it.
 
-**Stale claim** — a claim whose worker has shown no progress (no live Jules
-session, or no checkpoint commit) for 12 hours. The dispatcher releases it.
+**Stale claim** — a claim whose worker has shown no progress, and which the
+dispatcher releases. A Jules claim is stale after 12 hours with no live session.
+A box claim is stale after 8 hours with no checkpoint commit, whether the box is
+paused on quota or dead (ADR 0006).
+
+**Handoff** — Jules taking over a released box claim. It continues from the
+checkpoint if one was pushed, and otherwise starts the ticket fresh. `windows`
+tickets are never handed off. A box that finds its claim gone drops the ticket.
 
 **Checkpoint** — a local worker's work-in-progress commit pushed to the ticket
 branch, plus a progress note of five lines or fewer under `## Comments`. What a
@@ -107,7 +132,10 @@ tests cannot pass without muting or weakening them. The engine also escalates a
 *waiting session* that keeps asking after its last *auto-reply*. The ticket goes `blocked`, the
 PR goes to draft, and an **escalation brief** is written under `## Comments`: the
 ticket, what each attempt tried, the exact failing output, and the one decision
-needed, ready to paste into a stronger model.
+needed, ready to paste into a stronger model. An **escalation issue** is also
+opened in the ticket's target repo, labelled `escalation`, @mentioning the
+developer. It is closed once the ticket leaves `blocked`. The developer is told
+through GitHub, never by email.
 
 **Integrity gate** — the fifth CI check, after the target repo's own gates. It
 decides whether a green PR may merge on its own. Its answer is a *verdict*.

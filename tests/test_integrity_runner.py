@@ -448,3 +448,34 @@ def test_check7_uses_the_repo_test_env_from_engine_config(tmp_path: pathlib.Path
     without_env = _check7_repo(tmp_path / "b", new_test)
     _, text = _run_gate(without_env, tmp_path / "b")
     assert "did not pass on the PR's own code" in text
+
+
+def test_run_integrity_gate_escalated_ticket_is_green_and_says_do_not_merge(tmp_path: pathlib.Path):
+    # An escalation PR (ticket Status: blocked) is a hold, but "merge by hand" would
+    # be the wrong instruction: it is waiting for an answer, not for approval.
+    mock_client = MagicMock()
+    ticket = (
+        "# 41: T\n**Status:** blocked\n## Acceptance criteria\n- [ ] Not yet\n"
+        "## Comments\n## Escalation — 2026-09-26\nDecision needed: answer it.\n"
+    )
+
+    with patch("ticket_engine.integrity_runner.GitHubClient", return_value=mock_client), \
+         patch("ticket_engine.integrity_runner.resolve_base_ref", side_effect=lambda _p, ref: ref), \
+         patch("ticket_engine.integrity_runner.get_base_tree_from_git", return_value={"tests/test_a.py": "def test_a(): assert True\n"}), \
+         patch("ticket_engine.integrity_runner.get_pr_diff_from_git", return_value=""), \
+         patch("ticket_engine.integrity_runner.find_ticket_content_from_git", return_value=ticket):
+
+        exit_code = run_integrity_gate(
+            repo_path=tmp_path,
+            base_ref="origin/master",
+            token="fake-token",
+            repo_name="owner/repo",
+            pr_number=99,
+            head_sha="1234567890abcdef",
+        )
+
+        assert exit_code == 0
+        status_call = mock_client.set_commit_status.call_args[1]
+        assert status_call["state"] == "success"
+        assert status_call["description"].startswith("ESCALATED, do not merge: ")
+        assert "merge by hand" not in status_call["description"]

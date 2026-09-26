@@ -103,6 +103,10 @@ _ESCAPE_TAG_RE = re.compile(
 )
 _EXEMPT_LABELS = {"tests-exempt", "skip-test-gate", "no-test-needed"}
 
+# Reason prefix for a blocked (escalated) ticket. integrity_runner matches it to
+# word the commit status "do not merge" instead of "merge by hand".
+ESCALATED_REASON_PREFIX = "Check 6 hold: ticket is blocked (escalated), waiting on the developer"
+
 
 def parse_ratchet_value(content: str | None) -> float | int | dict[str, float | int] | None:
     """Parse ratchet values from content.
@@ -783,6 +787,18 @@ class IntegrityCore:
                 "Check 6 hold: the PR does not change any ticket file under "
                 ".scratch/<effort>/issues/, so it is not a ticket PR; a human must review "
                 "and merge it (a worker's PR must set its ticket to done in the same PR)"
+            )
+        elif ticket_obj.status == "blocked":
+            # An escalation (ADR 0004, or a worker following the ticket skill) commits
+            # `Status: blocked` and a brief to the claim branch. That PR is waiting on
+            # the developer, not broken by the worker. Failing it showed a red X that
+            # read as the worker's fault and counted toward the fix-attempt limit, so
+            # the same ticket could escalate twice. A hold is green and never
+            # auto-merges. Only Check 6 is relaxed; every other check still applies.
+            is_holding = True
+            reasons.append(
+                f"{ESCALATED_REASON_PREFIX}; answer the escalation under ## Comments, "
+                "or rewrite the ticket and delete the claim branch to retry"
             )
         else:
             if not ticket_obj.is_done():
