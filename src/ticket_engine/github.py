@@ -474,6 +474,26 @@ class GitHubClient:
         msg = f"create_pull_request on {repo} returned no PR number: {res!r}"
         raise ValueError(msg)
 
+    def list_check_runs(self, repo: str, ref: str) -> list[tuple[str, str]]:
+        """List `(name, conclusion)` pairs for every check run on `ref`.
+
+        Ticket 30 AC1: the box reads this before deciding which failing checks
+        to name in its CI-fix prompt. `ref` may be a branch name, tag, or SHA;
+        GitHub's `commits/{ref}/check-runs` endpoint accepts any of them.
+        """
+        endpoint = f"/repos/{repo}/commits/{ref}/check-runs"
+        data = self._request("GET", endpoint)
+        if not isinstance(data, dict):
+            return []
+        runs = data.get("check_runs")
+        if not isinstance(runs, list):
+            return []
+        return [
+            (str(item.get("name", "")), str(item.get("conclusion", "")))
+            for item in runs
+            if isinstance(item, dict)
+        ]
+
     def find_open_pr(self, repo: str, head_branch: str) -> int | None:
         """The number of the open PR for `head_branch`, or `None`.
 
