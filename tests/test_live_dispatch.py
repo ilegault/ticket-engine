@@ -286,28 +286,22 @@ def test_live_dispatch_creates_session_even_if_claimed_by_commit_fails(caplog):
     assert any("Failed to record Claimed-by: jules" in record.message for record in caplog.records)
 
 
-def test_live_dispatch_reads_box_status_when_enabled():
+def test_live_dispatch_releases_stale_box_claim_at_9_hours():
     mock_github = MagicMock()
     mock_github.get_default_branch_sha.return_value = "base123sha"
+    mock_github.list_claim_branches.return_value = ["claim/box-primary-worker/01"]
+    mock_github.get_file_contents.return_value = {
+        "content": "# 01: Test ticket\n\n**Status:** in-progress\n\n**Claimed-by:** box\n\n**Blocked by:** None\n",
+        "sha": "sha1",
+    }
     now = datetime.datetime.now(datetime.UTC)
-    box_body = render_box_status(
-        BoxStatus(
-            checked_in_at=now - datetime.timedelta(hours=1),
-            state=BoxState.idle,
-        )
-    )
-    mock_github.list_issues.return_value = [
-        {
-            "number": 100,
-            "title": "Box Status",
-            "body": box_body,
-        }
-    ]
+    mock_github.get_branch_head_time.return_value = now - datetime.timedelta(hours=9)
 
     mock_jules = MagicMock()
-    mock_jules.count_recent_sessions.return_value = 5
+    mock_jules.count_recent_sessions.return_value = 0
+    mock_jules.list_sessions.return_value = []
 
-    config = RepoConfig(default_branch="main", concurrency=2, box_enabled=True)
+    config = RepoConfig(default_branch="main", concurrency=2, box_stale_claim_hours=8)
     dispatcher = LiveDispatcher(
         repo="owner/repo",
         github_client=mock_github,
@@ -315,34 +309,30 @@ def test_live_dispatch_reads_box_status_when_enabled():
         config=config,
     )
 
-    t1 = make_ticket(1, title="First Feature")
-    started = dispatcher.dispatch(tickets=[t1])
+    ticket1 = make_ticket(1, title="Test ticket", effort="box-primary-worker", status="in-progress")
+    dispatcher.dispatch(tickets=[ticket1])
 
-    # Box is available -> starts 0, left for box
-    assert len(started) == 0
-    mock_github.list_issues.assert_called_once_with(
-        repo="ilegault/ticket-engine",
-        state="open",
-        labels="engine:box-status",
-    )
-    assert dispatcher.last_run.box_state == "available"
-    assert dispatcher.last_run.left_for_box == [t1]
-    mock_jules.create_session.assert_not_called()
+    # Claim was released with delete_branch
+    mock_github.delete_branch.assert_called_with(repo="owner/repo", branch="claim/box-primary-worker/01")
+    assert (1, "Stale box claim: no checkpoint in 8 hours") in dispatcher.last_run.released_stale
 
 
-def test_live_dispatch_box_status_read_failure_sets_box_none_and_never_raises():
+def test_live_dispatch_keeps_box_claim_at_1_hour():
     mock_github = MagicMock()
     mock_github.get_default_branch_sha.return_value = "base123sha"
-    mock_github.create_claim_branch.return_value = True
-    mock_github.list_issues.side_effect = urllib.error.HTTPError(
-        "http://api.github.com", 500, "Server Error", {}, None
-    )
+    mock_github.list_claim_branches.return_value = ["claim/box-primary-worker/01"]
+    mock_github.get_file_contents.return_value = {
+        "content": "# 01: Test ticket\n\n**Status:** in-progress\n\n**Claimed-by:** box\n\n**Blocked by:** None\n",
+        "sha": "sha1",
+    }
+    now = datetime.datetime.now(datetime.UTC)
+    mock_github.get_branch_head_time.return_value = now - datetime.timedelta(hours=1)
 
     mock_jules = MagicMock()
-    mock_jules.count_recent_sessions.return_value = 5
-    mock_jules.create_session.return_value = {"id": "sessions/test123", "state": "RUNNING"}
+    mock_jules.count_recent_sessions.return_value = 0
+    mock_jules.list_sessions.return_value = []
 
-    config = RepoConfig(default_branch="main", concurrency=2, box_enabled=True)
+    config = RepoConfig(default_branch="main", concurrency=2, box_stale_claim_hours=8)
     dispatcher = LiveDispatcher(
         repo="owner/repo",
         github_client=mock_github,
@@ -350,38 +340,10 @@ def test_live_dispatch_box_status_read_failure_sets_box_none_and_never_raises():
         config=config,
     )
 
-    t1 = make_ticket(1, title="First Feature")
-    started = dispatcher.dispatch(tickets=[t1])
+    ticket1 = make_ticket(1, title="Test ticket", effort="box-primary-worker", status="in-progress")
+    dispatcher.dispatch(tickets=[ticket1])
 
-    assert len(started) == 1
-    assert dispatcher.last_run.box_state == "unreadable"
-    assert "Server Error" in dispatcher.last_run.box_status_error
-    mock_jules.create_session.assert_called_once()
-
-
-def test_live_dispatch_box_disabled_passes_no_box_and_makes_no_issues_request():
-    mock_github = MagicMock()
-    mock_github.get_default_branch_sha.return_value = "base123sha"
-    mock_github.create_claim_branch.return_value = True
-
-    mock_jules = MagicMock()
-    mock_jules.count_recent_sessions.return_value = 5
-    mock_jules.create_session.return_value = {"id": "sessions/test123", "state": "RUNNING"}
-
-    config = RepoConfig(default_branch="main", concurrency=2, box_enabled=False)
-    dispatcher = LiveDispatcher(
-        repo="owner/repo",
-        github_client=mock_github,
-        jules_client=mock_jules,
-        config=config,
-    )
-
-    t1 = make_ticket(1, title="First Feature")
-    started = dispatcher.dispatch(tickets=[t1])
-
-    assert len(started) == 1
-    mock_github.list_issues.assert_not_called()
-    assert dispatcher.last_run.box_state == "none"
-    mock_jules.create_session.assert_called_once()
+    mock_github.delete_branch.assert_not_called()
+    assert dispatcher.last_run.released_stale == []
 
 

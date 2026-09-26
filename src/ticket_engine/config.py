@@ -45,6 +45,7 @@ class RepoConfig:
     test_paths: list[str] = field(default_factory=lambda: ["tests"])
     ratchet_paths: list[str] = field(default_factory=list)
     stale_claim_hours: int = 12
+    box_stale_claim_hours: int = 8
     max_fix_attempts: int = 3
     merge_method: str = "merge"
     circuit_breaker_escalations_limit: int = 2
@@ -109,6 +110,7 @@ def load_repo_config(repo_path: pathlib.Path | str | None = None) -> RepoConfig:
         test_paths=list(config_data.get("test_paths", ["tests"])),
         ratchet_paths=list(config_data.get("ratchet_paths", [])),
         stale_claim_hours=int(config_data.get("stale_claim_hours", 12)),
+        box_stale_claim_hours=int(config_data.get("box_stale_claim_hours", 8)),
         max_fix_attempts=int(config_data.get("max_fix_attempts", 3)),
         circuit_breaker_escalations_limit=int(
             config_data.get("circuit_breaker_escalations_limit", 2)

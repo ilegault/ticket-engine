@@ -11,6 +11,8 @@ mandate that:
 """
 from __future__ import annotations
 
+import datetime
+import io
 import json
 import pathlib
 import urllib.error
@@ -159,3 +161,41 @@ def test_disable_auto_merge_calls_graphql_and_tolerates_nothing_to_disable():
     body = json.loads(mock_urlopen.call_args_list[1][0][0].data.decode("utf-8"))
     assert "disablePullRequestAutoMerge" in body["query"]
     assert body["variables"] == {"id": "PR_x"}
+
+
+def test_get_branch_head_time_success():
+    fixture_json = load_fixture("branch_get_success.json")
+    client = GitHubClient(token="mock_token")
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = fixture_json.encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        result = client.get_branch_head_time(
+            repo="owner/repo",
+            branch="ticket/phase-1-01-feature",
+        )
+
+        assert result == datetime.datetime(2026, 9, 26, 12, 0, 0, tzinfo=datetime.UTC)
+        mock_urlopen.assert_called_once()
+        req = mock_urlopen.call_args[0][0]
+        assert req.method == "GET"
+        assert req.full_url == "https://api.github.com/repos/owner/repo/branches/ticket/phase-1-01-feature"
+
+
+def test_get_branch_head_time_404_returns_none():
+    client = GitHubClient(token="mock_token")
+
+    err = urllib.error.HTTPError(
+        url="https://api.github.com/repos/owner/repo/branches/missing",
+        code=404,
+        msg="Not Found",
+        hdrs={},
+        fp=io.BytesIO(b'{"message": "Branch not found"}') if hasattr(io, "BytesIO") else None,
+    )
+
+    with patch("urllib.request.urlopen", side_effect=err):
+        result = client.get_branch_head_time(repo="owner/repo", branch="missing")
+        assert result is None
+

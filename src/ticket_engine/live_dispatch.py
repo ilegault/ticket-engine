@@ -10,7 +10,10 @@ Phase 1 Spec §Implementation Decisions and Ticket 06 / Ticket 07 Acceptance Cri
 4. Creates a Jules session with prompt, sourceContext, title, AUTO_CREATE_PR, and no plan approval.
 5. Escalating PRs after 3 failed CI runs: commits `Status: blocked` and escalation brief to PR branch,
    converts PR to draft, and applies `engine:escalated` label.
-6. Stale claims (no live session, quiet > 12h) are released by deleting the claim branch.
+6. Stale claims sweep runs live on every dispatch run (ADR 0006 rule 5): claims are populated with
+   real progress times (from the ticket branch or claim branch head) and claimed_by from the ticket file.
+   Box claims stale after `box_stale_claim_hours` (default 8) and Jules claims stale after
+   `stale_claim_hours` (default 12 without a live session) are released by deleting the claim branch.
 7. Two escalations within 24h sets `TICKET_ENGINE_PAUSED`; clearing it resumes dispatch on next run.
 8. Privacy invariant (ADR 0002): Never logs prompts, denylist entries, or secrets.
 9. ADR 0004: every run, including a paused one, answers this repo's Jules sessions
@@ -50,7 +53,9 @@ from ticket_engine.dispatch import (
     insert_claimed_by,
     is_live_session_state,
     session_resource_name,
+    ticket_repo_path,
 )
+from ticket_engine.parser import TicketParser
 from ticket_engine.prompt import assemble_prompt, load_ticket_skill
 from ticket_engine.run_report import RunFacts
 from ticket_engine.ticket_lint import lint_tickets
@@ -89,6 +94,18 @@ class LiveDispatcher:
         self.pause_check_error = ""
         # What the last dispatch() observed, for the end-of-run report.
         self.last_run = RunFacts(repo=repo)
+        self._claim_file_cache: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def _get_claim_file_info(self, path: str, ref: str) -> dict[str, Any]:
+        key = (path, ref)
+        if key in self._claim_file_cache:
+            return self._claim_file_cache[key]
+        info = self.github_client.get_file_contents(
+            repo=self.repo, path=path, ref=ref
+        )
+        if isinstance(info, dict):
+            self._claim_file_cache[key] = info
+        return info
 
     @property
     def skill_text(self) -> str:
@@ -271,21 +288,24 @@ class LiveDispatcher:
             elif isinstance(action, EscalateWaitingSessionAction):
                 num = action.ticket.number
                 try:
-                    info = self.github_client.get_file_contents(
-                        repo=self.repo, path=action.ticket_path, ref=action.claim_ref
-                    )
-                    current = info.get("content") or ""
+                    info = self._get_claim_file_info(action.ticket_path, action.claim_ref)
+                    current = (info.get("content") or "") if isinstance(info, dict) else ""
                     if not current:
                         msg = f"{action.ticket_path} is empty or missing on {action.claim_ref}"
                         raise ValueError(msg)
+                    updated_content = apply_escalation_to_ticket_text(current, action.brief)
                     self.github_client.commit_file_change(
                         repo=self.repo,
                         path=action.ticket_path,
-                        content=apply_escalation_to_ticket_text(current, action.brief),
+                        content=updated_content,
                         message=f"Escalate {num:02d}: Jules session kept asking for input",
                         branch=action.claim_ref,
-                        sha=info.get("sha"),
+                        sha=info.get("sha") if isinstance(info, dict) else None,
                     )
+                    self._claim_file_cache[(action.ticket_path, action.claim_ref)] = {
+                        "content": updated_content,
+                        "sha": info.get("sha") if isinstance(info, dict) else None,
+                    }
                 except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
                     logger.error("Failed to escalate waiting session for ticket %02d: %s", num, exc)
                     facts.session_failures.append((num, "escalate", str(exc)))
@@ -420,38 +440,92 @@ class LiveDispatcher:
         facts.repo_starts_24h = repo_starts_24h
         facts.claims_in_flight = sorted(existing_claims)
 
-        # 4c. Read box status issue if box is enabled (ADR 0006)
-        box: BoxStatus | None | NoBox = NO_BOX
-        box_status_error = ""
-        if self.config.box_enabled:
+        # 4c. Build Claim objects for remaining claim branches
+        built_claims: list[Claim] = []
+        for claim_ref in existing_claims:
+            claim_parts = claim_ref.strip("/").split("/")
+            claim_ticket_num = int(claim_parts[-1]) if claim_parts[-1].isdigit() else 0
+            effort = claim_parts[-2] if len(claim_parts) >= 2 else "phase-1"
+            claim_ticket = (
+                ticket_by_number.get(claim_ticket_num)
+                if claim_ticket_num
+                else None
+            )
+
+            # Read who claimed it from the claim branch ticket file
+            claimed_by = ""
+            ticket_path_str = (
+                ticket_repo_path(claim_ticket)
+                if claim_ticket is not None
+                else f".scratch/{effort}/issues/{claim_ticket_num:02d}.md"
+            )
             try:
-                issues = self.github_client.list_issues(
-                    repo=ENGINE_REPO,
-                    state="open",
-                    labels="engine:box-status",
+                info = self._get_claim_file_info(
+                    path=ticket_path_str,
+                    ref=claim_ref,
                 )
-                box_issue = None
-                for iss in issues:
-                    if isinstance(iss, dict):
-                        box_issue = iss
-                        break
-                if box_issue:
-                    body = str(box_issue.get("body") or "")
-                    box = parse_box_status(body)
-                    if box is None:
-                        box_status_error = "unparseable box status body"
-                else:
-                    box = None
-                    box_status_error = "no open issue labelled engine:box-status found"
+                if isinstance(info, dict):
+                    content = info.get("content")
+                    if isinstance(content, str) and content:
+                        parsed = TicketParser().parse_text(
+                            content, filename=f"{claim_ticket_num:02d}.md"
+                        )
+                        claimed_by = parsed.claimed_by or ""
             except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
-                logger.warning("Failed to read box status issue from %s: %s", ENGINE_REPO, exc)
-                box = None
-                box_status_error = str(exc)
+                logger.warning(
+                    "Failed to read ticket file on claim branch %s for %s: %s",
+                    claim_ref,
+                    self.repo,
+                    exc,
+                )
+
+            # Read last progress time from ticket branch, falling back to claim branch
+            last_commit_time: datetime.datetime | None = None
+            ticket_branch = (
+                f"ticket/{effort}-{claim_ticket_num:02d}-{claim_ticket.slug}"
+                if claim_ticket and claim_ticket.slug
+                else None
+            )
+            if ticket_branch:
+                try:
+                    head_time = self.github_client.get_branch_head_time(self.repo, ticket_branch)
+                    if isinstance(head_time, datetime.datetime):
+                        last_commit_time = head_time
+                except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                    logger.warning(
+                        "Failed to read head time for ticket branch %s on %s: %s",
+                        ticket_branch,
+                        self.repo,
+                        exc,
+                    )
+
+            if last_commit_time is None:
+                try:
+                    head_time = self.github_client.get_branch_head_time(self.repo, claim_ref)
+                    if isinstance(head_time, datetime.datetime):
+                        last_commit_time = head_time
+                except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                    logger.warning(
+                        "Failed to read head time for claim branch %s on %s: %s",
+                        claim_ref,
+                        self.repo,
+                        exc,
+                    )
+
+            built_claims.append(
+                Claim(
+                    ref=claim_ref,
+                    ticket_number=claim_ticket_num,
+                    effort=effort,
+                    last_commit_time=last_commit_time,
+                    claimed_by=claimed_by,
+                )
+            )
 
         # 5. Build WorldSnapshot and evaluate pure core
         snapshot = WorldSnapshot(
             tickets=tickets,
-            claims=existing_claims,
+            claims=built_claims,
             config=self.config,
             jules_sessions_count_24h=recent_jules_count,
             repo_starts_last_24h=repo_starts_24h,
@@ -462,11 +536,15 @@ class LiveDispatcher:
         )
         result = self.core.evaluate(snapshot)
 
-        facts.box_state = result.box_state
-        facts.box_checked_in = box.checked_in_at if isinstance(box, BoxStatus) else None
-        facts.left_for_box = result.left_for_box
-        facts.box_status_error = box_status_error
-
+        # Carry out stale claim releases
+        for action in result.actions:
+            if isinstance(action, ReleaseClaimAction):
+                try:
+                    self.github_client.delete_branch(repo=self.repo, branch=action.claim_ref)
+                    logger.info("Released stale claim branch %s for %s", action.claim_ref, self.repo)
+                    facts.released_stale.append((action.ticket_number, action.reason))
+                except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                    logger.error("Failed to release stale claim %s: %s", action.claim_ref, exc)
 
         started_tickets: list[Ticket] = []
         for action in result.actions:

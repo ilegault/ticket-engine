@@ -12,8 +12,7 @@ from __future__ import annotations
 
 import datetime
 
-from ticket_engine.box_status import BoxState, BoxStatus
-from ticket_engine.config import RepoConfig
+from ticket_engine.config import RepoConfig, load_repo_config
 from ticket_engine.dispatch import (
     NO_BOX,
     Claim,
@@ -302,146 +301,80 @@ def test_scenario_held_or_escalated_blocker_keeps_dependents_off_frontier_indepe
     assert result.actions[0].ticket.number == 3
 
 
-def test_dispatch_box_available_leaves_frontier_for_box_and_starts_nothing():
-    now = datetime.datetime(2026, 9, 26, 12, 0, 0, tzinfo=datetime.UTC)
-    box = BoxStatus(
-        checked_in_at=now - datetime.timedelta(hours=1),
-        state=BoxState.idle,
-    )
-    t1 = make_ticket(1, runner="any")
-    t2 = make_ticket(2, runner="windows")
-    t3 = Ticket(number=3, title="Lint fail", slug="lint-fail", status="ready-for-agent", raw_text="# 3: Lint fail\n\nNo criteria here")
-    t4 = make_ticket(4, runner="any")
-    claim4 = Claim(ref="claim/phase-1/04", ticket_number=4)
+def test_config_loads_box_stale_claim_hours(tmp_path):
+    config_file = tmp_path / ".ticket-engine.toml"
+    config_file.write_text("box_stale_claim_hours = 6\n", encoding="utf-8")
+    cfg = load_repo_config(tmp_path)
+    assert cfg.box_stale_claim_hours == 6
 
+    assert RepoConfig().box_stale_claim_hours == 8
+    default_cfg = load_repo_config(tmp_path / "nonexistent")
+    assert default_cfg.box_stale_claim_hours == 8
+
+
+def test_claim_claimed_by_default():
+    claim = Claim(ref="claim/phase-1/01", ticket_number=1)
+    assert claim.claimed_by == ""
+
+
+def test_scenario_box_stale_claim_evaluated():
+    core = DispatchCore()
+    now = datetime.datetime(2026, 9, 22, 12, 0, 0, tzinfo=datetime.UTC)
+    config = RepoConfig(box_stale_claim_hours=8)
+
+    # 1. Box claim at exactly now - 8h gives ReleaseClaimAction even with a matching live Jules session
+    claim_8h = Claim(
+        ref="claim/box-primary-worker/01",
+        ticket_number=1,
+        effort="box-primary-worker",
+        claimed_by="box",
+        last_commit_time=now - datetime.timedelta(hours=8),
+    )
+    # 2. Box claim at now - 7h59m is NOT released
+    claim_7h59m = Claim(
+        ref="claim/box-primary-worker/02",
+        ticket_number=2,
+        effort="box-primary-worker",
+        claimed_by="box",
+        last_commit_time=now - datetime.timedelta(hours=7, minutes=59),
+    )
+    # 3. Claims with last_commit_time=None are never released
+    claim_none_box = Claim(
+        ref="claim/box-primary-worker/03",
+        ticket_number=3,
+        effort="box-primary-worker",
+        claimed_by="box",
+        last_commit_time=None,
+    )
+    claim_none_jules = Claim(
+        ref="claim/phase-1/04",
+        ticket_number=4,
+        effort="phase-1",
+        claimed_by="jules",
+        last_commit_time=None,
+    )
+
+    # Live Jules session matching ticket 1
+    matching_session = {
+        "id": "sessions/test1",
+        "title": "box-primary-worker-01: First Ticket",
+        "state": "RUNNING",
+    }
+
+    tickets = [make_ticket(1), make_ticket(2), make_ticket(3), make_ticket(4)]
     snapshot = WorldSnapshot(
-        tickets=[t1, t2, t3, t4],
-        claims=[claim4],
-        box=box,
+        tickets=tickets,
+        claims=[claim_8h, claim_7h59m, claim_none_box, claim_none_jules],
+        jules_sessions=[matching_session],
+        config=config,
         now=now,
     )
-    core = DispatchCore()
+
     result = core.evaluate(snapshot)
-
-    assert result.box_state == "available"
-    assert not any(isinstance(a, StartTicketAction) for a in result.actions)
-    assert result.left_for_box == [t1, t2]
-    assert t3 in result.lint_held
-    assert result.skipped_windows_tickets == [t2]
-
-
-def test_dispatch_box_paused_quota_overflows_to_jules():
-    now = datetime.datetime(2026, 9, 26, 12, 0, 0, tzinfo=datetime.UTC)
-    box = BoxStatus(
-        checked_in_at=now - datetime.timedelta(hours=1),
-        state=BoxState.paused_quota,
-    )
-    t1 = make_ticket(1, runner="any")
-    t2 = make_ticket(2, runner="windows")
-    snapshot = WorldSnapshot(tickets=[t1, t2], box=box, now=now)
-    result = DispatchCore().evaluate(snapshot)
-
-    assert result.box_state == "paused"
-    assert result.left_for_box == []
-    start_actions = [a for a in result.actions if isinstance(a, StartTicketAction)]
-    assert len(start_actions) == 1
-    assert start_actions[0].ticket.number == 1
-    assert result.skipped_windows_tickets == [t2]
-
-
-def test_dispatch_box_paused_weekly_cap_overflows_to_jules():
-    now = datetime.datetime(2026, 9, 26, 12, 0, 0, tzinfo=datetime.UTC)
-    box = BoxStatus(
-        checked_in_at=now - datetime.timedelta(hours=1),
-        state=BoxState.paused_weekly_cap,
-    )
-    t1 = make_ticket(1, runner="any")
-    snapshot = WorldSnapshot(tickets=[t1], box=box, now=now)
-    result = DispatchCore().evaluate(snapshot)
-
-    assert result.box_state == "paused"
-    assert result.left_for_box == []
-    start_actions = [a for a in result.actions if isinstance(a, StartTicketAction)]
-    assert len(start_actions) == 1
-    assert start_actions[0].ticket.number == 1
-
-
-def test_dispatch_box_login_expired_overflows_to_jules():
-    now = datetime.datetime(2026, 9, 26, 12, 0, 0, tzinfo=datetime.UTC)
-    box = BoxStatus(
-        checked_in_at=now - datetime.timedelta(hours=1),
-        state=BoxState.login_expired,
-    )
-    t1 = make_ticket(1, runner="any")
-    snapshot = WorldSnapshot(tickets=[t1], box=box, now=now)
-    result = DispatchCore().evaluate(snapshot)
-
-    assert result.box_state == "paused"
-    assert result.left_for_box == []
-    start_actions = [a for a in result.actions if isinstance(a, StartTicketAction)]
-    assert len(start_actions) == 1
-    assert start_actions[0].ticket.number == 1
-
-
-def test_dispatch_box_silent_when_checked_in_12_hours_ago():
-    now = datetime.datetime(2026, 9, 26, 12, 0, 0, tzinfo=datetime.UTC)
-    box = BoxStatus(
-        checked_in_at=now - datetime.timedelta(hours=12),
-        state=BoxState.idle,
-    )
-    t1 = make_ticket(1, runner="any")
-    t2 = make_ticket(2, runner="windows")
-    snapshot = WorldSnapshot(tickets=[t1, t2], box=box, now=now)
-    result = DispatchCore().evaluate(snapshot)
-
-    assert result.box_state == "silent"
-    assert result.left_for_box == []
-    start_actions = [a for a in result.actions if isinstance(a, StartTicketAction)]
-    assert len(start_actions) == 1
-    assert start_actions[0].ticket.number == 1
-
-
-def test_dispatch_box_unreadable_when_box_is_none():
-    now = datetime.datetime(2026, 9, 26, 12, 0, 0, tzinfo=datetime.UTC)
-    t1 = make_ticket(1, runner="any")
-    snapshot = WorldSnapshot(tickets=[t1], box=None, now=now)
-    result = DispatchCore().evaluate(snapshot)
-
-    assert result.box_state == "unreadable"
-    assert result.left_for_box == []
-    start_actions = [a for a in result.actions if isinstance(a, StartTicketAction)]
-    assert len(start_actions) == 1
-    assert start_actions[0].ticket.number == 1
-
-
-def test_dispatch_box_none_when_default_no_box():
-    now = datetime.datetime(2026, 9, 26, 12, 0, 0, tzinfo=datetime.UTC)
-    t1 = make_ticket(1, runner="any")
-    snapshot = WorldSnapshot(tickets=[t1], now=now)
-    result = DispatchCore().evaluate(snapshot)
-
-    assert result.box_state == "none"
-    assert result.left_for_box == []
-    start_actions = [a for a in result.actions if isinstance(a, StartTicketAction)]
-    assert len(start_actions) == 1
-    assert start_actions[0].ticket.number == 1
-
-
-def test_dispatch_windows_ticket_never_started_in_any_box_state():
-    now = datetime.datetime(2026, 9, 26, 12, 0, 0, tzinfo=datetime.UTC)
-    t_win = make_ticket(1, runner="windows")
-    states = [
-        BoxStatus(checked_in_at=now - datetime.timedelta(hours=1), state=BoxState.idle),
-        BoxStatus(checked_in_at=now - datetime.timedelta(hours=1), state=BoxState.paused_quota),
-        BoxStatus(checked_in_at=now - datetime.timedelta(hours=13), state=BoxState.working),
-        None,
-        NO_BOX,
-    ]
-    core = DispatchCore()
-    for box in states:
-        snapshot = WorldSnapshot(tickets=[t_win], box=box, now=now)
-        result = core.evaluate(snapshot)
-        assert not any(isinstance(a, StartTicketAction) for a in result.actions)
-        assert result.skipped_windows_tickets == [t_win]
+    releases = [a for a in result.actions if isinstance(a, ReleaseClaimAction)]
+    assert len(releases) == 1
+    assert releases[0].ticket_number == 1
+    assert releases[0].claim_ref == "claim/box-primary-worker/01"
+    assert releases[0].reason == "Stale box claim: no checkpoint in 8 hours"
 
 

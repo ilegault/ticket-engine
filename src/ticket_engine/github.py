@@ -18,6 +18,7 @@ mandate that:
 from __future__ import annotations
 
 import base64
+import datetime
 import json
 import logging
 import urllib.error
@@ -97,6 +98,51 @@ class GitHubClient:
             return str(data["object"]["sha"])
         msg = f"Failed to resolve SHA for branch '{default_branch}' on repo '{repo}'"
         raise ValueError(msg)
+
+    def get_branch_head_time(
+        self, repo: str, branch: str
+    ) -> datetime.datetime | None:
+        """Fetch the commit committer date of a branch's head commit.
+
+        Returns None if branch is not found (HTTP 404).
+        """
+        endpoint = f"/repos/{repo}/branches/{branch.lstrip('/')}"
+        try:
+            data = self._request("GET", endpoint)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            raise
+
+        if not isinstance(data, dict):
+            return None
+
+        commit_obj = data.get("commit")
+        if not isinstance(commit_obj, dict):
+            return None
+
+        raw_date = None
+        inner_commit = commit_obj.get("commit")
+        if isinstance(inner_commit, dict):
+            committer = inner_commit.get("committer")
+            if isinstance(committer, dict):
+                raw_date = committer.get("date")
+
+        if not raw_date:
+            committer = commit_obj.get("committer")
+            if isinstance(committer, dict):
+                raw_date = committer.get("date")
+
+        if not raw_date or not isinstance(raw_date, str):
+            return None
+
+        try:
+            dt = datetime.datetime.fromisoformat(raw_date)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.UTC)
+            return dt
+        except ValueError:
+            return None
 
     def get_repo_variable(self, repo: str, name: str) -> str | None:
         """Fetch an Actions variable from the repo, returning None if not found."""
