@@ -10,7 +10,7 @@ Today `LiveDispatcher.dispatch` passes claims as bare strings, so no claim is ev
 
 **Blocked by:** 21
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
