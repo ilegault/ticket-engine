@@ -45,6 +45,16 @@ is unknown. A session whose newest activity is the engine's own reply has not
 processed it yet and is left alone, so two runs a minute apart do not spend two
 replies on one question. The agent's question is never copied into the brief: it is
 an API response body and the brief lands in a public repo (ADR 0002).
+
+OVERFLOW (ADR 0006)
+-------------------
+The box (a Windows mini PC running the local worker permanently) is the primary worker
+and takes any ticket on the frontier, windows included. Jules is overflow: the dispatcher
+starts Jules only when the box cannot take work (paused on quota, silent, or unreadable).
+A missing or unreadable box status issue fails toward overflow (starting Jules) because a
+dead heartbeat should result in more work getting done, not an idle repo. While the box is
+available (working or idle, checked in within box_silent_hours), the dispatcher starts no
+Jules sessions and leaves the frontier to the box.
 """
 from __future__ import annotations
 
@@ -55,11 +65,23 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from ticket_engine.box_status import BoxState, BoxStatus
 from ticket_engine.config import RepoConfig
 from ticket_engine.parser import ParseFinding, Ticket
 from ticket_engine.ticket_lint import lint_ticket
 
 logger = logging.getLogger(__name__)
+
+
+class NoBox:
+    """Sentinel meaning the repo has no box configured."""
+
+    def __repr__(self) -> str:
+        return "NO_BOX"
+
+
+NO_BOX = NoBox()
+
 
 
 @dataclass(frozen=True)
@@ -292,6 +314,8 @@ class WorldSnapshot:
     # Morning report fields: set by the live reporter, ignored by the dispatch core.
     repo_name: str = ""
     merged_prs: Sequence[MergedPR | object] = field(default_factory=list)
+    box: BoxStatus | None | NoBox = NO_BOX
+    box_status_error: str = ""
 
 
 @dataclass(frozen=True)
@@ -302,6 +326,9 @@ class DispatchResult:
     findings: list[ParseFinding]
     # Frontier tickets not started because lint found they cannot land (ADR 0005).
     lint_held: list[Ticket] = field(default_factory=list)
+    left_for_box: list[Ticket] = field(default_factory=list)
+    box_state: str = "none"
+
 
 
 def is_ticket_claimed(ticket: Ticket, claims: Sequence[Claim | str] | set[str]) -> bool:
@@ -725,6 +752,36 @@ class DispatchCore:
                 )
             )
 
+        # Determine box state (ADR 0006)
+        if isinstance(snapshot.box, NoBox) or snapshot.box is NO_BOX:
+            box_state = "none"
+        elif snapshot.box is None:
+            box_state = "unreadable"
+        elif isinstance(snapshot.box, BoxStatus):
+            now_utc = now if now.tzinfo is not None else now.replace(tzinfo=datetime.UTC)
+            box_checkin = (
+                snapshot.box.checked_in_at
+                if snapshot.box.checked_in_at.tzinfo is not None
+                else snapshot.box.checked_in_at.replace(tzinfo=datetime.UTC)
+            )
+            if now_utc - box_checkin >= datetime.timedelta(hours=cfg.box_silent_hours):
+                box_state = "silent"
+            elif snapshot.box.state in (BoxState.working, BoxState.idle, "working", "idle"):
+                box_state = "available"
+            elif snapshot.box.state in (
+                BoxState.paused_quota,
+                BoxState.paused_weekly_cap,
+                BoxState.login_expired,
+                "paused_quota",
+                "paused_weekly_cap",
+                "login_expired",
+            ):
+                box_state = "paused"
+            else:
+                box_state = "unreadable"
+        else:
+            box_state = "unreadable"
+
         # 4. Check if repo is paused or circuit broken
         if snapshot.paused or circuit_broken:
             return DispatchResult(
@@ -732,6 +789,31 @@ class DispatchCore:
                 actions=actions,
                 skipped_windows_tickets=[t for t in frontier if t.runner == "windows"],
                 findings=all_findings,
+                left_for_box=[],
+                box_state=box_state,
+            )
+
+        # 4b. Box available: leave frontier to the box and start no Jules sessions
+        if box_state == "available":
+            lint_held: list[Ticket] = []
+            left_for_box: list[Ticket] = []
+            for ticket in frontier:
+                if ticket.runner == "windows":
+                    skipped_windows.append(ticket)
+                if is_ticket_claimed(ticket, active_claims):
+                    continue
+                if lint_ticket(ticket):
+                    lint_held.append(ticket)
+                else:
+                    left_for_box.append(ticket)
+            return DispatchResult(
+                frontier=frontier,
+                actions=actions,
+                skipped_windows_tickets=skipped_windows,
+                findings=all_findings,
+                lint_held=lint_held,
+                left_for_box=left_for_box,
+                box_state=box_state,
             )
 
         # 5. Check quota reserve
@@ -742,6 +824,8 @@ class DispatchCore:
                 actions=actions,
                 skipped_windows_tickets=[t for t in frontier if t.runner == "windows"],
                 findings=all_findings,
+                left_for_box=[],
+                box_state=box_state,
             )
 
         # 6. Check daily cap
@@ -751,6 +835,8 @@ class DispatchCore:
                 actions=actions,
                 skipped_windows_tickets=[t for t in frontier if t.runner == "windows"],
                 findings=all_findings,
+                left_for_box=[],
+                box_state=box_state,
             )
 
         # 7. Check available slots
@@ -781,4 +867,6 @@ class DispatchCore:
             skipped_windows_tickets=skipped_windows,
             findings=all_findings,
             lint_held=lint_held,
+            left_for_box=[],
+            box_state=box_state,
         )

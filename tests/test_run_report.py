@@ -12,6 +12,7 @@ point, and the summary file (a temp file standing in for $GITHUB_STEP_SUMMARY).
 """
 from __future__ import annotations
 
+import datetime
 import io
 import pathlib
 import urllib.error
@@ -323,3 +324,45 @@ def test_cli_live_dispatch_writes_report_to_step_summary(
     # The same report goes to the job log.
     assert "Needs you (`ready-for-developer`)" in capsys.readouterr().out
     github.create_claim_branch.assert_not_called()
+
+
+def test_run_report_renders_box_available_line_after_zero_started():
+    dt = datetime.datetime(2026, 9, 26, 3, 12, tzinfo=datetime.UTC)
+    facts = RunFacts(
+        repo=REPO,
+        box_state="available",
+        box_checked_in=dt,
+        left_for_box=[ticket(21, "ready-for-agent"), ticket(22, "ready-for-agent")],
+    )
+    report = build_run_report([], facts)
+    expected_block = (
+        "**Started 0 tickets.**\n"
+        "**Box:** available (checked in 03:12 UTC). Left for the box: 21, 22."
+    )
+    assert expected_block in report
+
+
+def test_run_report_renders_box_paused():
+    facts = RunFacts(repo=REPO, box_state="paused")
+    report = build_run_report([], facts)
+    assert "**Box:** paused — overflow to Jules is on." in report
+
+
+def test_run_report_renders_box_silent():
+    dt = datetime.datetime(2026, 9, 26, 3, 12, tzinfo=datetime.UTC)
+    facts = RunFacts(repo=REPO, box_state="silent", box_checked_in=dt)
+    report = build_run_report([], facts)
+    assert "**Box:** silent since 03:12 UTC — overflow to Jules is on." in report
+
+
+def test_run_report_renders_box_unreadable():
+    facts = RunFacts(repo=REPO, box_state="unreadable")
+    report = build_run_report([], facts)
+    assert "**Box:** status unreadable — overflow to Jules is on." in report
+
+
+def test_run_report_box_state_none_renders_no_box_line():
+    facts = RunFacts(repo=REPO, box_state="none")
+    report = build_run_report([], facts)
+    assert "**Box:**" not in report
+
