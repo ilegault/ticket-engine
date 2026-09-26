@@ -21,6 +21,13 @@ texts concerning the box:
 All inputs are strictly typed and validated against allowlists with no free-text
 parameters. Later tickets (24, 26, 30, 31, 33) consume this module rather than
 formatting texts themselves.
+
+Ticket 33 (§Held changes) adds `silent_check_action`: the pure decision behind
+the scheduled box-silent check. It takes the parsed status, the clock, the
+configured `box_silent_hours`, and whether the "Box alert: box silent" issue is
+already open, and returns which action (if any) the calling script should take.
+It reads no clock and does no I/O itself; `scripts/check_box_silent.py` supplies
+`now` and carries out the action.
 """
 from __future__ import annotations
 
@@ -44,6 +51,7 @@ __all__ = [
     "render_box_alert",
     "render_box_status",
     "render_escalation_issue",
+    "silent_check_action",
 ]
 
 
@@ -292,3 +300,34 @@ def parse_escalation_issue_title(title: str) -> tuple[str, int, str] | None:
         return None
     effort, number_str, title_slug = match.groups()
     return effort, int(number_str), title_slug
+
+
+def silent_check_action(
+    status: BoxStatus | None,
+    now: datetime.datetime,
+    silent_hours: int,
+    alert_open: bool,
+) -> str:
+    """Decide what the box-silent check should do this run.
+
+    Ticket 33 (§Held changes): pure decision behind the scheduled check that
+    alerts the developer when the box goes silent. No I/O, no clock read; the
+    caller (`scripts/check_box_silent.py`) supplies `now` and `alert_open` and
+    carries out whichever action comes back.
+
+    Returns ``"open"`` when the box is silent (`status is None`, or `now` is at
+    least `silent_hours` past `status.checked_in_at`) and no alert is already
+    open; ``"close"`` when the box is not silent and an alert is open;
+    ``"none"`` otherwise (already alerted while silent, or nothing to do).
+    """
+    if status is None:
+        silent = True
+    else:
+        now_utc = now if now.tzinfo is not None else now.replace(tzinfo=datetime.UTC)
+        silent = now_utc - status.checked_in_at >= datetime.timedelta(hours=silent_hours)
+
+    if silent and not alert_open:
+        return "open"
+    if not silent and alert_open:
+        return "close"
+    return "none"
