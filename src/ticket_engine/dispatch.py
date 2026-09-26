@@ -396,6 +396,28 @@ def is_ticket_claimed(ticket: Ticket, claims: Sequence[Claim | str] | set[str]) 
     return False
 
 
+def claim_precheck(ticket: Ticket | None, claim_refs: Sequence[str | Claim]) -> str:
+    """Is this ticket still actually free to claim, against a live snapshot?
+
+    Ticket 38: a session working outside the dispatcher's own loop (an ad hoc
+    human/agent session) must check claimability against the live remote
+    immediately before creating a claim branch, not rely on individual care.
+    Reuses `is_ticket_claimed` rather than a second claimed-check (AGENTS.md
+    §3 invariant 3's "never write a third copy" applies here too).
+
+    Returns one of: "unreadable" (`ticket` is None), "already-done"
+    (`ticket.is_done()`), "already-claimed" (not `ready-for-agent`, or a claim
+    ref already names it), "claimable" otherwise.
+    """
+    if ticket is None:
+        return "unreadable"
+    if ticket.is_done():
+        return "already-done"
+    if ticket.status != "ready-for-agent" or is_ticket_claimed(ticket, claim_refs):
+        return "already-claimed"
+    return "claimable"
+
+
 def assemble_escalation_brief(
     ticket: Ticket,
     branch: str,

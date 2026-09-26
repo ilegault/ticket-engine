@@ -1,0 +1,50 @@
+name: Box Silent Check
+
+# Runs every 3 hours and on demand.
+# Alerts the developer when the box's heartbeat has gone silent, and closes
+# that alert once the box checks in again.
+#
+# WHY THIS EXISTS
+# ---------------
+# Ticket 33 (§Held changes), ADR 0007 rule 4: the box posts only fixed-template
+# text to the engine repo, so noticing that it has gone quiet needs its own
+# scheduled check. This workflow calls scripts/check_box_silent.py, which reads
+# the box status issue and decides via the pure box_status.silent_check_action
+# whether to open or close the "Box alert: box silent" issue. The workflow
+# decides nothing itself.
+#
+# This ticket changes .github/, so the integrity gate always holds its PR
+# (ADR 0001 check 4); it lands only when the developer merges it by hand.
+
+on:
+  schedule:
+    - cron: '41 */3 * * *'
+  workflow_dispatch:
+
+jobs:
+  check-box-silent:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - name: Checkout engine repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ticket-engine
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Check box silence
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python scripts/check_box_silent.py
