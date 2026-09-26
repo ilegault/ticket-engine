@@ -234,10 +234,14 @@ TICKET_49_SHAPE = """# 49: The BOM sheet uses the lab layout
 def test_lint_flags_a_ticket_that_orders_an_unauthorised_test_deletion():
     findings = lint_ticket(parse(TICKET_49_SHAPE))
     assert findings == [
-        "tells the worker to delete `test_build_bom_workbook_content_and_numbers`, but no "
-        "`Deletes tests:` line lists it, so integrity check 2 would fail the PR",
-        "tells the worker to delete `test_build_bom_workbook_draft_header`, but no "
-        "`Deletes tests:` line lists it, so integrity check 2 would fail the PR",
+        (
+            "tells the worker to delete `test_build_bom_workbook_content_and_numbers`, but no "
+            "`Deletes tests:` line lists it, so integrity check 2 would fail the PR"
+        ),
+        (
+            "tells the worker to delete `test_build_bom_workbook_draft_header`, but no "
+            "`Deletes tests:` line lists it, so integrity check 2 would fail the PR"
+        ),
     ]
 
 

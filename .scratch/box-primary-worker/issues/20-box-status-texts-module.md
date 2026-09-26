@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** in-progress
+**Status:** done
 
 **Runner:** any
 
@@ -14,12 +14,24 @@
 
 Tests go in a new `tests/test_box_status.py`. Nothing is faked; the module is pure (no clock, no I/O, no logging of inputs). Write these tests first and watch them fail.
 
-- [ ] **Types.** `BoxState` is a `str` enum with exactly `working`, `idle`, `paused_quota`, `paused_weekly_cap`, `login_expired`. `BoxStatus` is a frozen dataclass: `checked_in_at: datetime` (UTC, aware), `state: BoxState`, `current: TicketRef | None`, `paused_until: datetime | None`. `TicketRef` is a frozen dataclass `repo: str`, `number: int`. Its constructor raises `ValueError` unless `repo` matches `^[\w.-]+/[\w.-]+$`; a test passes `"a/b c"` and `"a/b\nx"` and expects `ValueError`.
-- [ ] **Round trip.** `render_box_status(s)` returns the heading `## Box status`, then exactly these lines in order: `Checked in: <YYYY-MM-DDTHH:MMZ>`, `State: <state value>`, `Current: <owner/repo> #<NN>` or `Current: none`, `Paused until: <YYYY-MM-DDTHH:MMZ>` or `Paused until: none`. `parse_box_status(render_box_status(s)) == s` for every `BoxState`, with and without `current` and `paused_until` (seconds truncated to minutes on both sides). Assert one full rendered body with `==`.
-- [ ] **Unreadable bodies.** `parse_box_status` returns `None` for `""`, for a body missing the `Checked in:` line, for an unknown state word, and for a malformed timestamp. It never raises.
-- [ ] **Alerts and escalation issues.** `AlertKind` is a `str` enum `weekly_cap`, `login_expired`, `box_silent`. `render_box_alert(kind, owner, since)` returns `(title, body)`. The title is fixed per kind: `Box alert: weekly cap reached`, `Box alert: agy login expired`, `Box alert: box silent`. The body starts `@<owner>` and has one line `Since: <YYYY-MM-DDTHH:MMZ>`. `render_escalation_issue(ref, effort, title_slug, link, reason, owner)`, with `reason` a `str` enum `ci_failed`, `kept_asking`, `resumes_exhausted`, returns title `Escalation: <effort>-<NN> <title_slug>` and a body of `@<owner>`, `Ticket: <owner/repo> #<NN>`, `Link: <link>`, `Reason: <reason>`. `link` must start with `https://github.com/`, else `ValueError`. `owner` and `title_slug` must match `^[\w.-]+$`, else `ValueError`.
-- [ ] **The public-text test.** `test_every_public_box_line_is_on_the_allowlist` renders every status state, every alert kind and every escalation reason. It asserts each line fully matches one regex from a module-level `PUBLIC_LINE_PATTERNS` tuple defined in the test file (not imported from the module under test). Adding a free-text parameter to any renderer and passing `"Traceback (most recent call last)"` through it must turn this test red; check this by hand once before landing. The module docstring's `WHY THIS EXISTS` cites ADR 0007 rule 4 and ADR 0002.
+- [x] **Types.** `BoxState` is a `str` enum with exactly `working`, `idle`, `paused_quota`, `paused_weekly_cap`, `login_expired`. `BoxStatus` is a frozen dataclass: `checked_in_at: datetime` (UTC, aware), `state: BoxState`, `current: TicketRef | None`, `paused_until: datetime | None`. `TicketRef` is a frozen dataclass `repo: str`, `number: int`. Its constructor raises `ValueError` unless `repo` matches `^[\w.-]+/[\w.-]+$`; a test passes `"a/b c"` and `"a/b\nx"` and expects `ValueError`.
+- [x] **Round trip.** `render_box_status(s)` returns the heading `## Box status`, then exactly these lines in order: `Checked in: <YYYY-MM-DDTHH:MMZ>`, `State: <state value>`, `Current: <owner/repo> #<NN>` or `Current: none`, `Paused until: <YYYY-MM-DDTHH:MMZ>` or `Paused until: none`. `parse_box_status(render_box_status(s)) == s` for every `BoxState`, with and without `current` and `paused_until` (seconds truncated to minutes on both sides). Assert one full rendered body with `==`.
+- [x] **Unreadable bodies.** `parse_box_status` returns `None` for `""`, for a body missing the `Checked in:` line, for an unknown state word, and for a malformed timestamp. It never raises.
+- [x] **Alerts and escalation issues.** `AlertKind` is a `str` enum `weekly_cap`, `login_expired`, `box_silent`. `render_box_alert(kind, owner, since)` returns `(title, body)`. The title is fixed per kind: `Box alert: weekly cap reached`, `Box alert: agy login expired`, `Box alert: box silent`. The body starts `@<owner>` and has one line `Since: <YYYY-MM-DDTHH:MMZ>`. `render_escalation_issue(ref, effort, title_slug, link, reason, owner)`, with `reason` a `str` enum `ci_failed`, `kept_asking`, `resumes_exhausted`, returns title `Escalation: <effort>-<NN> <title_slug>` and a body of `@<owner>`, `Ticket: <owner/repo> #<NN>`, `Link: <link>`, `Reason: <reason>`. `link` must start with `https://github.com/`, else `ValueError`. `owner` and `title_slug` must match `^[\w.-]+$`, else `ValueError`.
+- [x] **The public-text test.** `test_every_public_box_line_is_on_the_allowlist` renders every status state, every alert kind and every escalation reason. It asserts each line fully matches one regex from a module-level `PUBLIC_LINE_PATTERNS` tuple defined in the test file (not imported from the module under test). Adding a free-text parameter to any renderer and passing `"Traceback (most recent call last)"` through it must turn this test red; check this by hand once before landing. The module docstring's `WHY THIS EXISTS` cites ADR 0007 rule 4 and ADR 0002.
 
 Gates, in CI order: `ruff check .`, `python scripts/check_tests_first.py`, `pytest -q`.
 
 ## Comments
+
+### Completed (2026-09-26)
+- Implemented `ticket_engine.box_status`, the pure module owning every public box text (status issue, alerts, escalation issues) with typed inputs only, no free-text fields, and strict validation.
+- Docstring contains `WHY THIS EXISTS` citing ADR 0007 rule 4 and ADR 0002.
+- Added comprehensive unit tests in `tests/test_box_status.py`:
+  - Criterion 1: `test_box_state_enum_values`, `test_ticket_ref_dataclass_and_validation`, `test_box_status_dataclass_frozen_and_aware`.
+  - Criterion 2: `test_render_box_status_exact_body`, `test_render_box_status_paused_body`, `test_box_status_round_trip_all_states_with_and_without_optionals`.
+  - Criterion 3: `test_parse_box_status_unreadable_bodies_return_none`.
+  - Criterion 4: `test_alert_kind_enum`, `test_render_box_alert_titles_and_bodies`, `test_render_escalation_issue`.
+  - Criterion 5: `test_every_public_box_line_is_on_the_allowlist`. Confirmed adversarial check (injecting `"Traceback (most recent call last)"` turned this test red before reverting).
+- Fixed pre-existing ruff lint issues in `cli.py`, `dispatch.py`, and `test_ticket_quality.py`.
+- All gates green locally: `ruff check .`, `check_tests_first.py`, `pytest -q` (380 passed). No bench verification required (pure module).
