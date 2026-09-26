@@ -159,7 +159,11 @@ def run_work_windows(config_path: str | None, pipeline_token: str | None) -> int
         return 1
 
     github_client = GitHubClient(token=token)
-    agy_driver = AgyDriver()
+    agy_driver = AgyDriver(
+        print_timeout=local_cfg.print_timeout,
+        quota_error_patterns=local_cfg.quota_error_patterns,
+        auth_error_patterns=local_cfg.auth_error_patterns,
+    )
 
     worker = LocalWorker(
         config=local_cfg,

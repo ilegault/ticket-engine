@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Runner:** any
 
@@ -18,12 +18,21 @@ These nine tests assert behaviour this ticket takes out on purpose (the quota en
 
 Tests go in `tests/test_local_worker.py` and a new `tests/test_agy_driver.py`. Fake the subprocess through `AgyDriver(run_fn=...)`, exactly as the existing `test_agy_driver_start_parses_success` does. No test spawns a real `agy`. The `LocalWorker` and `AgyDriver` under change are real. Write these tests first and watch them fail.
 
-- [ ] **Exact argument list.** `AgyDriver.start(prompt, cwd)` calls `run_fn` with `["agy", "-p", prompt, "--output-format", "json", "--dangerously-skip-permissions", "--print-timeout", <print_timeout>]`, where `<print_timeout>` is `LocalWorkerConfig.print_timeout` (new field, `str`, default `"7200"`, TOML key `[agy] print_timeout`). The prompt is one list element, never split. A test asserts the whole list with `==`.
-- [ ] **Outcome classification from recorded outputs.** A new `tests/fixtures/agy/` holds one JSON file per case: `success.json` (`"status": "SUCCESS"`, exit 0), `waiting.json` (`WAITING`), `interrupted.json` (`INTERRUPTED`), `canceled.json` (`CANCELED`), `quota.json` (`ERROR`, a message containing `quota`), `auth.json` (`ERROR`, a message containing `login`), `error.json` (`ERROR`, any other message), plus a non-JSON string. `AgyResult` gains `outcome: str`. The mapping: `SUCCESS` + exit 0 gives `success`; `WAITING` gives `waiting`; `CANCELED`/`INTERRUPTED` give `timeout`; `ERROR` whose text matches any of `LocalWorkerConfig.quota_error_patterns` (default `["quota", "rate limit", "exhausted"]`, case-insensitive substring) gives `quota`; `ERROR` matching `auth_error_patterns` (default `["auth", "login", "credential"]`) gives `auth`; anything else, and unparseable output, gives `failed`. The patterns are passed into `AgyDriver`, never literals in the parser. One parametrised test asserts all eight.
-- [ ] **Removed, not stubbed.** `AgyDriver.read_quota`, `AgyDriver.continue_session`, `QuotaInfo`, `LocalWorkerConfig.agy_quota_url` and `agy_quota_reserve_pct` no longer exist, and `LocalWorker.run_one` makes no pre-flight quota check. A test asserts `not hasattr(AgyDriver, "continue_session")` and `not hasattr(AgyDriver, "read_quota")`.
-- [ ] **Quota resumes with a fresh run.** When the first run's outcome is `quota`, `run_one` keeps the claim (no `delete_branch` call on the fake GitHub client), sleeps via `sleep_fn`, then calls `AgyDriver.start` a second time with the prompt from `_assemble_checkpoint_prompt` (contains `## RESUMING FROM CHECKPOINT` and the progress note the fake `read_ticket_fn` returns). Rewrite `test_resume_fallback_to_fresh_session_when_continue_fails` and `test_fake_agy_resume_fallback_to_fresh_session_scenario` in place so they assert this, with no `--continue` anywhere in the recorded argument lists.
-- [ ] **Docstrings.** The `WHY THIS EXISTS` sections of `agy.py` and `local_worker.py` say why the flags are passed (headless soft-denies unapproved tools and exits 0; the default timeout is 5 minutes) and why there is no quota pre-flight (no documented quota source). Breaking one mapping (make `CANCELED` give `failed`) turns the parametrised test red; check this by hand once before landing.
+- [x] **Exact argument list.** `AgyDriver.start(prompt, cwd)` calls `run_fn` with `["agy", "-p", prompt, "--output-format", "json", "--dangerously-skip-permissions", "--print-timeout", <print_timeout>]`, where `<print_timeout>` is `LocalWorkerConfig.print_timeout` (new field, `str`, default `"7200"`, TOML key `[agy] print_timeout`). The prompt is one list element, never split. A test asserts the whole list with `==`.
+- [x] **Outcome classification from recorded outputs.** A new `tests/fixtures/agy/` holds one JSON file per case: `success.json` (`"status": "SUCCESS"`, exit 0), `waiting.json` (`WAITING`), `interrupted.json` (`INTERRUPTED`), `canceled.json` (`CANCELED`), `quota.json` (`ERROR`, a message containing `quota`), `auth.json` (`ERROR`, a message containing `login`), `error.json` (`ERROR`, any other message), plus a non-JSON string. `AgyResult` gains `outcome: str`. The mapping: `SUCCESS` + exit 0 gives `success`; `WAITING` gives `waiting`; `CANCELED`/`INTERRUPTED` give `timeout`; `ERROR` whose text matches any of `LocalWorkerConfig.quota_error_patterns` (default `["quota", "rate limit", "exhausted"]`, case-insensitive substring) gives `quota`; `ERROR` matching `auth_error_patterns` (default `["auth", "login", "credential"]`) gives `auth`; anything else, and unparseable output, gives `failed`. The patterns are passed into `AgyDriver`, never literals in the parser. One parametrised test asserts all eight.
+- [x] **Removed, not stubbed.** `AgyDriver.read_quota`, `AgyDriver.continue_session`, `QuotaInfo`, `LocalWorkerConfig.agy_quota_url` and `agy_quota_reserve_pct` no longer exist, and `LocalWorker.run_one` makes no pre-flight quota check. A test asserts `not hasattr(AgyDriver, "continue_session")` and `not hasattr(AgyDriver, "read_quota")`.
+- [x] **Quota resumes with a fresh run.** When the first run's outcome is `quota`, `run_one` keeps the claim (no `delete_branch` call on the fake GitHub client), sleeps via `sleep_fn`, then calls `AgyDriver.start` a second time with the prompt from `_assemble_checkpoint_prompt` (contains `## RESUMING FROM CHECKPOINT` and the progress note the fake `read_ticket_fn` returns). Rewrite `test_resume_fallback_to_fresh_session_when_continue_fails` and `test_fake_agy_resume_fallback_to_fresh_session_scenario` in place so they assert this, with no `--continue` anywhere in the recorded argument lists.
+- [x] **Docstrings.** The `WHY THIS EXISTS` sections of `agy.py` and `local_worker.py` say why the flags are passed (headless soft-denies unapproved tools and exits 0; the default timeout is 5 minutes) and why there is no quota pre-flight (no documented quota source). Breaking one mapping (make `CANCELED` give `failed`) turns the parametrised test red; check this by hand once before landing.
 
 Gates, in CI order: `ruff check .`, `python scripts/check_tests_first.py`, `pytest -q`.
 
 ## Comments
+
+2026-09-26: Implemented headless flags and outcome classification for the agy adapter (Ticket 19).
+- Exact arguments: `["agy", "-p", prompt, "--output-format", "json", "--dangerously-skip-permissions", "--print-timeout", <print_timeout>]`.
+- `AgyResult` gains `outcome: str` mapped across all 7 recorded fixture scenarios + non-JSON error into `success`, `waiting`, `timeout`, `quota`, `auth`, `failed`.
+- Removed legacy quota endpoint reads and preflight check, and removed `continue_session` (`--continue`).
+- Quota resumption starts fresh run with checkpoint prompt note while retaining claim branch.
+- Docstrings added explaining the rationale in `agy.py` and `local_worker.py`.
+- Mutation testing verified `CANCELED` classification turns the test suite red.
+- CI gates verified clean: `ruff check .`, `python scripts/check_tests_first.py`, `pytest -q`.

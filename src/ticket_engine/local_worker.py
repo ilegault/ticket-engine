@@ -15,10 +15,12 @@ Design choices:
   tests can use fakes without spawning real processes or touching the network.
 - Worktrees keep agy's commits on a dedicated branch (ticket/<effort>-<NN>-<slug>)
   while leaving the developer's working copy untouched.
-- Quota handling: pre-flight check via AgyDriver.read_quota(); on quota error
-  during a run, keep the claim, sleep until reset, try agy --continue; if that
-  fails, assemble a fresh prompt that includes the last progress note and start
-  a new agy session from the checkpoint.
+- Headless agy requires --dangerously-skip-permissions to avoid soft-denying
+  tools while exiting 0 (ADR 0007), and --print-timeout to avoid terminating after
+  the 5-minute default.
+- Quota handling: no pre-flight quota check (agy exposes no documented quota source);
+  on quota error during a run, keep the claim, sleep until reset, and resume
+  with a fresh session from the checkpoint progress note.
 """
 from __future__ import annotations
 
@@ -105,27 +107,16 @@ class LocalWorker:
         """Claim one windows ticket, work it in a worktree with agy.
 
         Steps:
-        1. Pre-flight quota check (refuse if < reserve threshold when endpoint available).
-        2. Create claim branch via GitHub API (skip if already claimed).
-        3. Fetch default branch SHA and create a git worktree on the ticket branch.
-        4. Assemble prompt and drive agy.
-        5. On quota error: keep claim, sleep until reset, resume with agy --continue.
-           If --continue also fails, start a fresh session from the checkpoint note.
-        6. Remove the worktree on completion.
+        1. Create claim branch via GitHub API (skip if already claimed).
+        2. Fetch default branch SHA and create a git worktree on the ticket branch.
+        3. Assemble prompt and drive agy.
+        4. On quota error: keep claim, sleep until reset, resume with a fresh
+           session from the checkpoint note.
+        5. Remove the worktree on completion.
 
-        Returns True on success, False on refusal (quota below reserve, claim
-        collision) or unrecoverable failure.
+        Returns True on success, False on refusal (claim collision) or unrecoverable failure.
         """
-        # 1. Pre-flight quota check
-        if not self._quota_ok():
-            logger.info(
-                "Quota below %.0f%% reserve, refusing to start ticket %02d.",
-                self.config.agy_quota_reserve_pct * 100,
-                ticket.number,
-            )
-            return False
-
-        # 2. Claim
+        # 1. Claim
         effort = ticket.effort or "phase-1"
         try:
             base_sha = self.github_client.get_default_branch_sha(
@@ -209,13 +200,6 @@ class LocalWorker:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _quota_ok(self) -> bool:
-        """Return True if quota is sufficient (or endpoint is unavailable)."""
-        info = self.agy_driver.read_quota(self.config.agy_quota_url)
-        if info is None:
-            return True  # unavailable → proceed (AC4)
-        return info.remaining_pct >= self.config.agy_quota_reserve_pct
-
     def _worktree_path(self, entry: LocalRepoEntry, ticket: Ticket) -> str:
         effort = ticket.effort or "phase-1"
         slug = f"ticket-{effort}-{ticket.number:02d}-{ticket.slug}"
@@ -247,11 +231,7 @@ class LocalWorker:
         ticket_path: str,
         result: object,
     ) -> bool:
-        """Keep the claim, wait for quota reset, then resume with --continue.
-
-        Falls back to a fresh agy session assembled from the checkpoint progress
-        note if --continue fails (AC6).
-        """
+        """Keep the claim, wait for quota reset, then resume from checkpoint."""
         reset_at = getattr(result, "reset_at", None)
         wait_secs = _seconds_until_reset(reset_at)
         logger.info(
@@ -261,16 +241,6 @@ class LocalWorker:
         )
         self._sleep(wait_secs)
 
-        # Try agy --continue
-        continue_result = self.agy_driver.continue_session(cwd=worktree_path)
-        if continue_result.success:
-            return True
-
-        # --continue failed: fresh session from checkpoint (AC6)
-        logger.info(
-            "agy --continue failed for ticket %02d; starting fresh session from checkpoint.",
-            ticket.number,
-        )
         progress_note = self._read_progress_note(worktree_path, ticket_path)
         checkpoint_prompt = _assemble_checkpoint_prompt(
             self.skill_text, entry.repo, ticket_path, progress_note

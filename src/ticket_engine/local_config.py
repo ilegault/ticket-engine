@@ -2,14 +2,14 @@
 
 WHY THIS EXISTS
 ---------------
-Ticket 09 requires a local worker command that operates across multiple
+Ticket 09 and Ticket 19 require a local worker command that operates across multiple
 developer-maintained clones listed in a local config file. This config
 lives outside any repo (it is a developer tool config, not committed)
 and records repo paths, their GitHub names, and agy settings including
-the quota status endpoint and reserve threshold.
+print_timeout and error patterns.
 
-The 20% quota reserve is the tunable defined in the spec §Local worker
-and Ticket 09 AC4. It must live in config, not hardcoded in logic.
+There is no documented quota source for agy, so the previous pre-flight quota
+reserve is removed. Timeout and pattern tunables live here, never hardcoded in logic.
 """
 from __future__ import annotations
 
@@ -32,10 +32,15 @@ class LocalRepoEntry:
 @dataclass(frozen=True)
 class LocalWorkerConfig:
     repos: list[LocalRepoEntry] = field(default_factory=list)
-    agy_quota_url: str = "http://localhost:8765/status"
-    agy_quota_reserve_pct: float = 0.20
     worktree_base: str = ""   # empty → sibling directory named "worktrees"
     github_token: str = ""    # falls back to PIPELINE_TOKEN env var
+    print_timeout: str = "7200"
+    quota_error_patterns: list[str] = field(
+        default_factory=lambda: ["quota", "rate limit", "exhausted"]
+    )
+    auth_error_patterns: list[str] = field(
+        default_factory=lambda: ["auth", "login", "credential"]
+    )
 
 
 def load_local_config(path: pathlib.Path | str | None = None) -> LocalWorkerConfig:
@@ -49,8 +54,9 @@ def load_local_config(path: pathlib.Path | str | None = None) -> LocalWorkerConf
         github_token = "ghp_..."   # optional; falls back to PIPELINE_TOKEN
 
         [agy]
-        quota_url = "http://localhost:8765/status"
-        quota_reserve_pct = 0.20
+        print_timeout = "7200"
+        quota_error_patterns = ["quota", "rate limit", "exhausted"]
+        auth_error_patterns = ["auth", "login", "credential"]
 
         [[repos]]
         path = "/home/dev/projects/myrepo"
@@ -73,10 +79,21 @@ def load_local_config(path: pathlib.Path | str | None = None) -> LocalWorkerConf
         for r in data.get("repos", [])
     ]
     agy = data.get("agy", {})
+    quota_patterns = agy.get("quota_error_patterns")
+    auth_patterns = agy.get("auth_error_patterns")
     return LocalWorkerConfig(
         repos=repos,
-        agy_quota_url=str(agy.get("quota_url", "http://localhost:8765/status")),
-        agy_quota_reserve_pct=float(agy.get("quota_reserve_pct", 0.20)),
         worktree_base=str(data.get("worktree_base", "")),
         github_token=str(data.get("github_token", "")),
+        print_timeout=str(agy.get("print_timeout", "7200")),
+        quota_error_patterns=(
+            [str(p) for p in quota_patterns]
+            if quota_patterns is not None
+            else ["quota", "rate limit", "exhausted"]
+        ),
+        auth_error_patterns=(
+            [str(p) for p in auth_patterns]
+            if auth_patterns is not None
+            else ["auth", "login", "credential"]
+        ),
     )

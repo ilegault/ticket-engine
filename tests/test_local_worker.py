@@ -74,7 +74,7 @@ def test_load_local_config_from_toml(tmp_path):
     """load_local_config reads repos and agy settings from a TOML file."""
     config_file = tmp_path / "local.toml"
     config_file.write_text(
-        '[agy]\nquota_url = "http://localhost:9000/status"\nquota_reserve_pct = 0.25\n\n'
+        '[agy]\nprint_timeout = "3600"\n\n'
         '[[repos]]\npath = "/code/myrepo"\nrepo = "owner/myrepo"\n',
         encoding="utf-8",
     )
@@ -82,15 +82,14 @@ def test_load_local_config_from_toml(tmp_path):
     assert len(config.repos) == 1
     assert config.repos[0].path == "/code/myrepo"
     assert config.repos[0].repo == "owner/myrepo"
-    assert config.agy_quota_url == "http://localhost:9000/status"
-    assert config.agy_quota_reserve_pct == 0.25
+    assert config.print_timeout == "3600"
 
 
 def test_load_local_config_missing_file_returns_defaults(tmp_path):
     """load_local_config returns defaults when file does not exist."""
     config = load_local_config(tmp_path / "nonexistent.toml")
     assert config.repos == []
-    assert config.agy_quota_reserve_pct == 0.20
+    assert config.print_timeout == "7200"
 
 
 def test_windows_frontier_returns_only_windows_tickets():
@@ -264,96 +263,12 @@ def test_run_one_invokes_agy_with_assembled_prompt_and_json_format():
     assert "--output-format" in call_args
     idx = call_args.index("--output-format")
     assert call_args[idx + 1] == "json"
+    assert "--dangerously-skip-permissions" in call_args
+    assert "--print-timeout" in call_args
     # Prompt must be present right after -p
     p_idx = call_args.index("-p")
     prompt_text = call_args[p_idx + 1]
     assert "Ticket 9" in prompt_text or "ticket" in prompt_text.lower()
-
-
-# ---------------------------------------------------------------------------
-# AC4: Quota check
-# ---------------------------------------------------------------------------
-
-def test_refuses_to_start_when_quota_below_20_pct():
-    """run_one refuses to start when quota endpoint reports < 20% remaining."""
-    agy_calls = []
-
-    def run_fn(args, cwd=None):
-        agy_calls.append(args)
-        return 0, json.dumps({"status": "success"})
-
-    def fetch_fn(url):
-        return {"remaining_pct": 0.15, "reset_at": "2026-09-23T06:00:00Z"}
-
-    mock_github = make_fake_github()
-    driver = AgyDriver(run_fn=run_fn, fetch_fn=fetch_fn)
-    ticket = make_ticket(9)
-    entry = make_repo_entry()
-    config = make_config(agy_quota_url="http://localhost:8765/status", agy_quota_reserve_pct=0.20)
-
-    worker = LocalWorker(
-        config=config,
-        github_client=mock_github,
-        agy_driver=driver,
-        git_runner=_make_git_runner([]),
-    )
-    success = worker.run_one(entry, ticket)
-
-    assert not success, "Must refuse below 20% quota"
-    assert agy_calls == [], "agy must not be invoked when quota is too low"
-
-
-def test_proceeds_when_quota_endpoint_unavailable():
-    """run_one proceeds when quota endpoint returns None (endpoint unavailable)."""
-    agy_calls = []
-
-    def run_fn(args, cwd=None):
-        agy_calls.append(args)
-        return 0, json.dumps({"status": "success"})
-
-    def fetch_fn(url):
-        return None  # endpoint unavailable
-
-    mock_github = make_fake_github()
-    driver = AgyDriver(run_fn=run_fn, fetch_fn=fetch_fn)
-    ticket = make_ticket(9)
-    entry = make_repo_entry()
-    config = make_config()
-
-    worker = LocalWorker(
-        config=config,
-        github_client=mock_github,
-        agy_driver=driver,
-        git_runner=_make_git_runner([]),
-    )
-    success = worker.run_one(entry, ticket)
-
-    assert success, "Must proceed when endpoint unavailable"
-    assert agy_calls, "agy must be invoked when endpoint unavailable"
-
-
-def test_proceeds_when_quota_above_reserve():
-    """run_one proceeds when quota is at or above the reserve threshold."""
-
-    def run_fn(args, cwd=None):
-        return 0, json.dumps({"status": "success"})
-
-    def fetch_fn(url):
-        return {"remaining_pct": 0.50}  # well above 20%
-
-    mock_github = make_fake_github()
-    driver = AgyDriver(run_fn=run_fn, fetch_fn=fetch_fn)
-    ticket = make_ticket(9)
-    config = make_config()
-
-    worker = LocalWorker(
-        config=config,
-        github_client=mock_github,
-        agy_driver=driver,
-        git_runner=_make_git_runner([]),
-    )
-    success = worker.run_one(make_repo_entry(), ticket)
-    assert success
 
 
 # ---------------------------------------------------------------------------
@@ -374,30 +289,30 @@ def test_assembled_prompt_contains_checkpoint_instruction():
 
 
 # ---------------------------------------------------------------------------
-# AC6: Quota error handling
+# AC6: Quota error handling (resumes with fresh session from checkpoint)
 # ---------------------------------------------------------------------------
 
-def test_quota_error_keeps_claim_and_resumes_with_continue():
-    """On quota error from agy, keeps claim, waits, then resumes with agy --continue."""
+def test_resume_fallback_to_fresh_session_when_continue_fails():
+    """On quota error, keeps claim, sleeps, and resumes with a fresh session from checkpoint."""
     reset_time = "2026-09-23T06:00:00Z"
     run_calls = []
 
     def tracking_run_fn(args, cwd=None):
         run_calls.append(list(args))
-        responses_iter = tracking_run_fn._responses
-        code, data = next(responses_iter)
-        return code, json.dumps(data)
+        p_calls_so_far = sum(1 for c in run_calls if "-p" in c)
+        if p_calls_so_far >= 2:
+            return 0, json.dumps({"status": "SUCCESS"})
+        return 1, json.dumps({"status": "ERROR", "message": "quota exceeded", "reset_at": reset_time})
 
-    tracking_run_fn._responses = iter([
-        (1, {"status": "quota_error", "reset_at": reset_time}),
-        (0, {"status": "success"}),
-    ])
+    ticket = make_ticket(9, effort="phase-1")
+    ticket_content = (
+        "# 09: Test\n**Status:** in-progress\n\n## Comments\n\n"
+        "Progress (2026-09-23 05:00): criteria 1-2 done.\nNext: criterion 3.\n"
+    )
 
     slept = []
-
     mock_github = make_fake_github()
-    driver = AgyDriver(run_fn=tracking_run_fn, fetch_fn=lambda url: {"remaining_pct": 0.50})
-    ticket = make_ticket(9)
+    driver = AgyDriver(run_fn=tracking_run_fn)
     config = make_config()
 
     worker = LocalWorker(
@@ -406,72 +321,20 @@ def test_quota_error_keeps_claim_and_resumes_with_continue():
         agy_driver=driver,
         git_runner=_make_git_runner([]),
         sleep_fn=lambda secs: slept.append(secs),
-    )
-    success = worker.run_one(make_repo_entry(), ticket)
-
-    assert success, "Should succeed after quota-error + resume"
-    # Claim must NOT have been released (kept for resume)
-    mock_github.delete_branch.assert_not_called()
-    # Worker must have slept (waited for quota reset)
-    assert slept, "Must sleep waiting for quota reset"
-    # agy --continue must have been called
-    assert any("--continue" in args for args in run_calls), "agy --continue must be called"
-
-
-def test_resume_fallback_to_fresh_session_when_continue_fails():
-    """If agy --continue fails, starts fresh agy session from checkpoint progress note."""
-    reset_time = "2026-09-23T06:00:00Z"
-    run_calls = []
-
-    # Simulate: start -> quota error, --continue -> error, fresh start -> success
-    def tracking_run_fn(args, cwd=None):
-        run_calls.append(list(args))
-        if "--continue" in args:
-            return 1, json.dumps({"status": "error", "message": "No prior session"})
-        # Count -p calls so far (including the one we just appended)
-        p_calls_so_far = sum(1 for c in run_calls if "-p" in c)
-        if p_calls_so_far >= 2:
-            # Second -p call (fresh session)
-            return 0, json.dumps({"status": "success"})
-        # First -p call: quota error
-        return 1, json.dumps({"status": "quota_error", "reset_at": reset_time})
-
-    # We need a ticket file with a progress note in a worktree
-    # The worker reads the ticket file from the worktree after checkout
-    ticket = make_ticket(9, effort="phase-1")
-    ticket_content = (
-        "# 09: Test\n**Status:** in-progress\n\n## Comments\n\n"
-        "Progress (2026-09-23 05:00): criteria 1-2 done.\nNext: criterion 3.\n"
-    )
-
-    mock_github = make_fake_github()
-    driver = AgyDriver(run_fn=tracking_run_fn, fetch_fn=lambda url: {"remaining_pct": 0.50})
-    config = make_config()
-
-    worker = LocalWorker(
-        config=config,
-        github_client=mock_github,
-        agy_driver=driver,
-        git_runner=_make_git_runner([]),
-        sleep_fn=lambda secs: None,
         read_ticket_fn=lambda path: ticket_content,
     )
     success = worker.run_one(make_repo_entry(), ticket)
 
-    assert success, "Should succeed after quota-error + continue-fail + fresh session"
-    # Fresh agy session must have been started (a second -p call)
+    assert success, "Should succeed after quota-error + fresh session"
+    mock_github.delete_branch.assert_not_called()
+    assert slept, "Must sleep waiting for quota reset"
     p_calls = [args for args in run_calls if "-p" in args]
-    assert len(p_calls) >= 2, "A fresh agy session must be started after --continue fails"
-    # The fresh session prompt must include checkpoint context
-    fresh_prompt = None
-    for args in p_calls[1:]:
-        p_idx = args.index("-p")
-        fresh_prompt = args[p_idx + 1]
-        break
-    assert fresh_prompt is not None
-    assert "Progress" in fresh_prompt or "checkpoint" in fresh_prompt.lower() or "criteria" in fresh_prompt, (
-        "Fresh session prompt must include the checkpoint progress note"
-    )
+    assert len(p_calls) == 2, "A fresh agy session must be started from checkpoint"
+    assert not any("--continue" in args for args in run_calls), "No --continue should be passed"
+    fresh_p_idx = p_calls[1].index("-p")
+    fresh_prompt = p_calls[1][fresh_p_idx + 1]
+    assert "Progress" in fresh_prompt or "criteria 1-2" in fresh_prompt
+    assert "## RESUMING FROM CHECKPOINT" in fresh_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -492,75 +355,18 @@ def test_fake_agy_start_success_scenario():
     assert not result.quota_error
 
 
-def test_fake_agy_quota_refusal_scenario():
-    """Fake agy: quota check below 20% causes refusal before start."""
-    called = []
-
-    def run_fn(args, cwd=None):
-        called.append(args)
-        return 0, json.dumps({"status": "success"})
-
-    def fetch_fn(url):
-        return {"remaining_pct": 0.10}  # below 20%
-
-    mock_github = make_fake_github()
-    driver = AgyDriver(run_fn=run_fn, fetch_fn=fetch_fn)
-    config = make_config(agy_quota_reserve_pct=0.20)
-
-    worker = LocalWorker(
-        config=config,
-        github_client=mock_github,
-        agy_driver=driver,
-        git_runner=_make_git_runner([]),
-    )
-    result = worker.run_one(make_repo_entry(), make_ticket(9))
-    assert not result
-    assert called == [], "agy must not be called when quota is too low"
-
-
-def test_fake_agy_quota_stop_then_resume_scenario():
-    """Fake agy: quota stop mid-run, then resumes with --continue."""
-    run_calls = []
-
-    def run_fn(args, cwd=None):
-        run_calls.append(list(args))
-        if "--continue" in args:
-            return 0, json.dumps({"status": "success"})
-        return 1, json.dumps({"status": "quota_error", "reset_at": "2026-09-23T06:00:00Z"})
-
-    mock_github = make_fake_github()
-    driver = AgyDriver(run_fn=run_fn, fetch_fn=lambda url: {"remaining_pct": 0.80})
-    config = make_config()
-
-    worker = LocalWorker(
-        config=config,
-        github_client=mock_github,
-        agy_driver=driver,
-        git_runner=_make_git_runner([]),
-        sleep_fn=lambda secs: None,
-    )
-    success = worker.run_one(make_repo_entry(), make_ticket(9))
-
-    assert success
-    assert any("--continue" in args for args in run_calls)
-    # Claim was NOT released during the quota pause
-    mock_github.delete_branch.assert_not_called()
-
-
 def test_fake_agy_resume_fallback_to_fresh_session_scenario():
-    """Fake agy: --continue fails, fresh session started from checkpoint."""
+    """Fake agy: quota stop, fresh session started from checkpoint."""
     run_calls = []
     p_call_count = [0]
 
     def run_fn(args, cwd=None):
         run_calls.append(list(args))
-        if "--continue" in args:
-            return 1, json.dumps({"status": "error", "message": "No prior session"})
         p_call_count[0] += 1
         if p_call_count[0] == 1:
-            return 1, json.dumps({"status": "quota_error", "reset_at": "2026-09-23T06:00:00Z"})
+            return 1, json.dumps({"status": "ERROR", "message": "quota exhausted", "reset_at": "2026-09-23T06:00:00Z"})
         # Second start (fresh session) succeeds
-        return 0, json.dumps({"status": "success"})
+        return 0, json.dumps({"status": "SUCCESS"})
 
     ticket_content = (
         "# 09: Test\n**Status:** in-progress\n\n## Comments\n\n"
@@ -568,7 +374,7 @@ def test_fake_agy_resume_fallback_to_fresh_session_scenario():
     )
 
     mock_github = make_fake_github()
-    driver = AgyDriver(run_fn=run_fn, fetch_fn=lambda url: {"remaining_pct": 0.80})
+    driver = AgyDriver(run_fn=run_fn)
     config = make_config()
 
     worker = LocalWorker(
@@ -584,6 +390,7 @@ def test_fake_agy_resume_fallback_to_fresh_session_scenario():
     assert success
     p_calls = [a for a in run_calls if "-p" in a]
     assert len(p_calls) == 2, "Exactly two -p calls: original + fresh session"
+    assert not any("--continue" in args for args in run_calls)
     fresh_p_idx = p_calls[1].index("-p")
     fresh_prompt = p_calls[1][fresh_p_idx + 1]
     # Fresh prompt must include the progress note context
@@ -594,59 +401,28 @@ def test_fake_agy_resume_fallback_to_fresh_session_scenario():
 # AgyDriver unit tests
 # ---------------------------------------------------------------------------
 
-def test_agy_driver_read_quota_parses_remaining_pct():
-    """AgyDriver.read_quota parses remaining_pct and reset_at from JSON."""
-    def fetch_fn(url):
-        return {"remaining_pct": 0.42, "reset_at": "2026-09-23T06:00:00Z"}
-
-    driver = AgyDriver(fetch_fn=fetch_fn)
-    info = driver.read_quota("http://localhost:8765/status")
-    assert info is not None
-    assert abs(info.remaining_pct - 0.42) < 0.001
-    assert info.reset_at is not None
-    assert info.reset_at.year == 2026
-
-
-def test_agy_driver_read_quota_returns_none_when_unavailable():
-    """AgyDriver.read_quota returns None when endpoint is unavailable."""
-    driver = AgyDriver(fetch_fn=lambda url: None)
-    assert driver.read_quota("http://localhost:8765/status") is None
-
-
 def test_agy_driver_start_parses_success():
-    """AgyDriver.start returns AgyResult(success=True) on returncode=0 success JSON."""
-    driver = AgyDriver(run_fn=lambda args, cwd=None: (0, json.dumps({"status": "success"})))
+    """AgyDriver.start returns AgyResult(success=True, outcome='success') on returncode=0 success JSON."""
+    driver = AgyDriver(run_fn=lambda args, cwd=None: (0, json.dumps({"status": "SUCCESS"})))
     result = driver.start("my prompt")
     assert result.success
+    assert result.outcome == "success"
     assert not result.quota_error
 
 
 def test_agy_driver_start_parses_quota_error():
-    """AgyDriver.start returns AgyResult(quota_error=True) on quota error JSON."""
+    """AgyDriver.start returns AgyResult(outcome='quota', quota_error=True) on quota error JSON."""
     driver = AgyDriver(
         run_fn=lambda args, cwd=None: (
             1,
-            json.dumps({"status": "quota_error", "reset_at": "2026-09-23T06:00:00Z"}),
+            json.dumps({"status": "ERROR", "message": "rate limit exhausted", "reset_at": "2026-09-23T06:00:00Z"}),
         )
     )
     result = driver.start("my prompt")
     assert not result.success
+    assert result.outcome == "quota"
     assert result.quota_error
     assert result.reset_at is not None
-
-
-def test_agy_driver_continue_session_passes_continue_flag():
-    """AgyDriver.continue_session invokes agy with --continue flag."""
-    seen_args = []
-
-    def run_fn(args, cwd=None):
-        seen_args.extend(args)
-        return 0, json.dumps({"status": "success"})
-
-    driver = AgyDriver(run_fn=run_fn)
-    result = driver.continue_session()
-    assert "--continue" in seen_args
-    assert result.success
 
 
 # ---------------------------------------------------------------------------
@@ -659,11 +435,11 @@ def test_run_finds_first_windows_ticket_and_works_it():
 
     def run_fn(args, cwd=None):
         worked.append(args)
-        return 0, json.dumps({"status": "success"})
+        return 0, json.dumps({"status": "SUCCESS"})
 
     tickets = [make_ticket(1, runner="windows")]
     mock_github = make_fake_github()
-    driver = AgyDriver(run_fn=run_fn, fetch_fn=lambda url: None)
+    driver = AgyDriver(run_fn=run_fn)
     config = make_config()
 
     worker = LocalWorker(
@@ -681,7 +457,7 @@ def test_run_finds_first_windows_ticket_and_works_it():
 def test_run_returns_zero_with_no_windows_tickets():
     """LocalWorker.run() exits 0 with message when no windows tickets are found."""
     mock_github = make_fake_github()
-    driver = AgyDriver(run_fn=lambda a, cwd=None: (0, "{}"), fetch_fn=lambda u: None)
+    driver = AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}'))
     config = make_config()
 
     worker = LocalWorker(
@@ -716,7 +492,7 @@ def _make_worker_with_tickets(tickets: list[Ticket]) -> LocalWorker:
     """Build a LocalWorker whose ticket_loader returns the given tickets."""
     from unittest.mock import MagicMock
     mock_github = MagicMock()
-    driver = AgyDriver(run_fn=lambda a, cwd=None: (0, "{}"), fetch_fn=lambda u: None)
+    driver = AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}'))
     config = make_config()
     return LocalWorker(
         config=config,
