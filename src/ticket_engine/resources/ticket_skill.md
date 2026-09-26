@@ -11,8 +11,16 @@ runs, CI and the integrity gate are the only things between an agent and the
 default branch. That is why the conventions here are strict, and why a green
 build made green by weakening or editing a test is worse than a red one.
 
-Work **one ticket**. Not two, not a ticket and a half. If you finish early, stop
-and report; do not wander into the next ticket.
+Work **one ticket**. Not two, not a ticket and a half. If you finish early, finish
+the session; do not wander into the next ticket.
+
+**You are unattended.** Nobody reads your session while it runs and nobody will
+answer a question in it. Never ask for confirmation, approval or feedback ("does
+this look correct?", "shall I proceed?"). Every choice this skill leaves to you is
+yours to make; write it down under the ticket's `## Comments` and carry on. When
+something truly blocks you, escalate (section 6) instead of asking. If a Jules
+worker asks anyway, the engine replies "proceed" a limited number of times
+(`max_auto_replies`) and then escalates the ticket for you (ticket-engine ADR 0004).
 
 ---
 
@@ -57,15 +65,18 @@ Read, in this order:
 3. **Every ADR the ticket references**, in `docs/adr/`. They are binding, not
    background. A ticket that names an ADR expects you to have read and followed it.
 4. **`CONTEXT.md`** — the domain glossary. Use its words exactly. If a term you
-   need is missing or the code contradicts it, flag it; do not silently pick a side.
+   need is missing or the code contradicts it, write that under the ticket's
+   `## Comments` and follow the reading the ticket and ADRs support. If the choice
+   changes the result, escalate. Do not silently pick a side.
 5. **The module docstring of every file you are about to edit.** Docstrings explain
    why (`WHY THIS EXISTS`).
 
 ### Work the frontier
 
 Never start a ticket whose `Blocked by:` names an unfinished ticket (a ticket
-whose status is not `done`). If the only unblocked ticket is `ready-for-developer`
-(a bench task, hardware task, or human judgement call), say so and stop. Do not
+whose status is not `done`). If the ticket you were given is `ready-for-developer`
+(a bench task, hardware task, or human judgement call) or has an unfinished
+blocker, do not work it: end the session with a one-line summary saying why. Do not
 claim it, do not simulate it, do not build around it.
 
 ### Refer to roles, never to people
@@ -93,7 +104,8 @@ Judge by the seam, not by size.
 - **Do not split**: a single vertical slice across layers, pieces sharing a test
   seam or fixtures, or small tasks where coordination overhead exceeds the work.
 
-State your split decision and reasoning in one line before acting on it.
+Record your split decision and its reason as one line in the ticket's progress
+note under `## Comments`, then act on it. Do not wait for anyone to agree.
 
 ---
 
@@ -255,12 +267,13 @@ When running locally (outside of Jules):
    Section 6.
 4. If a PR exists and `gh` is available, convert it to draft (`gh pr ready --undo`);
    otherwise convert it via the GitHub web UI.
-5. Stop and report.
+5. Finish the session. The brief is the report; do not wait for a reply.
 
 ---
 
 ## Never
 
+- Ask for confirmation, approval or feedback, or wait for a reply. Decide, or escalate.
 - Start a second ticket in the same session.
 - Claim `ready-for-developer` tickets or simulate bench/manual work.
 - Commit to the default branch or merge your own PR.

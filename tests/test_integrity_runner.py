@@ -101,7 +101,9 @@ def test_run_integrity_gate_fail_returns_1_and_sets_failure_status(tmp_path: pat
         assert status_call["state"] == "failure"
 
 
-def test_run_integrity_gate_hold_returns_0_and_sets_pending_status(tmp_path: pathlib.Path):
+def test_run_integrity_gate_hold_returns_0_and_sets_a_green_status(tmp_path: pathlib.Path):
+    # ADR 0005: a hold is green so the developer can merge it by hand; `pending` on a
+    # required check left held PRs unmergeable. Only a pass enables auto-merge.
     mock_client = MagicMock()
 
     with patch("ticket_engine.integrity_runner.GitHubClient", return_value=mock_client), \
@@ -121,7 +123,8 @@ def test_run_integrity_gate_hold_returns_0_and_sets_pending_status(tmp_path: pat
 
         assert exit_code == 0
         status_call = mock_client.set_commit_status.call_args[1]
-        assert status_call["state"] == "pending"
+        assert status_call["state"] == "success"
+        assert status_call["description"].startswith("HOLD, merge by hand: ")
 
 
 def test_run_integrity_gate_pass_merges_pr(tmp_path: pathlib.Path):

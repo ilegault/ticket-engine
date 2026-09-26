@@ -103,7 +103,8 @@ never start a ticket below 20% remaining; pause (not abandon) when quota runs ou
 is normal and is not an escalation.
 
 **Escalation** — the worker gives up: three fix attempts have failed, or the
-tests cannot pass without muting or weakening them. The ticket goes `blocked`, the
+tests cannot pass without muting or weakening them. The engine also escalates a
+*waiting session* that keeps asking after its last *auto-reply*. The ticket goes `blocked`, the
 PR goes to draft, and an **escalation brief** is written under `## Comments`: the
 ticket, what each attempt tried, the exact failing output, and the one decision
 needed, ready to paste into a stronger model.
@@ -114,8 +115,24 @@ decides whether a green PR may merge on its own. Its answer is a *verdict*.
 **Verdict** — `pass` (auto-merge), `fail` (red check, the worker must fix), or
 `hold` (green, but waits for the developer). Always with reasons.
 
-**Merge hold** — a PR whose verdict is `hold`. It is never auto-merged. Tickets
-that depend on it wait; nothing is built on top of an unmerged PR.
+**Deletes tests** — the ticket's optional `Deletes tests:` line: the test
+functions (`<file>.py::<name>`) the worker may delete. Read only from the default
+branch's copy of the ticket (ADR 0005).
+
+**Ticket lint** — the check that a `ready-for-agent` ticket can land through the
+integrity gate as written. A ticket with findings is not started (ADR 0005).
+
+**Merge hold** — a PR whose verdict is `hold`. Its gate check is green and it is
+labelled `engine:hold`, but it is never auto-merged: the developer merges it by hand.
+Tickets that depend on it wait; nothing is built on top of an unmerged PR.
+
+**Waiting session** — a Jules session in `AWAITING_USER_FEEDBACK`: the worker
+stopped to ask a question. It is live, so its claim is kept (ADR 0004).
+
+**Auto-reply** — the engine's fixed answer to a waiting session: nobody is
+watching, decide or escalate. Sent at most `max_auto_replies` times per session
+(default 2). If the session asks again after the last one, the engine escalates the
+ticket on its claim branch and tells the session to stop.
 
 **Circuit breaker** — two escalations in one target repo within 24 hours pause
 that repo's dispatch until the developer resumes it.

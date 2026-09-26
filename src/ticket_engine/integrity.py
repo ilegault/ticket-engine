@@ -11,6 +11,9 @@ is testable reproducibly with static snapshots and fixtures.
 Checks implemented:
 - Check 1: no newly skipped or xfailed tests (naming the test) (ADR 0001 §2.1).
 - Check 2: no deleted test functions and no test file losing assertions (naming what was lost) (ADR 0001 §2.2).
+  Exception (ADR 0005): tests named on the `Deletes tests:` line of the **base branch's**
+  copy of the ticket may be deleted, and their own assertions do not count as lost. The
+  base copy is used so a worker can never authorise its own deletion.
 - Check 3: any ratchet file with a higher value than on base -> fail (ADR 0001 §2.3).
 - Check 4: PR touching .github/, gate scripts, docs/adr/, AGENTS.md, CONTEXT.md -> hold, naming paths (ADR 0001 §2.4).
 - Check 5: tests-first escape hatch used (label, commit/PR tag) -> hold (ADR 0001 §2.5).
@@ -409,6 +412,8 @@ class _ASTVisitor:
         self.content = content
         self.tests: dict[str, _TestFunctionInfo] = {}
         self.assertion_count = 0
+        # Assertions inside each test function, by qualified name (ADR 0005).
+        self.test_assertions: dict[str, int] = {}
         self._parsed = False
 
     def parse(self) -> None:
@@ -432,6 +437,7 @@ class _ASTVisitor:
                         is_skipped=is_skip,
                         skip_reason=reason,
                     )
+                    self.test_assertions[qname] = self._count_assertions(node)
             elif isinstance(node, ast.ClassDef):
                 class_skipped = module_skipped or self._has_skip_decorator(node.decorator_list)
                 for class_node in node.body:
@@ -448,6 +454,7 @@ class _ASTVisitor:
                             is_skipped=is_skip,
                             skip_reason=reason,
                         )
+                        self.test_assertions[qname] = self._count_assertions(class_node)
 
         self.assertion_count = self._count_assertions(tree)
 
@@ -595,7 +602,10 @@ class IntegrityCore:
         commit_messages: Sequence[str] | None = None,
         pr_text: str | None = None,
         base_test_results: BaseTestResults | Mapping[str, Any] | None = None,
+        base_ticket: str | None = None,
     ) -> IntegrityVerdict:
+        """Judge a PR. `base_ticket` is the base branch's copy of the PR's ticket (None
+        when the ticket is new or unknown); only it can authorise test deletions."""
         cfg = config or IntegrityConfig()
         reasons: list[str] = []
         is_failing = False
@@ -644,22 +654,42 @@ class IntegrityCore:
                         f"Check 1 fail: Test '{h_info.func_name}' in {h_info.file_path} is newly skipped or marked expected-to-fail"
                     )
 
-        # Check 2: deleted test function or test file losing assertions
+        # Check 2: deleted test function or test file losing assertions.
+        # ADR 0005: deletions named by the base branch's ticket are authorised.
+        authorised: set[str] = set()
+        if base_ticket:
+            authorised = {
+                e.replace("\\", "/")
+                for e in TicketParser().parse_text(base_ticket).deletes_tests
+            }
+        authorised_deleted: list[str] = []
+        allowance: dict[str, int] = {}
         for qname, b_info in base_tests.items():
             if qname not in head_tests:
+                if qname in authorised:
+                    authorised_deleted.append(qname)
+                    b_vis = base_visitors.get(b_info.file_path)
+                    lost_here = b_vis.test_assertions.get(qname, 0) if b_vis else 0
+                    allowance[b_info.file_path] = allowance.get(b_info.file_path, 0) + lost_here
+                    continue
                 is_failing = True
                 reasons.append(
                     f"Check 2 fail: Deleted test function '{b_info.func_name}' in {b_info.file_path}"
                 )
+        if authorised_deleted:
+            reasons.append(
+                "Check 2: deleted test(s) the ticket authorises on the base branch: "
+                + ", ".join(sorted(authorised_deleted))
+            )
 
         for path, b_visitor in base_visitors.items():
             h_visitor = head_visitors.get(path)
             h_count = h_visitor.assertion_count if h_visitor else 0
-            if h_count < b_visitor.assertion_count:
-                lost = b_visitor.assertion_count - h_count
+            if h_count < b_visitor.assertion_count - allowance.get(path, 0):
+                lost = b_visitor.assertion_count - allowance.get(path, 0) - h_count
                 is_failing = True
                 reasons.append(
-                    f"Check 2 fail: Test file '{path}' has fewer assertions than on base (lost {lost} assertion(s): {h_count} < {b_visitor.assertion_count})"
+                    f"Check 2 fail: Test file '{path}' has fewer assertions than on base (lost {lost} assertion(s): {h_count} < {b_visitor.assertion_count - allowance.get(path, 0)})"
                 )
 
         # 3. Check 3: ratchet files
@@ -840,7 +870,7 @@ class IntegrityCore:
 
         pass_reasons = ["All integrity checks passed (checks 1-7)"]
         for r in reasons:
-            if r.startswith("Check 7 pass"):
+            if r.startswith(("Check 7 pass", "Check 2: deleted test(s) the ticket authorises")):
                 pass_reasons.append(r)
 
         return IntegrityVerdict(

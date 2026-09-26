@@ -1,6 +1,8 @@
 # ADR 0001 — Auto-merge on green, behind an integrity gate
 
-**Status:** accepted
+**Status:** accepted; amended by ADR 0005 (check 2 honours a ticket's
+`Deletes tests:` line from the base branch; a `hold` reports green and the developer
+merges it by hand)
 **Date:** 2026-09-23
 **Applies to:** every target repo wired to the engine
 

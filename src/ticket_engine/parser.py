@@ -8,6 +8,8 @@ Status, Blocked by, Runner, and Auto-merge lines must parse whether formatted
 with markdown bold (**Field:**) or plain (Field:).
 Legacy words (such as 'complete', 'human-task') are recorded as findings and
 never treated as 'done', preventing unverified work from advancing the frontier.
+ADR 0005 adds the optional `Deletes tests:` line: the test functions (as
+`path.py::name`) a ticket authorises its worker to delete.
 """
 from __future__ import annotations
 
@@ -31,6 +33,10 @@ _STATUS_RE = re.compile(r"^(?:\*\*)?Status:(?:\*\*)?\s*(.+)$", re.IGNORECASE | r
 _BLOCKED_BY_RE = re.compile(r"^(?:\*\*)?Blocked\s+by:(?:\*\*)?\s*(.+)$", re.IGNORECASE | re.MULTILINE)
 _RUNNER_RE = re.compile(r"^(?:\*\*)?Runner:(?:\*\*)?\s*(.+)$", re.IGNORECASE | re.MULTILINE)
 _AUTO_MERGE_RE = re.compile(r"^(?:\*\*)?Auto-merge:(?:\*\*)?\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+# ADR 0005: the tests a ticket authorises its worker to delete, as `path.py::name`.
+_DELETES_TESTS_RE = re.compile(
+    r"^(?:\*\*)?Deletes tests:(?:\*\*)?\s*(.+)$", re.IGNORECASE | re.MULTILINE
+)
 
 
 @dataclass(frozen=True)
@@ -52,6 +58,8 @@ class Ticket:
     path: pathlib.Path | None = None
     effort: str = ""
     raw_text: str = ""
+    # Tests this ticket authorises its worker to delete (ADR 0005), `path.py::name`.
+    deletes_tests: list[str] = field(default_factory=list)
 
     def is_done(self) -> bool:
         if self.status != "done":
@@ -146,6 +154,17 @@ class TicketParser:
         else:
             auto_merge = True
 
+        # 6. Parse Deletes tests (ADR 0005). Comma- or space-separated, backticks allowed.
+        deletes_tests: list[str] = []
+        deletes_match = _DELETES_TESTS_RE.search(content)
+        if deletes_match:
+            raw_deletes = deletes_match.group(1).strip().strip("*_").strip()
+            if not raw_deletes.lower().startswith("none"):
+                for part in re.split(r"[,\s]+", raw_deletes):
+                    entry = part.strip().strip("`").strip()
+                    if entry:
+                        deletes_tests.append(entry)
+
         effort = ""
         if path is not None:
             parts = path.parts
@@ -166,4 +185,5 @@ class TicketParser:
             path=path,
             effort=effort,
             raw_text=content,
+            deletes_tests=deletes_tests,
         )

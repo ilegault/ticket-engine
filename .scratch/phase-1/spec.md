@@ -85,12 +85,16 @@ real ticket set end to end.
 23. As a Jules worker, I want the prompt to name the exact ticket file and the repo's `AGENTS.md`, so that I start oriented.
 24. As a Jules worker, I want the skill to tell me not to push or open PRs myself, so that I do not fight the automatic PR creation.
 25. As the developer, I want each Jules session created with automatic PR creation and automatic plan approval, so that no step waits for a click.
+25a. As the developer, I want the engine to answer a Jules session that stops to ask a question, telling it to proceed unattended, and to escalate the ticket if it keeps asking, so that a question never stalls a ticket overnight (ADR 0004).
 26. As the developer, I want each target repo to have a Jules environment setup script that installs its Python version and system libraries, so that Jules can run the repo's gates.
 
 ### Merging
 27. As the developer, I want a PR to auto-merge when CI is green and the verdict is `pass`, so that the chain moves unattended.
 28. As the developer, I want the integrity gate to fail a PR that newly skips or xfails a test, so that muting is caught mechanically.
 29. As the developer, I want it to fail a PR that deletes a test function or reduces a test file's assertions, so that weakening is caught.
+29a. As the planner, I want a ticket to authorise deleting named tests with a `Deletes tests:` line that the gate reads from the base branch, so that a ticket superseding old tests can land and a worker can never authorise its own deletion (ADR 0005).
+29b. As the developer, I want a held PR to show a green gate check and an `engine:hold` label, so that I can merge it by hand when I approve it (ADR 0005).
+29c. As the developer, I want the dispatcher to refuse to start a ticket that cannot land as written, and the dry run and run report to say why, so that a planning mistake never costs a worker session (ADR 0005).
 30. As the developer, I want it to fail a PR that raises any ratchet, so that ratchets only go down.
 31. As the developer, I want a PR that touches `.github/`, gate scripts, ADRs, `AGENTS.md` or `CONTEXT.md` held, so that no agent loosens its own rules.
 32. As the developer, I want a PR that uses a tests-first escape hatch held, so that "visible in review" still means something.
@@ -158,7 +162,13 @@ never treated as done.
 **Jules API.** Sessions are created with `prompt`, `sourceContext` (repo source
 plus `githubRepoContext.startingBranch` set to the default branch), `title`
 (`<effort>-<NN>: <ticket title>`), `automationMode: AUTO_CREATE_PR`, and plan
-approval not required. Auth is the `X-Goog-Api-Key` header. Quota is computed by
+approval not required. Auth is the `X-Goog-Api-Key` header. A session can still
+stop to ask a question (`AWAITING_USER_FEEDBACK`). Each dispatch run, paused or not,
+reads the activities of this repo's waiting sessions and replies through
+`sessions/<id>:sendMessage` with the fixed auto-reply, at most `max_auto_replies`
+times (config, default 2). After that it escalates on the claim branch and sends a
+stop message. Reply counts are read back from marker-prefixed messages in the
+activity list, not stored (ADR 0004). Quota is computed by
 listing sessions and counting `createTime` within the last 24 hours. The limit
 (100) and reserve (10) are config. The dispatcher records the session↔ticket link
 by title prefix and claim branch, not in a state store.
@@ -194,14 +204,28 @@ successive head commits. After the third failure it escalates on the worker's
 behalf. It commits the ticket's `Status: blocked` and the escalation brief to the
 PR branch, converts the PR to draft, and applies `engine:escalated`. The brief is
 assembled from the ticket, the Jules session's activities, and the failing CI log
-excerpt.
+excerpt. A session that keeps asking after its last auto-reply is escalated
+the same way, except that the ticket file is committed on the claim branch (there
+is no PR yet), and the brief names the session instead of quoting its question
+(ADR 0004).
 
 **Integrity checks.** These are exactly the seven in ADR 0001, plus the denylist
 scan. Check 7 applies to test functions that are new in the PR. It runs them
 against the base branch's source. Any new test that passes there produces a
 `hold` with the test names, not a `fail`, because a refactor ticket can
 legitimately add characterisation tests that already pass. Checks 4, 5 and
-`Auto-merge: no` produce `hold`. The rest produce `fail`.
+`Auto-merge: no` produce `hold`. The rest produce `fail`. Check 2 does not fail
+deletions of tests named on the `Deletes tests:` line of the base branch's copy of
+the ticket, and does not count their assertions as lost. A `hold` sets the gate's
+status to `success` (described `HOLD, merge by hand: ...`), labels the PR
+`engine:hold`, and cancels any queued auto-merge; only `pass` enables auto-merge
+(ADR 0005).
+
+**Ticket lint.** `ticket_lint.lint_ticket` returns the reasons a `ready-for-agent`
+ticket cannot land: an ordered deletion of a named test its `Deletes tests:` line
+does not list, a malformed `Deletes tests:` entry, or no acceptance checkboxes. The
+dispatch core does not start a ticket with findings (it stays on the frontier), and
+the dry run and run report list them (ADR 0005).
 
 **Config.** Each target repo has a small engine config file: default branch,
 daily cap, concurrency (default 2), Jules reserve, test command, gate commands,
@@ -240,7 +264,9 @@ its tickets treated as `windows` until Phase 2.
   1. **Dispatch**: world snapshot in, actions out. Scenario tests, for example: a
      fresh ticket set yields the first frontier tickets. A held blocker keeps its
      dependents off the frontier while an independent ticket starts. The reserve
-     stops a start at 91 sessions. A third red CI yields an escalation. A second
+     stops a start at 91 sessions. A third red CI yields an escalation. A session
+     waiting on a question gets the auto-reply, and a session that asks again after
+     the last allowed reply is escalated. A second
      escalation within a day yields a pause. A 13-hour-old claim with no live
      session is released. A `windows` ticket is skipped and reported. Legacy or
      unknown statuses are surfaced, never treated as done.

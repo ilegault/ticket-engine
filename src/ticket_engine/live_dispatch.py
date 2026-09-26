@@ -13,6 +13,13 @@ Phase 1 Spec §Implementation Decisions and Ticket 06 / Ticket 07 Acceptance Cri
 6. Stale claims (no live session, quiet > 12h) are released by deleting the claim branch.
 7. Two escalations within 24h sets `TICKET_ENGINE_PAUSED`; clearing it resumes dispatch on next run.
 8. Privacy invariant (ADR 0002): Never logs prompts, denylist entries, or secrets.
+9. ADR 0004: every run, including a paused one, answers this repo's Jules sessions
+   that are waiting on a question (`_handle_waiting_sessions`). The adapter's only
+   job is to fetch the activities of waiting sessions and carry out what
+   `evaluate_waiting_sessions` decides: send the auto-reply, or commit the escalation
+   to the claim branch and then send the stop message. The stop message is sent only
+   after the commit lands, because the stop marker is what tells later runs the
+   ticket is already escalated.
 """
 from __future__ import annotations
 
@@ -23,9 +30,12 @@ from typing import TYPE_CHECKING, Any
 
 from ticket_engine.config import RepoConfig
 from ticket_engine.dispatch import (
+    AnswerSessionAction,
     Claim,
     DispatchCore,
+    EscalatedSessionStillWaiting,
     EscalatePRAction,
+    EscalateWaitingSessionAction,
     OpenPR,
     PauseRepoAction,
     ReleaseClaimAction,
@@ -33,10 +43,13 @@ from ticket_engine.dispatch import (
     WorldSnapshot,
     apply_escalation_to_ticket_text,
     count_repo_starts,
+    evaluate_waiting_sessions,
     is_live_session_state,
+    session_resource_name,
 )
 from ticket_engine.prompt import assemble_prompt, load_ticket_skill
 from ticket_engine.run_report import RunFacts
+from ticket_engine.ticket_lint import lint_tickets
 
 if TYPE_CHECKING:
     from ticket_engine.github import GitHubClient
@@ -198,6 +211,88 @@ class LiveDispatcher:
 
         return executed_actions
 
+    def _with_waiting_activities(self, sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Copy of `sessions` where this repo's waiting sessions carry `activities`.
+
+        A failed fetch leaves the key off, which the core reads as "history unknown"
+        and never answers.
+        """
+        out: list[dict[str, Any]] = []
+        for sess in sessions:
+            if (
+                isinstance(sess, dict)
+                and str(sess.get("state") or "").strip().upper() == "AWAITING_USER_FEEDBACK"
+                and str((sess.get("sourceContext") or {}).get("source", "")).strip("/")
+                in {self.repo, f"sources/github/{self.repo}"}
+            ):
+                name = session_resource_name(sess)
+                try:
+                    sess = {**sess, "activities": self.jules_client.list_activities(name)}
+                except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                    logger.warning("Failed to read activities of waiting session %s: %s", name, exc)
+            out.append(sess)
+        return out
+
+    def _handle_waiting_sessions(
+        self,
+        tickets: list[Ticket],
+        sessions: list[dict[str, Any]],
+        facts: RunFacts,
+    ) -> None:
+        """Carry out what the core decides for sessions waiting on a question."""
+        snapshot = WorldSnapshot(
+            tickets=tickets,
+            jules_sessions=self._with_waiting_activities(sessions),
+            config=self.config,
+            repo_name=self.repo,
+            paused=self.paused,
+        )
+        for action in evaluate_waiting_sessions(snapshot):
+            if isinstance(action, AnswerSessionAction):
+                try:
+                    self.jules_client.send_message(action.session_name, action.message)
+                    facts.auto_replies.append((action.ticket_number, action.reply_number))
+                    logger.info(
+                        "Auto-replied to waiting session for ticket %02d (reply %d)",
+                        action.ticket_number,
+                        action.reply_number,
+                    )
+                except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                    logger.error("Failed to reply to session for ticket %02d: %s", action.ticket_number, exc)
+                    facts.session_failures.append((action.ticket_number, "reply to", str(exc)))
+
+            elif isinstance(action, EscalateWaitingSessionAction):
+                num = action.ticket.number
+                try:
+                    info = self.github_client.get_file_contents(
+                        repo=self.repo, path=action.ticket_path, ref=action.claim_ref
+                    )
+                    current = info.get("content") or ""
+                    if not current:
+                        msg = f"{action.ticket_path} is empty or missing on {action.claim_ref}"
+                        raise ValueError(msg)
+                    self.github_client.commit_file_change(
+                        repo=self.repo,
+                        path=action.ticket_path,
+                        content=apply_escalation_to_ticket_text(current, action.brief),
+                        message=f"Escalate {num:02d}: Jules session kept asking for input",
+                        branch=action.claim_ref,
+                        sha=info.get("sha"),
+                    )
+                except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                    logger.error("Failed to escalate waiting session for ticket %02d: %s", num, exc)
+                    facts.session_failures.append((num, "escalate", str(exc)))
+                    continue
+                facts.session_escalations.append((num, action.claim_ref, action.replies))
+                try:
+                    self.jules_client.send_message(action.session_name, action.stop_message)
+                except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                    logger.error("Failed to send stop message for ticket %02d: %s", num, exc)
+                    facts.session_failures.append((num, "stop", str(exc)))
+
+            elif isinstance(action, EscalatedSessionStillWaiting):
+                facts.still_escalated.append((action.ticket_number, action.claim_ref))
+
     def dispatch(self, tickets: list[Ticket]) -> list[Ticket]:
         """Evaluate frontier and launch Jules sessions for eligible tickets.
 
@@ -213,10 +308,19 @@ class LiveDispatcher:
             jules_reserve=self.config.jules_reserve,
             daily_cap=self.config.daily_cap,
             concurrency=self.config.concurrency,
+            max_auto_replies=self.config.max_auto_replies,
+            lint_findings=lint_tickets(tickets),
         )
         self.last_run = facts
         if self.paused:
             logger.info("Repository %s is paused (TICKET_ENGINE_PAUSED). Starting nothing.", self.repo)
+            # Work in flight still finishes, so a waiting session is still answered.
+            try:
+                paused_sessions = self.jules_client.list_sessions()
+            except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                logger.warning("Failed to list Jules sessions while paused: %s", exc)
+                paused_sessions = []
+            self._handle_waiting_sessions(tickets, paused_sessions, facts)
             return []
 
         # 1. Fetch default branch SHA
@@ -255,6 +359,9 @@ class LiveDispatcher:
             )
         except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
             logger.warning("Failed to count repo starts in 24h: %s", exc)
+
+        # 4a. Answer or escalate sessions waiting on a question (ADR 0004).
+        self._handle_waiting_sessions(tickets, all_sessions, facts)
 
         # 4b. Release claim branches for tickets that are already done.
         # A claim branch only ever gets created (step 6 below); nothing else

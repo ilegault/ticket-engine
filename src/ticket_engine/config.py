@@ -5,7 +5,8 @@ WHY THIS EXISTS
 Phase 1 Spec §Implementation Decisions (Config) and Ticket 06 Acceptance Criterion 4
 mandate that every target repo has an engine config file defining its default branch,
 daily cap, concurrency (default 2), Jules reserve (default 10 of 100), test command,
-and paths.
+and paths. ADR 0004 adds `max_auto_replies` (default 2): how many questions from a
+waiting Jules session the engine answers before it escalates the ticket.
 Every tunable has one home: the configuration, never hardcoded literals in logic.
 """
 from __future__ import annotations
@@ -48,6 +49,9 @@ class RepoConfig:
     merge_method: str = "merge"
     circuit_breaker_escalations_limit: int = 2
     circuit_breaker_window_hours: int = 24
+    # How many times the engine answers a Jules session that stops to ask a question
+    # before it escalates the ticket instead (ADR 0004).
+    max_auto_replies: int = 2
     # Environment variables the repo's tests need (e.g. dummy API tokens its own CI
     # sets). The integrity gate sets them for check 7's test runs.
     test_env: dict[str, str] = field(default_factory=dict)
@@ -110,6 +114,7 @@ def load_repo_config(repo_path: pathlib.Path | str | None = None) -> RepoConfig:
         circuit_breaker_window_hours=int(
             config_data.get("circuit_breaker_window_hours", 24)
         ),
+        max_auto_replies=int(config_data.get("max_auto_replies", 2)),
         merge_method=str(config_data.get("merge_method", "merge")),
         test_env={str(k): str(v) for k, v in dict(config_data.get("test_env", {})).items()},
     )

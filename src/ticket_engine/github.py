@@ -21,6 +21,7 @@ import base64
 import json
 import logging
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -302,6 +303,17 @@ class GitHubClient:
         if isinstance(res, list):
             return [str(item.get("name", "")) for item in res if isinstance(item, dict)]
         return labels
+
+    def remove_issue_label(self, repo: str, issue_number: int, label: str) -> bool:
+        """Remove one label from an issue or PR. False when it was not there (404)."""
+        endpoint = f"/repos/{repo}/issues/{issue_number}/labels/{urllib.parse.quote(label, safe='')}"
+        try:
+            self._request("DELETE", endpoint)
+            return True
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return False
+            raise
 
     def delete_branch(self, repo: str, branch: str) -> bool:
         """Delete a branch/ref via Git refs API."""

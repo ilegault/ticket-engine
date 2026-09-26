@@ -25,6 +25,7 @@ from ticket_engine.dispatch import DispatchCore, StartTicketAction, WorldSnapsho
 from ticket_engine.github import GitHubClient
 from ticket_engine.jules import JulesClient
 from ticket_engine.live_dispatch import LiveDispatcher
+from ticket_engine.ticket_lint import lint_tickets
 from ticket_engine.parser import Ticket, TicketParser
 from ticket_engine.run_report import build_run_report, write_step_summary
 
@@ -87,6 +88,13 @@ def run_dispatch_dry_run(path_str: str, concurrency_limit: int = 2) -> int:
             print(f"  - {t.number:02d}: {t.title}")
     else:
         print("  (none)")
+
+    problems = lint_tickets(tickets)
+    if problems:
+        print("\nTicket problems (an agent cannot land these as written):")
+        for num in sorted(problems):
+            for finding in problems[num]:
+                print(f"  - {num:02d}: {finding}")
 
     print(f"\n=== Parse findings: ({len(result.findings)} finding(s)) ===")
     if result.findings:

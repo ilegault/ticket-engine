@@ -18,6 +18,33 @@ An earlier version only recognised made-up names (RUNNING, ACTIVE, PENDING), so 
 session that was PLANNING or waiting on a question looked dead and its claim could be
 released under it. Those legacy names stay in the set so older snapshots still read
 the same.
+
+TICKET LINT (ADR 0005)
+----------------------
+A frontier ticket for which `ticket_lint.lint_ticket` finds problems is not started:
+it would fail the integrity gate however well it is implemented. It is not removed
+from the frontier, whose definition of blocked stays the single one in
+`compute_frontier`; `DispatchResult.lint_held` names it for the reports.
+
+WAITING SESSIONS (ADR 0004)
+---------------------------
+A Jules session can stop mid-ticket to ask a question (`AWAITING_USER_FEEDBACK`)
+even with plan approval off and a prompt that says nobody is watching. Slackbot
+ticket 46 did exactly that. Such a session is live, so its claim is never released
+and the ticket waits for an answer nobody will give. `evaluate_waiting_sessions`
+answers for the developer: an `AnswerSessionAction` telling the session to proceed
+unattended, up to `config.max_auto_replies` times, then an
+`EscalateWaitingSessionAction` that marks the ticket `blocked` on its claim branch and
+tells the session to stop.
+
+The dispatcher keeps no state, so the reply count is read back from the session's
+own activity list: every message the engine sends starts with `AUTO_REPLY_MARKER` or
+`STOP_MARKER`, and the core counts those. A session whose activities could not be
+fetched carries no `activities` key and is never answered, because its reply count
+is unknown. A session whose newest activity is the engine's own reply has not
+processed it yet and is left alone, so two runs a minute apart do not spend two
+replies on one question. The agent's question is never copied into the brief: it is
+an API response body and the brief lands in a public repo (ADR 0002).
 """
 from __future__ import annotations
 
@@ -30,6 +57,7 @@ from typing import Any
 
 from ticket_engine.config import RepoConfig
 from ticket_engine.parser import ParseFinding, Ticket
+from ticket_engine.ticket_lint import lint_ticket
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +130,58 @@ class PauseRepoAction:
     reason: str = "Circuit breaker: two escalations within 24 hours"
 
 
+@dataclass(frozen=True)
+class AnswerSessionAction:
+    """Reply to a Jules session waiting on a question: proceed unattended (ADR 0004)."""
+
+    session_name: str
+    ticket_number: int
+    message: str
+    reply_number: int
+
+
+@dataclass(frozen=True)
+class EscalateWaitingSessionAction:
+    """A session kept asking after every allowed reply. Mark the ticket blocked on its
+    claim branch, then send `stop_message` so the session stops (ADR 0004)."""
+
+    ticket: Ticket
+    session_name: str
+    claim_ref: str
+    ticket_path: str
+    brief: str
+    stop_message: str
+    replies: int
+
+
+@dataclass(frozen=True)
+class EscalatedSessionStillWaiting:
+    """Report-only: a session the engine already escalated is still waiting."""
+
+    ticket_number: int
+    claim_ref: str
+
+
+# Every message the engine sends a session starts with one of these, so the core can
+# count its own replies from the session's activity list without keeping state.
+AUTO_REPLY_MARKER = "[ticket-engine auto-reply]"
+STOP_MARKER = "[ticket-engine escalated]"
+
+AUTO_REPLY_TEXT = (
+    f"{AUTO_REPLY_MARKER} No human is watching this session and nobody will answer "
+    "questions in it. Do not ask for confirmation, approval, or feedback. Make the "
+    "decision yourself from the ticket, its ADRs, and AGENTS.md, and carry on to the "
+    "end: run the full gate, mark the ticket done, and finish so the pull request "
+    "opens. If you are truly blocked (the ticket is ambiguous in a way that changes "
+    "the result, or it needs bench work or a human judgement call), set the ticket's "
+    "`Status:` to `blocked`, write the escalation brief under `## Comments`, and "
+    "finish the session instead of waiting."
+)
+
+_WAITING_STATE = "AWAITING_USER_FEEDBACK"
+_SESSION_TITLE_RE = re.compile(r"^(?P<effort>.+)-(?P<num>\d+):")
+
+
 # Every non-terminal Jules session state, plus legacy names older snapshots used.
 LIVE_SESSION_STATES = frozenset(
     {
@@ -121,6 +201,46 @@ LIVE_SESSION_STATES = frozenset(
 def is_live_session_state(state: object) -> bool:
     """True when a Jules session in this state is still working or waiting to work."""
     return str(state or "").strip().upper() in LIVE_SESSION_STATES
+
+
+def _session_source_matches(sess: dict[str, Any], repo: str) -> bool:
+    target = repo.strip().strip("/")
+    source = str((sess.get("sourceContext") or {}).get("source", "")).strip().strip("/")
+    return source in {target, f"sources/github/{target}"}
+
+
+def session_resource_name(sess: dict[str, Any]) -> str:
+    """The `sessions/<id>` name the Jules API addresses a session by. Pure."""
+    for key in ("name", "id"):
+        val = str(sess.get(key) or "").strip()
+        if val:
+            return val if val.startswith("sessions/") else f"sessions/{val}"
+    return ""
+
+
+def ticket_repo_path(ticket: Ticket) -> str:
+    """The ticket file's path relative to the repo root, forward slashes. Pure."""
+    if ticket.path is not None:
+        parts = ticket.path.parts
+        if ".scratch" in parts:
+            return "/".join(parts[parts.index(".scratch"):])
+    effort = ticket.effort or "phase-1"
+    return f".scratch/{effort}/issues/{ticket.number:02d}-{ticket.slug}.md"
+
+
+def _engine_message(activity: dict[str, Any]) -> str:
+    """The text of an activity if it is a user message, else ""."""
+    msg = activity.get("userMessaged")
+    if isinstance(msg, dict):
+        return str(msg.get("userMessage") or "")
+    return ""
+
+
+def _ordered_activities(activities: Sequence[Any]) -> list[dict[str, Any]]:
+    acts = [a for a in activities if isinstance(a, dict)]
+    if acts and all(a.get("createTime") for a in acts):
+        acts.sort(key=lambda a: str(a["createTime"]))
+    return acts
 
 
 def count_repo_starts(
@@ -180,6 +300,8 @@ class DispatchResult:
     actions: list[object]
     skipped_windows_tickets: list[Ticket]
     findings: list[ParseFinding]
+    # Frontier tickets not started because lint found they cannot land (ADR 0005).
+    lint_held: list[Ticket] = field(default_factory=list)
 
 
 def is_ticket_claimed(ticket: Ticket, claims: Sequence[Claim | str] | set[str]) -> bool:
@@ -293,6 +415,127 @@ def apply_escalation_to_ticket_text(ticket_text: str, brief: str) -> str:
     return updated
 
 
+def assemble_waiting_session_brief(
+    ticket: Ticket,
+    claim_ref: str,
+    session_name: str,
+    replies: int,
+    date: str,
+) -> str:
+    """Escalation brief for a session that kept asking after every allowed reply.
+
+    Same layout as `assemble_escalation_brief` (the ticket skill's format), one
+    attempt line per reply the engine sent. The agent's question is deliberately not
+    included: it is an API response body and this text is committed to a public repo.
+    """
+    goal = ""
+    wtb_match = re.search(
+        r"^(?:\*\*)?What to build:(?:\*\*)?\s*(.+)$",
+        ticket.raw_text or "",
+        re.MULTILINE | re.IGNORECASE,
+    )
+    if wtb_match:
+        sentences = re.split(r"(?<=[.!?])\s+", wtb_match.group(1).strip())
+        goal = sentences[0].strip()
+    goal = goal or ticket.title
+
+    attempts = [
+        f"Attempt {i}: engine auto-reply told the session to proceed unattended "
+        "→ the session stopped to ask again"
+        for i in range(1, replies + 1)
+    ]
+    parts = [
+        f"## Escalation — {date}",
+        f"Ticket: {ticket.number:02d} {ticket.title}   Branch: {claim_ref}",
+        f"Goal: {goal}",
+        *attempts,
+        "Failing output (exact, trimmed to the relevant lines):",
+        "```",
+        f"Jules session {session_name} is in {_WAITING_STATE} after {replies} auto-replies. "
+        "Its question is in the Jules web UI; it is not copied here (ADR 0002).",
+        "```",
+        "Decision needed: Answer the session's question in Jules, or rewrite the ticket "
+        "so it can be finished without one, then delete the claim branch to retry.",
+    ]
+    return "\n".join(parts) + "\n"
+
+
+def stop_message_text(replies: int) -> str:
+    return (
+        f"{STOP_MARKER} This session asked for input again after {replies} auto-replies. "
+        "The engine has marked the ticket blocked and will not answer again. Stop work "
+        "now and do not push further changes."
+    )
+
+
+def evaluate_waiting_sessions(snapshot: WorldSnapshot) -> list[object]:
+    """Decide what to do about this repo's Jules sessions that are waiting on a
+    question (ADR 0004). Pure: reads only the snapshot."""
+    cfg = snapshot.config
+    now = snapshot.now or datetime.datetime.now(datetime.UTC)
+    tickets = {t.number: t for t in snapshot.tickets}
+    actions: list[object] = []
+
+    for sess in snapshot.jules_sessions:
+        if not isinstance(sess, dict):
+            continue
+        if str(sess.get("state") or "").strip().upper() != _WAITING_STATE:
+            continue
+        if snapshot.repo_name and not _session_source_matches(sess, snapshot.repo_name):
+            continue
+        m = _SESSION_TITLE_RE.match(str(sess.get("title") or ""))
+        if not m:
+            continue
+        ticket = tickets.get(int(m.group("num")))
+        if ticket is None or ticket.is_done():
+            continue
+        if ticket.effort and m.group("effort") != ticket.effort:
+            continue
+        activities = sess.get("activities")
+        if not isinstance(activities, (list, tuple)):
+            continue  # history unknown: never answer blind
+        name = session_resource_name(sess)
+        if not name:
+            continue
+
+        acts = _ordered_activities(activities)
+        messages = [_engine_message(a) for a in acts]
+        effort = ticket.effort or "phase-1"
+        claim_ref = f"claim/{effort}/{ticket.number:02d}"
+
+        if any(msg.startswith(STOP_MARKER) for msg in messages):
+            actions.append(EscalatedSessionStillWaiting(ticket.number, claim_ref))
+            continue
+        if acts and messages[-1].startswith(AUTO_REPLY_MARKER):
+            continue  # the session has not processed the last reply yet
+        replies = sum(1 for msg in messages if msg.startswith(AUTO_REPLY_MARKER))
+
+        if replies < cfg.max_auto_replies:
+            actions.append(
+                AnswerSessionAction(
+                    session_name=name,
+                    ticket_number=ticket.number,
+                    message=AUTO_REPLY_TEXT,
+                    reply_number=replies + 1,
+                )
+            )
+        else:
+            actions.append(
+                EscalateWaitingSessionAction(
+                    ticket=ticket,
+                    session_name=name,
+                    claim_ref=claim_ref,
+                    ticket_path=ticket_repo_path(ticket),
+                    brief=assemble_waiting_session_brief(
+                        ticket, claim_ref, name, replies, now.strftime("%Y-%m-%d")
+                    ),
+                    stop_message=stop_message_text(replies),
+                    replies=replies,
+                )
+            )
+    return actions
+
+
 class DispatchCore:
     """Pure dispatch evaluator for ticket-engine."""
 
@@ -375,6 +618,10 @@ class DispatchCore:
                             reason=f"Stale claim: no live Jules session and no ticket-branch commit in {cfg.stale_claim_hours} hours",
                         )
                     )
+
+        # 1b. Sessions waiting on a question (ADR 0004). Before the pause check:
+        # a paused repo starts nothing new, but work in flight still finishes.
+        actions.extend(evaluate_waiting_sessions(snapshot))
 
         # Active claims excluding newly released stale claims
         active_claims = [c for c in snapshot.claims if (c.ref if isinstance(c, Claim) else str(c).strip()) not in stale_claim_refs]
@@ -480,11 +727,16 @@ class DispatchCore:
         remaining_quota_starts = max(0, remaining_quota - cfg.jules_reserve + 1)
         available_slots = min(available_slots, remaining_cap, remaining_quota_starts)
 
+        lint_held: list[Ticket] = []
         for ticket in frontier:
             if ticket.runner == "windows":
                 skipped_windows.append(ticket)
             elif is_ticket_claimed(ticket, active_claims):
                 continue
+            elif lint_ticket(ticket):
+                # ADR 0005: a ticket that cannot land as written is not started. It
+                # stays on the frontier (one definition of blocked) and is reported.
+                lint_held.append(ticket)
             else:
                 if len([a for a in actions if isinstance(a, StartTicketAction)]) < available_slots:
                     actions.append(StartTicketAction(ticket=ticket, runner=ticket.runner))
@@ -494,4 +746,5 @@ class DispatchCore:
             actions=actions,
             skipped_windows_tickets=skipped_windows,
             findings=all_findings,
+            lint_held=lint_held,
         )

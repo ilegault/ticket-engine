@@ -10,6 +10,15 @@ the PR's ticket file, swaps source paths to base_ref to run newly added tests wi
 configured test command, measures check runtime, invokes the pure IntegrityCore, formats the
 verdict report, writes GitHub step summaries, and updates PR comments and commit statuses via
 the GitHubClient. All I/O is kept in this adapter layer.
+
+ADR 0005:
+- The base branch's copy of the PR's ticket is read from git and passed to the core,
+  because only that copy may authorise deleting tests (a worker edits the PR's copy).
+- A `hold` reports the required status as **success**, labels the PR `engine:hold`,
+  and cancels any queued auto-merge. It used to report `pending`, and since the gate
+  is a required check that left the developer no way to merge a held PR. Green is
+  safe: only a `pass` enables auto-merge, so nothing but the developer's own click
+  merges a held PR. A later pass or fail removes the label.
 """
 from __future__ import annotations
 
@@ -182,6 +191,51 @@ def get_pr_diff_from_git(repo_path: pathlib.Path, base_ref: str) -> str:
     except (subprocess.SubprocessError, OSError) as exc:
         logger.warning("Failed to query git diff: %s", exc)
     return ""
+
+
+HOLD_LABEL = "engine:hold"
+_STATUS_DESCRIPTION_LIMIT = 140  # GitHub rejects longer commit-status descriptions
+
+
+def find_changed_ticket_path(repo_path: pathlib.Path, base_ref: str) -> str:
+    """Repo-relative path of the first ticket file the PR changed, or ""."""
+    try:
+        res = subprocess.run(
+            ["git", "diff", "--name-only", f"{base_ref}...HEAD"],
+            cwd=repo_path,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                norm = line.strip().replace("\\", "/")
+                if ".scratch/" in norm and "issues/" in norm and norm.endswith(".md"):
+                    return norm
+    except (subprocess.SubprocessError, OSError) as exc:
+        logger.warning("Failed to query git changed files for ticket: %s", exc)
+    return ""
+
+
+def base_ticket_content_from_git(repo_path: pathlib.Path, base_ref: str) -> str | None:
+    """The base branch's copy of the ticket the PR changed; None if it is new or unknown."""
+    rel = find_changed_ticket_path(repo_path, base_ref)
+    if not rel:
+        return None
+    try:
+        res = subprocess.run(
+            ["git", "show", f"{base_ref}:{rel}"],
+            cwd=repo_path,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        logger.warning("Failed to read the base copy of %s: %s", rel, exc)
+        return None
+    return res.stdout if res.returncode == 0 else None
 
 
 def find_ticket_content_from_git(repo_path: pathlib.Path, base_ref: str) -> str:
@@ -394,8 +448,10 @@ def run_integrity_gate(
 
     if ticket_path and ticket_path.is_file():
         ticket_content = ticket_path.read_text(encoding="utf-8")
+        base_ticket = None
     else:
         ticket_content = find_ticket_content_from_git(repo_path, base_ref)
+        base_ticket = base_ticket_content_from_git(repo_path, base_ref)
 
     actual_commit_messages = (
         commit_messages
@@ -431,6 +487,7 @@ def run_integrity_gate(
         commit_messages=actual_commit_messages,
         pr_text=pr_text,
         base_test_results=actual_base_results,
+        base_ticket=base_ticket,
     )
 
     comment_body = format_verdict_comment(verdict)
@@ -457,16 +514,16 @@ def run_integrity_gate(
                 logger.error("Failed to post or update PR comment: %s", exc)
 
         if head_sha:
-            status_state = (
-                "success"
-                if verdict.is_pass()
-                else ("failure" if verdict.is_fail() else "pending")
-            )
+            # A hold is green (ADR 0005): the developer merges it by hand.
+            status_state = "failure" if verdict.is_fail() else "success"
             desc = (
                 verdict.reasons[0]
                 if verdict.reasons
                 else f"Verdict: {verdict.verdict.value}"
             )
+            if verdict.is_hold():
+                desc = f"HOLD, merge by hand: {desc}"
+            desc = desc[:_STATUS_DESCRIPTION_LIMIT]
             try:
                 client.set_commit_status(
                     repo=repo_name,
@@ -507,6 +564,20 @@ def run_integrity_gate(
                 client.disable_auto_merge(repo=repo_name, pr_number=pr_number)
             except net_errors as exc:
                 logger.error("Failed to cancel auto-merge on PR #%s: %s", pr_number, exc)
+
+        # The hold label is how the developer (and the morning report) find held PRs.
+        if pr_number:
+            try:
+                if verdict.is_hold():
+                    client.add_issue_labels(
+                        repo=repo_name, issue_number=pr_number, labels=[HOLD_LABEL]
+                    )
+                else:
+                    client.remove_issue_label(
+                        repo=repo_name, issue_number=pr_number, label=HOLD_LABEL
+                    )
+            except net_errors as exc:
+                logger.error("Failed to update the %s label on PR #%s: %s", HOLD_LABEL, pr_number, exc)
 
     return 1 if verdict.is_fail() else 0
 

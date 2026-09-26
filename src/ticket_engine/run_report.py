@@ -53,6 +53,18 @@ class RunFacts:
     started: list[Ticket] = field(default_factory=list)
     claim_collisions: list[int] = field(default_factory=list)
     start_failures: list[int] = field(default_factory=list)
+    # Waiting Jules sessions (ADR 0004).
+    max_auto_replies: int = 2
+    # (ticket number, which reply this was)
+    auto_replies: list[tuple[int, int]] = field(default_factory=list)
+    # (ticket number, claim branch, replies sent before escalating)
+    session_escalations: list[tuple[int, str, int]] = field(default_factory=list)
+    # (ticket number, claim branch) for sessions escalated on an earlier run
+    still_escalated: list[tuple[int, str]] = field(default_factory=list)
+    # (ticket number, what failed: "reply to" / "escalate" / "stop", error text)
+    session_failures: list[tuple[int, str, str]] = field(default_factory=list)
+    # Ticket lint findings by ticket number (ADR 0005); these tickets are not started.
+    lint_findings: dict[int, list[str]] = field(default_factory=dict)
 
 
 def _label(ticket: Ticket) -> str:
@@ -172,6 +184,30 @@ def _limit_blocks(facts: RunFacts) -> list[str]:
     return out
 
 
+def _waiting_session_notes(facts: RunFacts) -> list[str]:
+    """What the engine did about sessions waiting on a question (ADR 0004)."""
+    out: list[str] = []
+    for n, k in facts.auto_replies:
+        out.append(
+            f"💬 Ticket {n:02d}: its Jules session stopped to ask a question; the engine "
+            f"told it to proceed unattended (reply {k} of {facts.max_auto_replies})."
+        )
+    for n, claim, r in facts.session_escalations:
+        out.append(
+            f"⛔ Ticket {n:02d} escalated: its Jules session kept asking for input after {r} "
+            f"auto-replies. Brief is on `{claim}`. Answer the session in Jules, or rework the "
+            "ticket and delete the claim branch to retry."
+        )
+    for n, claim in facts.still_escalated:
+        out.append(
+            f"⛔ Ticket {n:02d} is still escalated: its Jules session is waiting on a "
+            f"question. Brief is on `{claim}`."
+        )
+    for n, what, err in facts.session_failures:
+        out.append(f"⚠️ Ticket {n:02d}: could not {what} its waiting Jules session ({err}).")
+    return out
+
+
 def build_run_report(tickets: Sequence[Ticket], facts: RunFacts) -> str:
     """Markdown report of one dispatch run. Pure."""
     lines: list[str] = [f"## Ticket dispatch — {facts.repo or 'this repo'}", ""]
@@ -201,6 +237,7 @@ def build_run_report(tickets: Sequence[Ticket], facts: RunFacts) -> str:
         notes.append(f"Ticket {n:02d} was already claimed by another run; skipped.")
     for n in facts.start_failures:
         notes.append(f"Ticket {n:02d}: claim made but the Jules session failed to start.")
+    notes.extend(_waiting_session_notes(facts))
     if notes:
         lines.extend(f"- {n}" for n in notes)
         lines.append("")
@@ -217,6 +254,16 @@ def build_run_report(tickets: Sequence[Ticket], facts: RunFacts) -> str:
         )
         for n, ts in dups.items():
             lines.append(f"- **{n:02d}**: " + ", ".join(f"`{_where(t)}`" for t in ts))
+        lines.append("")
+
+    # --- Tickets that cannot land as written (ADR 0005) ----------------------
+    if facts.lint_findings:
+        by_number = {t.number: t for t in tickets}
+        lines.append("### 🧹 Tickets an agent cannot land as written (not started until fixed)")
+        for n in sorted(facts.lint_findings):
+            title = by_number[n].title if n in by_number else ""
+            for finding in facts.lint_findings[n]:
+                lines.append(f"- {n:02d} {title}: {finding}")
         lines.append("")
 
     # --- Needs you ---------------------------------------------------------

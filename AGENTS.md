@@ -113,10 +113,11 @@ verdict be tested from a static snapshot, and it is a **requirement**, not a sty
 |---|---|---|
 | Parse | `parser.py` | `Ticket`, `TicketParser`. Status, Blocked by, Runner, Auto-merge; legacy words become `ParseFinding`s, never `done` |
 | Config | `config.py` | `RepoConfig` from `.ticket-engine.toml`. Every tunable's one home |
-| **Dispatch core** | `dispatch.py` | `DispatchCore`: `compute_frontier`, `evaluate` → actions. `WorldSnapshot` in, `DispatchResult` out |
+| **Dispatch core** | `dispatch.py` | `DispatchCore`: `compute_frontier`, `evaluate` → actions. `WorldSnapshot` in, `DispatchResult` out. `evaluate_waiting_sessions`: answer or escalate a Jules session waiting on a question (ADR 0004) |
 | **Integrity core** | `integrity.py` | `IntegrityCore`: the seven checks of ADR 0001 + denylist → `IntegrityVerdict` |
 | **Bootstrap core** | `bootstrap.py` | `adopt`, `new`, `github_setup` → files to write and GitHub operations to perform |
 | Prompt | `prompt.py` | `assemble_prompt`: ticket skill + ticket path + orientation order. Pure |
+| Ticket lint | `ticket_lint.py` | `lint_ticket`: reasons a ticket cannot land as written (ADR 0005). Pure. The dispatcher does not start a ticket with findings |
 | Reports | `run_report.py`, `morning_report.py` | `build_run_report`, `render_morning_report`. Pure renderers |
 | Adapters | `github.py`, `jules.py`, `agy.py` | REST/GraphQL, the Jules API, the Antigravity CLI. Thin, injectable, faked in tests |
 | Orchestrators | `live_dispatch.py`, `integrity_runner.py`, `local_worker.py`, `cli.py`, `scripts/` | Wire adapters to cores. Do I/O. Decide nothing a core should decide |
@@ -234,6 +235,20 @@ Rules for every one of them:
 - **The integrity gate holds its own inputs.** A target-repo PR touching
   `.github/`, gate scripts, `docs/adr/`, `AGENTS.md` or `CONTEXT.md` is always held
   (ADR 0001 check 4). That is intended. Do not "fix" it.
+- **A hold is green, not pending** (ADR 0005). The gate is a required check, so a
+  `pending` hold made held PRs unmergeable even for the developer. Never change a hold
+  back to `pending` or `failure`. Only a `pass` may enable auto-merge; that, not the
+  status colour, is what keeps held PRs from merging on their own.
+- **Test deletions are authorised only by the base branch's ticket** (ADR 0005). The
+  gate reads `Deletes tests:` from the default branch's copy, never the PR's, so a
+  worker cannot authorise its own deletion. Keep it that way.
+- **A Jules session can stop to ask a question** (`AWAITING_USER_FEEDBACK`) even
+  with plan approval off and a prompt that says nobody is watching. The engine
+  answers it (ADR 0004): `max_auto_replies` auto-replies, then an escalation on the
+  claim branch. Never "fix" this by treating a waiting session as dead. That releases
+  its claim and starts the ticket a second time. Every message the engine sends
+  starts with `AUTO_REPLY_MARKER` or `STOP_MARKER`, because those markers are the
+  only record of what was sent. Keep them.
 - **Jules's CI Fixer may also react to red CI.** The dispatcher's three-attempt
   count is the authority either way.
 - **`.claude/` is gitignored.** Nothing a worker or reviewer needs may live there.
@@ -248,7 +263,9 @@ Rules for every one of them:
 - `CONTEXT.md`: the glossary. Use its words exactly. If a term and the code
   disagree, flag it; do not silently pick a side.
 - `docs/adr/0001` (auto-merge behind the integrity gate), `0002` (everything
-  public; privacy by checks), `0003` (held tickets block dependents). Binding.
+  public; privacy by checks), `0003` (held tickets block dependents), `0004` (the
+  engine answers a waiting worker), `0005` (landable tickets, authorised test
+  deletions, green holds). Binding.
 - `.scratch/phase-1/spec.md`: the Phase 1 spec. Its *Implementation Decisions*
   and *Testing Decisions* sections are the design of every module above.
 - `docs/agents/issue-tracker.md`: ticket format and status vocabulary.
@@ -292,6 +309,23 @@ For the planner session. None of this is for a worker.
 
 - **Route before planning.** Unsettled design → grill. Settled, one sitting → a
   plan. Settled with seams → spec, then tickets.
+- **Every ticket must be landable through the integrity gate** (ADR 0005). The gate
+  judges each PR unattended, so a ticket that asks for something the gate refuses can
+  never land, however well it is implemented.
+
+  1. **Never ask a worker to delete a test function** unless the ticket has a
+     `**Deletes tests:** <file>.py::<test>, ...` line listing each one. Prefer
+     rewriting a superseded test in place (same name, asserting the new behaviour),
+     which needs no line. Never ask a test file to lose assertions, except inside
+     the listed tests.
+  2. **A ticket that changes `.github/`, a gate script, `docs/adr/`, `AGENTS.md` or
+     `CONTEXT.md` is always held.** Mark it `Auto-merge: no` so it says so, and place it
+     as a leaf.
+  3. **Every ticket has `- [ ]` acceptance criteria.** Check 6 verifies them.
+  4. **The gate list in a ticket matches the repo's CI**, command for command.
+  5. **Run `dispatch --dry-run <path-to-target-clone>` and clear every
+     "Ticket problems" line before handing off.** The dispatcher will not start a
+     ticket that has one.
 - **Number from the highest existing ticket** (§7). Check every effort directory,
   not just the one you are writing into.
 - **Place `ready-for-developer` tickets as leaves** wherever the design allows

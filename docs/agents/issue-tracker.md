@@ -36,6 +36,24 @@ The implementer has none of the planner's context. Each criterion:
 About five criteria, or one handler, per ticket; split bigger work with
 `Blocked by:`. Roles, never names, anywhere in the ticket.
 
+**Every ticket must be landable through the integrity gate** (ADR 0005). The gate
+judges each PR unattended, so a ticket that asks for something the gate refuses can
+never land, however well it is implemented.
+
+1. **Never ask a worker to delete a test function** unless the ticket has a
+   `**Deletes tests:** <file>.py::<test>, ...` line listing each one. Prefer
+   rewriting a superseded test in place (same name, asserting the new behaviour),
+   which needs no line. Never ask a test file to lose assertions, except inside
+   the listed tests.
+2. **A ticket that changes `.github/`, a gate script, `docs/adr/`, `AGENTS.md` or
+   `CONTEXT.md` is always held.** Mark it `Auto-merge: no` so it says so, and place it
+   as a leaf.
+3. **Every ticket has `- [ ]` acceptance criteria.** Check 6 verifies them.
+4. **The gate list in a ticket matches the repo's CI**, command for command.
+5. **Run `dispatch --dry-run <path-to-target-clone>` and clear every
+   "Ticket problems" line before handing off.** The dispatcher will not start a
+   ticket that has one.
+
 ## Status vocabulary
 
 Exactly these five words, and nothing else:

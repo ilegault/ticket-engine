@@ -10,6 +10,10 @@ mandate that:
 2. Auth is via the `X-Goog-Api-Key` header.
 3. The adapter lists sessions and counts those created in the rolling 24 hours.
 4. Privacy invariant (ADR 0002): Prompts and API keys are NEVER logged or printed.
+5. ADR 0004: the dispatcher answers a session that stops to ask a question. It reads
+   the session's activities (`list_activities`) to count its own earlier replies and
+   replies with `send_message` (`POST /v1alpha/sessions/<id>:sendMessage`,
+   body `{"prompt": ...}`, empty response).
 """
 from __future__ import annotations
 
@@ -17,6 +21,7 @@ import datetime
 import json
 import logging
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -98,6 +103,33 @@ class JulesClient:
         if isinstance(data, dict):
             return data
         return {}
+
+    @staticmethod
+    def _session_path(session_name: str) -> str:
+        name = session_name.strip().strip("/")
+        return name if name.startswith("sessions/") else f"sessions/{name}"
+
+    def send_message(self, session_name: str, message: str) -> None:
+        """Send a user message to a session (ADR 0004). Never logs the message."""
+        self._request(
+            "POST", f"/{self._session_path(session_name)}:sendMessage", {"prompt": message}
+        )
+
+    def list_activities(self, session_name: str, page_size: int = 100) -> list[dict[str, Any]]:
+        """Every activity of a session, following `nextPageToken`."""
+        base = f"/{self._session_path(session_name)}/activities?pageSize={page_size}"
+        out: list[dict[str, Any]] = []
+        token = ""
+        while True:
+            endpoint = base + (f"&pageToken={urllib.parse.quote(token)}" if token else "")
+            data = self._request("GET", endpoint)
+            if not isinstance(data, dict):
+                break
+            out.extend(a for a in data.get("activities", []) if isinstance(a, dict))
+            token = str(data.get("nextPageToken") or "")
+            if not token:
+                break
+        return out
 
     def list_sessions(self) -> list[dict[str, Any]]:
         """List Jules sessions."""
