@@ -451,11 +451,15 @@ def assemble_waiting_session_brief(
         *attempts,
         "Failing output (exact, trimmed to the relevant lines):",
         "```",
-        f"Jules session {session_name} is in {_WAITING_STATE} after {replies} auto-replies. "
-        "Its question is in the Jules web UI; it is not copied here (ADR 0002).",
+        (
+            f"Jules session {session_name} is in {_WAITING_STATE} after {replies} auto-replies. "
+            "Its question is in the Jules web UI; it is not copied here (ADR 0002)."
+        ),
         "```",
-        "Decision needed: Answer the session's question in Jules, or rewrite the ticket "
-        "so it can be finished without one, then delete the claim branch to retry.",
+        (
+            "Decision needed: Answer the session's question in Jules, or rewrite the ticket "
+            "so it can be finished without one, then delete the claim branch to retry."
+        ),
     ]
     return "\n".join(parts) + "\n"
 

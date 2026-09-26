@@ -25,9 +25,9 @@ from ticket_engine.dispatch import DispatchCore, StartTicketAction, WorldSnapsho
 from ticket_engine.github import GitHubClient
 from ticket_engine.jules import JulesClient
 from ticket_engine.live_dispatch import LiveDispatcher
-from ticket_engine.ticket_lint import lint_tickets
 from ticket_engine.parser import Ticket, TicketParser
 from ticket_engine.run_report import build_run_report, write_step_summary
+from ticket_engine.ticket_lint import lint_tickets
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,11 @@ def run_work_windows(config_path: str | None, pipeline_token: str | None) -> int
         return 1
 
     github_client = GitHubClient(token=token)
-    agy_driver = AgyDriver()
+    agy_driver = AgyDriver(
+        print_timeout=local_cfg.print_timeout,
+        quota_error_patterns=local_cfg.quota_error_patterns,
+        auth_error_patterns=local_cfg.auth_error_patterns,
+    )
 
     worker = LocalWorker(
         config=local_cfg,
