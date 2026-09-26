@@ -62,6 +62,11 @@ def make_fake_github(claim_result: bool = True) -> object:
     mock.get_default_branch_sha.return_value = "abc123"
     mock.create_claim_branch.return_value = claim_result
     mock.list_claim_branches.return_value = []
+    mock.get_file_contents.return_value = {
+        "content": "# Ticket\n**Status:** ready-for-agent\n",
+        "sha": "def456",
+    }
+    mock.commit_file_change.return_value = {}
     return mock
 
 
@@ -503,11 +508,18 @@ def _make_worker_with_tickets(tickets: list[Ticket]) -> LocalWorker:
     )
 
 
-def _make_git_runner(call_log: list):
-    """Create a fake git runner that records calls."""
+def _make_git_runner(call_log: list, scripted: dict | None = None):
+    """Create a fake git runner that records calls (3-arg signature: args, cwd, env)."""
+    # By default rev-list returns "0" (0 unpushed commits) so worktree removal proceeds.
+    _scripted = {"rev-list": (0, "0"), **(scripted or {})}
 
-    def git_runner(args: list[str], cwd: str | None = None) -> tuple[int, str]:
-        call_log.append(args)
+    def git_runner(
+        args: list[str], cwd: str | None = None, env: dict | None = None
+    ) -> tuple[int, str]:
+        call_log.append(list(args))
+        for key, result in _scripted.items():
+            if key in args:
+                return result
         return 0, ""
 
     return git_runner
@@ -521,3 +533,335 @@ def _extract_worktree_path(args: list) -> str:
         return str(args[idx + 1])
     except (ValueError, IndexError):
         return ""
+
+
+# ---------------------------------------------------------------------------
+# AC1: Claim with Claimed-by, then branch from claim head
+# ---------------------------------------------------------------------------
+
+def test_run_one_commits_claimed_by_to_claim_branch():
+    """run_one commits the ticket file with Claimed-by: box to the claim branch."""
+    ticket = make_ticket(9, effort="box-primary-worker")
+    entry = make_repo_entry()
+    gh = make_fake_github()
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=gh,
+        agy_driver=AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}')),
+        git_runner=_make_git_runner([]),
+    )
+    worker.run_one(entry, ticket)
+
+    # get_file_contents must be called on the claim branch
+    gh.get_file_contents.assert_called_once()
+    _, kwargs = gh.get_file_contents.call_args
+    assert kwargs.get("ref") == "claim/box-primary-worker/09" or \
+        "claim/box-primary-worker/09" in gh.get_file_contents.call_args[0]
+
+    # commit_file_change must be called with Claimed-by: box in the content
+    gh.commit_file_change.assert_called_once()
+    committed_content = gh.commit_file_change.call_args[1].get("content") or \
+        gh.commit_file_change.call_args[0][2]
+    assert "box" in committed_content.lower()
+    assert "Claimed-by" in committed_content
+
+
+def test_run_one_git_arg_order_for_fresh_claim():
+    """Git args for a fresh claim are in order: ls-remote, fetch, worktree add."""
+    git_calls = []
+    ticket = make_ticket(9, effort="box-primary-worker")
+    entry = make_repo_entry()
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=make_fake_github(),
+        agy_driver=AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}')),
+        git_runner=_make_git_runner(git_calls),
+    )
+    worker.run_one(entry, ticket)
+
+    ticket_branch = "ticket/box-primary-worker-09-ticket-9"
+
+    ls_remote_calls = [c for c in git_calls if "ls-remote" in c]
+    assert ls_remote_calls, "git ls-remote must be called"
+    assert ticket_branch in ls_remote_calls[0]
+
+    fetch_calls = [c for c in git_calls if "fetch" in c and "ls-remote" not in c]
+    assert fetch_calls, "git fetch must be called"
+    assert "claim/box-primary-worker/09" in fetch_calls[0]
+
+    wt_add_calls = [c for c in git_calls if "worktree" in c and "add" in c]
+    assert wt_add_calls, "git worktree add must be called"
+    wt_args = wt_add_calls[0]
+    assert "-b" in wt_args
+    assert ticket_branch in wt_args
+    assert "origin/claim/box-primary-worker/09" in wt_args
+
+    # order: ls-remote first, then fetch, then worktree add
+    ls_idx = next(i for i, c in enumerate(git_calls) if "ls-remote" in c)
+    fetch_idx = next(i for i, c in enumerate(git_calls) if "fetch" in c and "ls-remote" not in c)
+    wt_idx = next(i for i, c in enumerate(git_calls) if "worktree" in c and "add" in c)
+    assert ls_idx < fetch_idx < wt_idx
+
+
+def test_run_one_resumes_from_existing_ticket_branch():
+    """When the ticket branch exists on remote, worktree uses --track (no -b)."""
+    git_calls = []
+    ticket_branch = "ticket/phase-1-09-ticket-9"
+    # ls-remote returns a non-empty line (ticket branch exists)
+    runner = _make_git_runner(
+        git_calls,
+        {"ls-remote": (0, f"abc123\trefs/heads/{ticket_branch}\n")},
+    )
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=make_fake_github(),
+        agy_driver=AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}')),
+        git_runner=runner,
+    )
+    worker.run_one(make_repo_entry(), make_ticket(9))
+
+    wt_add = [c for c in git_calls if "worktree" in c and "add" in c]
+    assert wt_add, "git worktree add must be called"
+    wt_args = wt_add[0]
+    assert "--track" in wt_args
+    assert f"origin/{ticket_branch}" in wt_args
+    assert "-b" not in wt_args
+
+
+# ---------------------------------------------------------------------------
+# AC2: Push after every run, and on a timer
+# ---------------------------------------------------------------------------
+
+def test_checkpoint_pusher_pushes_on_timer():
+    """CheckpointPusher pushes at 0, 20 min, and 40 min, then stops when event is set."""
+    import threading
+
+    from ticket_engine.local_worker import CheckpointPusher
+
+    push_calls = []
+    slept = []
+    stop_event = threading.Event()
+
+    def sleep_fn(secs):
+        slept.append(secs)
+        if len(slept) >= 2:
+            stop_event.set()
+
+    pusher = CheckpointPusher(
+        push_fn=lambda: push_calls.append(True),
+        interval_s=20 * 60,
+        sleep_fn=sleep_fn,
+    )
+    pusher.run_until(stop_event)
+
+    # Pushes at t=0, t=20min, t=40min
+    assert len(push_calls) == 3, f"Expected 3 pushes, got {len(push_calls)}"
+    assert all(s == 20 * 60 for s in slept)
+
+
+def test_push_after_agy_success():
+    """After agy returns success, the orchestrator pushes the ticket branch."""
+    git_calls = []
+    ticket = make_ticket(9, effort="phase-1")
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=make_fake_github(),
+        agy_driver=AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}')),
+        git_runner=_make_git_runner(git_calls),
+    )
+    worker.run_one(make_repo_entry(), ticket)
+
+    push_calls = [c for c in git_calls if "push" in c]
+    assert push_calls, "At least one push must happen after agy returns"
+    # Push refs must include the ticket branch
+    ticket_branch = "ticket/phase-1-09-ticket-9"
+    assert any(ticket_branch in " ".join(c) for c in push_calls)
+
+
+def test_push_after_agy_quota_failure():
+    """After agy returns a quota failure, the orchestrator still pushes."""
+    git_calls = []
+    ticket = make_ticket(9)
+
+    call_count = [0]
+
+    def run_fn(args, cwd=None):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return 1, '{"status": "ERROR", "message": "quota exhausted"}'
+        return 0, '{"status": "SUCCESS"}'
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=make_fake_github(),
+        agy_driver=AgyDriver(run_fn=run_fn),
+        git_runner=_make_git_runner(git_calls),
+        sleep_fn=lambda s: None,
+        read_ticket_fn=lambda p: "# T\n**Status:** in-progress\n\n## Comments\n",
+    )
+    worker.run_one(make_repo_entry(), ticket)
+
+    push_calls = [c for c in git_calls if "push" in c]
+    assert push_calls, "Push must happen even after quota failure"
+
+
+def test_failed_push_is_logged_not_fatal(caplog):
+    """A failed push is logged but does not stop the run."""
+    import logging
+
+    git_calls = []
+    ticket = make_ticket(9)
+    # push always fails
+    runner = _make_git_runner(git_calls, {"push": (1, "permission denied")})
+
+    with caplog.at_level(logging.WARNING, logger="ticket_engine.local_worker"):
+        worker = LocalWorker(
+            config=make_config(),
+            github_client=make_fake_github(),
+            agy_driver=AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}')),
+            git_runner=runner,
+        )
+        result = worker.run_one(make_repo_entry(), ticket)
+
+    # Run must complete (not raise)
+    assert result is True or result is False  # any bool, just not an exception
+    assert any("push" in r.getMessage().lower() for r in caplog.records), \
+        "Failed push must be logged"
+
+
+# ---------------------------------------------------------------------------
+# AC3: Token never on disk or in logs
+# ---------------------------------------------------------------------------
+
+def test_token_not_in_git_args_or_logs(caplog):
+    """The GitHub token and its base64 encoding never appear in git arg lists or logs."""
+    import base64
+    import logging
+
+    token = "tok-123"
+    token_b64 = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+
+    git_calls = []
+    git_envs = []
+
+    def recording_runner(args, cwd=None, env=None):
+        git_calls.append(list(args))
+        git_envs.append(env)
+        if "rev-list" in args:
+            return 0, "0"
+        return 0, ""
+
+    config = make_config(github_token=token)
+    ticket = make_ticket(9)
+
+    with caplog.at_level(logging.DEBUG, logger="ticket_engine.local_worker"):
+        worker = LocalWorker(
+            config=config,
+            github_client=make_fake_github(),
+            agy_driver=AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}')),
+            git_runner=recording_runner,
+        )
+        worker.run_one(make_repo_entry(), ticket)
+
+    all_args_text = " ".join(str(a) for args in git_calls for a in args)
+    assert token not in all_args_text, "Raw token must not appear in any git arg list"
+    assert token_b64 not in all_args_text, "Base64 token must not appear in any git arg list"
+
+    log_text = " ".join(r.getMessage() for r in caplog.records)
+    assert token not in log_text, "Raw token must not appear in logs"
+    assert token_b64 not in log_text, "Base64 token must not appear in logs"
+
+    # Push env must be present and contain the token only through the auth header
+    push_envs = [e for c, e in zip(git_calls, git_envs) if e and "push" in c]
+    assert push_envs, "Push calls must include an env dict"
+    auth_val = push_envs[0].get("GIT_CONFIG_VALUE_0", "")
+    assert token_b64 in auth_val, "Push env must carry base64-encoded token in auth header"
+
+
+# ---------------------------------------------------------------------------
+# AC4: Never remove a worktree with unpushed commits
+# ---------------------------------------------------------------------------
+
+def test_worktree_not_removed_when_unpushed_commits():
+    """When rev-list returns 2, worktree remove is never called."""
+    git_calls = []
+    runner = _make_git_runner(git_calls, {"rev-list": (0, "2")})
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=make_fake_github(),
+        agy_driver=AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}')),
+        git_runner=runner,
+    )
+    worker.run_one(make_repo_entry(), make_ticket(9))
+
+    remove_calls = [c for c in git_calls if "worktree" in c and "remove" in c]
+    assert not remove_calls, "Worktree must not be removed when there are unpushed commits"
+
+
+def test_force_never_passed_to_worktree_remove():
+    """--force is never passed to git worktree remove."""
+    git_calls = []
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=make_fake_github(),
+        agy_driver=AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}')),
+        git_runner=_make_git_runner(git_calls),
+    )
+    worker.run_one(make_repo_entry(), make_ticket(9))
+
+    for call in git_calls:
+        if "worktree" in call and "remove" in call:
+            assert "--force" not in call, "--force must never be passed to worktree remove"
+
+
+# ---------------------------------------------------------------------------
+# AC5: Skill section 6b is consistent; run_one works any runner
+# ---------------------------------------------------------------------------
+
+def test_skill_6b_no_push_the_work_no_continue():
+    """Ticket skill §6b contains no 'push the work' and no '--continue'."""
+    import re as _re
+
+    from ticket_engine.prompt import load_ticket_skill
+    skill = load_ticket_skill()
+
+    # Extract §6b text (from "## 6b." heading to the next "---" separator or heading).
+    match = _re.search(
+        r"^## 6b\..*?(?=\n---|\n## |\Z)",
+        skill,
+        _re.MULTILINE | _re.DOTALL,
+    )
+    assert match, "§6b section must exist in ticket_skill.md"
+    section_6b = match.group(0)
+
+    assert "push the work" not in section_6b, \
+        "§6b must not say 'push the work' — use 'commit the work'"
+    assert "--continue" not in section_6b, \
+        "§6b must not mention '--continue' — resuming uses a fresh session on the branch"
+
+
+def test_run_one_works_any_runner():
+    """run_one processes a ticket with runner='any' without skipping it."""
+    worked = []
+
+    def run_fn(args, cwd=None):
+        worked.append(args)
+        return 0, '{"status": "SUCCESS"}'
+
+    ticket = make_ticket(9, runner="any", effort="phase-1")
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=make_fake_github(),
+        agy_driver=AgyDriver(run_fn=run_fn),
+        git_runner=_make_git_runner([]),
+    )
+    result = worker.run_one(make_repo_entry(), ticket)
+
+    assert result is True, "run_one must succeed for runner='any'"
+    assert worked, "agy must be invoked for runner='any'"
