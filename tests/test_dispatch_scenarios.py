@@ -14,6 +14,7 @@ import datetime
 
 from ticket_engine.config import RepoConfig, load_repo_config
 from ticket_engine.dispatch import (
+    NO_BOX,
     Claim,
     DispatchCore,
     EscalatePRAction,

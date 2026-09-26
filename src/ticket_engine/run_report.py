@@ -19,6 +19,7 @@ and counts. Never prompts, secrets or API responses beyond an HTTP status line.
 """
 from __future__ import annotations
 
+import datetime
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -210,6 +211,38 @@ def _waiting_session_notes(facts: RunFacts) -> list[str]:
     return out
 
 
+def _box_line(facts: RunFacts) -> str:
+    """Format the box state summary line for the run report (ADR 0006)."""
+    if facts.box_state == "available":
+        time_str = ""
+        if facts.box_checked_in:
+            dt = (
+                facts.box_checked_in
+                if facts.box_checked_in.tzinfo is not None
+                else facts.box_checked_in.replace(tzinfo=datetime.UTC)
+            )
+            time_str = dt.astimezone(datetime.UTC).strftime("%H:%M")
+        left_str = ""
+        if facts.left_for_box:
+            left_str = f" Left for the box: {', '.join(_label(t) for t in facts.left_for_box)}."
+        return f"**Box:** available (checked in {time_str} UTC).{left_str}"
+    elif facts.box_state == "paused":
+        return "**Box:** paused — overflow to Jules is on."
+    elif facts.box_state == "silent":
+        time_str = ""
+        if facts.box_checked_in:
+            dt = (
+                facts.box_checked_in
+                if facts.box_checked_in.tzinfo is not None
+                else facts.box_checked_in.replace(tzinfo=datetime.UTC)
+            )
+            time_str = dt.astimezone(datetime.UTC).strftime("%H:%M")
+        return f"**Box:** silent since {time_str} UTC — overflow to Jules is on."
+    elif facts.box_state == "unreadable":
+        return "**Box:** status unreadable — overflow to Jules is on."
+    return ""
+
+
 def build_run_report(tickets: Sequence[Ticket], facts: RunFacts) -> str:
     """Markdown report of one dispatch run. Pure."""
     lines: list[str] = [f"## Ticket dispatch — {facts.repo or 'this repo'}", ""]
@@ -220,6 +253,10 @@ def build_run_report(tickets: Sequence[Ticket], facts: RunFacts) -> str:
         lines.extend(f"- {_label(t)} {t.title}" for t in facts.started)
     else:
         lines.append("**Started 0 tickets.**")
+    if facts.box_state != "none":
+        box_text = _box_line(facts)
+        if box_text:
+            lines.append(box_text)
     lines.append("")
 
     if facts.released_stale:

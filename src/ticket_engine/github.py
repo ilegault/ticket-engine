@@ -392,3 +392,26 @@ class GitHubClient:
                 return True
             raise
 
+    def list_issues(
+        self,
+        repo: str,
+        state: str = "open",
+        labels: str | list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """List issues for a repository, optionally filtered by state and labels."""
+        endpoint = f"/repos/{repo}/issues?state={state}"
+        if labels:
+            if isinstance(labels, (list, tuple)):
+                label_str = ",".join(labels)
+            else:
+                label_str = str(labels)
+            endpoint += f"&labels={urllib.parse.quote(label_str, safe=',')}"
+        try:
+            res = self._request("GET", endpoint)
+            return res if isinstance(res, list) else []
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return []
+            raise
+
+

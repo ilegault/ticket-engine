@@ -56,6 +56,8 @@ class RepoConfig:
     # Environment variables the repo's tests need (e.g. dummy API tokens its own CI
     # sets). The integrity gate sets them for check 7's test runs.
     test_env: dict[str, str] = field(default_factory=dict)
+    box_silent_hours: int = 12
+    box_enabled: bool = False
 
 
 def load_repo_config(repo_path: pathlib.Path | str | None = None) -> RepoConfig:
@@ -119,4 +121,6 @@ def load_repo_config(repo_path: pathlib.Path | str | None = None) -> RepoConfig:
         max_auto_replies=int(config_data.get("max_auto_replies", 2)),
         merge_method=str(config_data.get("merge_method", "merge")),
         test_env={str(k): str(v) for k, v in dict(config_data.get("test_env", {})).items()},
+        box_silent_hours=int(config_data.get("box_silent_hours", 12)),
+        box_enabled=bool(config_data.get("box_enabled", False)),
     )

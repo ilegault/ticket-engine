@@ -18,6 +18,7 @@ import datetime
 import urllib.error
 from unittest.mock import MagicMock
 
+from ticket_engine.box_status import BoxState, BoxStatus, render_box_status
 from ticket_engine.config import RepoConfig
 from ticket_engine.live_dispatch import LiveDispatcher
 from ticket_engine.parser import Ticket

@@ -31,14 +31,17 @@ import logging
 import urllib.error
 from typing import TYPE_CHECKING, Any
 
+from ticket_engine.box_status import BoxStatus, parse_box_status
 from ticket_engine.config import RepoConfig
 from ticket_engine.dispatch import (
+    NO_BOX,
     AnswerSessionAction,
     Claim,
     DispatchCore,
     EscalatedSessionStillWaiting,
     EscalatePRAction,
     EscalateWaitingSessionAction,
+    NoBox,
     OpenPR,
     PauseRepoAction,
     ReleaseClaimAction,
@@ -63,6 +66,9 @@ if TYPE_CHECKING:
     from ticket_engine.parser import Ticket
 
 logger = logging.getLogger(__name__)
+
+ENGINE_REPO = "ilegault/ticket-engine"
+
 
 
 class LiveDispatcher:
@@ -525,6 +531,8 @@ class LiveDispatcher:
             repo_starts_last_24h=repo_starts_24h,
             jules_sessions=all_sessions,
             paused=self.paused,
+            box=box,
+            box_status_error=box_status_error,
         )
         result = self.core.evaluate(snapshot)
 
