@@ -1,0 +1,9 @@
+{
+  "id": 555111222,
+  "number": 42,
+  "title": "phase-1-09: Add feature",
+  "state": "open",
+  "html_url": "https://github.com/owner/repo/pull/42",
+  "head": {"ref": "ticket/phase-1-09-add-feature"},
+  "base": {"ref": "master"}
+}

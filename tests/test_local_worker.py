@@ -56,17 +56,33 @@ def make_config(**kwargs) -> LocalWorkerConfig:
     )
 
 
+class _AllClaims(list):
+    """A list-like stand-in that reports every claim branch as present.
+
+    Most tests build the fake GitHub client before `run_one` knows the ticket
+    or effort it will claim, so `list_claim_branches` must answer "yes, the box
+    still holds this claim" for whatever branch name it is asked about, unless
+    a test overrides `list_claim_branches.return_value` with a real list (or an
+    empty one) to simulate a lost claim (ticket 29).
+    """
+
+    def __contains__(self, item: object) -> bool:
+        return True
+
+
 def make_fake_github(claim_result: bool = True) -> object:
     from unittest.mock import MagicMock
     mock = MagicMock()
     mock.get_default_branch_sha.return_value = "abc123"
     mock.create_claim_branch.return_value = claim_result
-    mock.list_claim_branches.return_value = []
+    mock.list_claim_branches.return_value = _AllClaims()
     mock.get_file_contents.return_value = {
         "content": "# Ticket\n**Status:** ready-for-agent\n",
         "sha": "def456",
     }
     mock.commit_file_change.return_value = {}
+    mock.find_open_pr.return_value = None
+    mock.create_pull_request.return_value = 1
     return mock
 
 
@@ -553,11 +569,14 @@ def test_run_one_commits_claimed_by_to_claim_branch():
     )
     worker.run_one(entry, ticket)
 
-    # get_file_contents must be called on the claim branch
-    gh.get_file_contents.assert_called_once()
-    _, kwargs = gh.get_file_contents.call_args
-    assert kwargs.get("ref") == "claim/box-primary-worker/09" or \
-        "claim/box-primary-worker/09" in gh.get_file_contents.call_args[0]
+    # get_file_contents must be called on the claim branch. (Ticket 29 also
+    # reads it via claim_still_mine before every push, so it is no longer
+    # called exactly once, but every call must be against the claim branch.)
+    assert gh.get_file_contents.call_args_list, "get_file_contents must be called"
+    for call in gh.get_file_contents.call_args_list:
+        _, kwargs = call
+        assert kwargs.get("ref") == "claim/box-primary-worker/09" or \
+            "claim/box-primary-worker/09" in call[0]
 
     # commit_file_change must be called with Claimed-by: box in the content
     gh.commit_file_change.assert_called_once()
@@ -865,3 +884,225 @@ def test_run_one_works_any_runner():
 
     assert result is True, "run_one must succeed for runner='any'"
     assert worked, "agy must be invoked for runner='any'"
+
+
+# ---------------------------------------------------------------------------
+# Ticket 29 AC1/AC2: PR adapter used only when the worktree ticket is done
+# ---------------------------------------------------------------------------
+
+def test_pr_opened_when_worktree_ticket_is_done():
+    """After a run leaving Status: done, create_pull_request is called once,
+    with head/base/title/body exactly as ticket 29 AC2 specifies."""
+    ticket = make_ticket(9, effort="phase-1")
+    ticket.title = "Add feature"
+    done_content = "# 09: Add feature\n**Status:** done\n\n## Comments\n"
+
+    mock_github = make_fake_github()
+    mock_github.find_open_pr.return_value = None
+    mock_github.create_pull_request.return_value = 42
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}')),
+        git_runner=_make_git_runner([]),
+        read_ticket_fn=lambda p: done_content,
+    )
+    success = worker.run_one(make_repo_entry(repo="owner/repo", path="/fake/repo"), ticket)
+
+    assert success
+    mock_github.create_pull_request.assert_called_once()
+    kwargs = mock_github.create_pull_request.call_args.kwargs
+    ticket_branch = "ticket/phase-1-09-ticket-9"
+    ticket_path = ".scratch/phase-1/issues/09-ticket-9.md"
+    assert kwargs["head"] == ticket_branch
+    assert kwargs["base"] == "master"
+    assert kwargs["title"] == "phase-1-09: Add feature"
+    assert kwargs["body"] == (
+        f"Ticket 09 worked by the box.\n\nTicket file: {ticket_path}\nBranch: {ticket_branch}"
+    )
+
+
+def test_no_second_pr_when_one_already_open():
+    """When find_open_pr already returns a number, create_pull_request is not called."""
+    ticket = make_ticket(9, effort="phase-1")
+    done_content = "# 09: Add feature\n**Status:** done\n"
+
+    mock_github = make_fake_github()
+    mock_github.find_open_pr.return_value = 7
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}')),
+        git_runner=_make_git_runner([]),
+        read_ticket_fn=lambda p: done_content,
+    )
+    success = worker.run_one(make_repo_entry(), ticket)
+
+    assert success
+    mock_github.create_pull_request.assert_not_called()
+
+
+def test_no_pr_when_worktree_ticket_left_in_progress():
+    """A run whose worktree ticket file is left at Status: in-progress opens no PR."""
+    ticket = make_ticket(9, effort="phase-1")
+    in_progress_content = "# 09: Add feature\n**Status:** in-progress\n"
+
+    mock_github = make_fake_github()
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}')),
+        git_runner=_make_git_runner([]),
+        read_ticket_fn=lambda p: in_progress_content,
+    )
+    worker.run_one(make_repo_entry(), ticket)
+
+    mock_github.create_pull_request.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Ticket 29 AC3/AC4: a box that has lost its claim drops the ticket
+# ---------------------------------------------------------------------------
+
+def test_lost_claim_gone_drops_worktree_without_pushing_or_pr(caplog):
+    """When the claim branch is gone before a quota-error resume, run_one
+    force-removes the worktree, pushes and PRs nothing more, and returns False."""
+    import logging
+
+    reset_time = "2026-09-23T06:00:00Z"
+    run_calls = []
+
+    def run_fn(args, cwd=None):
+        run_calls.append(list(args))
+        return 1, json.dumps(
+            {"status": "ERROR", "message": "quota exceeded", "reset_at": reset_time}
+        )
+
+    ticket = make_ticket(9, effort="phase-1")
+    git_calls = []
+    mock_github = make_fake_github()
+    mock_github.list_claim_branches.return_value = []  # claim branch gone
+
+    with caplog.at_level(logging.INFO, logger="ticket_engine.local_worker"):
+        worker = LocalWorker(
+            config=make_config(),
+            github_client=mock_github,
+            agy_driver=AgyDriver(run_fn=run_fn),
+            git_runner=_make_git_runner(git_calls),
+            sleep_fn=lambda s: None,
+            read_ticket_fn=lambda p: "# 09: Test\n**Status:** in-progress\n",
+        )
+        success = worker.run_one(make_repo_entry(), ticket)
+
+    assert success is False
+    mock_github.create_pull_request.assert_not_called()
+    p_calls = [a for a in run_calls if "-p" in a]
+    assert len(p_calls) == 1, "No resume attempt once the claim is lost"
+
+    push_calls = [c for c in git_calls if "push" in c]
+    assert not push_calls, "No push once the claim is lost"
+
+    remove_calls = [c for c in git_calls if "worktree" in c and "remove" in c]
+    assert remove_calls, "git worktree remove must be called"
+    assert "--force" in remove_calls[0], "The lost-claim removal must pass --force"
+
+    assert any("lost claim" in r.getMessage().lower() for r in caplog.records)
+
+
+def test_lost_claim_jules_holds_it_drops_worktree_without_pushing_or_pr(caplog):
+    """When the claim branch's ticket file reads Claimed-by: jules, the box
+    drops the ticket the same way as when the claim branch is gone."""
+    import logging
+
+    reset_time = "2026-09-23T06:00:00Z"
+    run_calls = []
+
+    def run_fn(args, cwd=None):
+        run_calls.append(list(args))
+        return 1, json.dumps(
+            {"status": "ERROR", "message": "quota exceeded", "reset_at": reset_time}
+        )
+
+    ticket = make_ticket(9, effort="phase-1")
+    git_calls = []
+    mock_github = make_fake_github()
+    mock_github.list_claim_branches.return_value = ["claim/phase-1/09"]
+    mock_github.get_file_contents.return_value = {
+        "content": "# 09: Test\n**Status:** in-progress\n**Claimed-by:** jules\n",
+        "sha": "def456",
+    }
+
+    with caplog.at_level(logging.INFO, logger="ticket_engine.local_worker"):
+        worker = LocalWorker(
+            config=make_config(),
+            github_client=mock_github,
+            agy_driver=AgyDriver(run_fn=run_fn),
+            git_runner=_make_git_runner(git_calls),
+            sleep_fn=lambda s: None,
+            read_ticket_fn=lambda p: "# 09: Test\n**Status:** in-progress\n",
+        )
+        success = worker.run_one(make_repo_entry(), ticket)
+
+    assert success is False
+    mock_github.create_pull_request.assert_not_called()
+    p_calls = [a for a in run_calls if "-p" in a]
+    assert len(p_calls) == 1, "No resume attempt once Jules holds the claim"
+
+    push_calls = [c for c in git_calls if "push" in c]
+    assert not push_calls, "No push once Jules holds the claim"
+
+    remove_calls = [c for c in git_calls if "worktree" in c and "remove" in c]
+    assert remove_calls, "git worktree remove must be called"
+    assert "--force" in remove_calls[0], "The lost-claim removal must pass --force"
+
+    assert any("lost claim" in r.getMessage().lower() for r in caplog.records)
+
+
+def test_pusher_stops_pushing_once_claim_is_lost_mid_run():
+    """The timer pusher's push check calls claim_still_mine before every push
+    and stops pushing once the claim list no longer contains the claim branch."""
+    import threading
+
+    from ticket_engine.local_worker import CheckpointPusher
+
+    git_calls = []
+    mock_github = make_fake_github()
+    mock_github.list_claim_branches.side_effect = [
+        ["claim/phase-1/09"],  # first check (t=0): still claimed
+        [],  # second check: claim gone
+        [],
+    ]
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}')),
+        git_runner=_make_git_runner(git_calls),
+    )
+
+    stop_event = threading.Event()
+    slept = []
+
+    def sleep_fn(secs):
+        slept.append(secs)
+        if len(slept) >= 2:
+            stop_event.set()
+
+    def push_fn():
+        worker._push_if_claimed(
+            "owner/repo",
+            "claim/phase-1/09",
+            ".scratch/phase-1/issues/09-ticket-9.md",
+            "/fake/worktree",
+            "ticket/phase-1-09-ticket-9",
+            None,
+        )
+
+    pusher = CheckpointPusher(push_fn=push_fn, interval_s=20 * 60, sleep_fn=sleep_fn)
+    pusher.run_until(stop_event)
+
+    push_calls = [c for c in git_calls if "push" in c]
+    assert len(push_calls) == 1, "Only the first push (while claimed) should have happened"
