@@ -27,7 +27,6 @@ from __future__ import annotations
 import datetime
 import logging
 import pathlib
-import re
 import time
 from collections.abc import Callable
 
@@ -37,7 +36,13 @@ from ticket_engine.dispatch import DispatchCore, WorldSnapshot
 from ticket_engine.github import GitHubClient
 from ticket_engine.local_config import LocalRepoEntry, LocalWorkerConfig
 from ticket_engine.parser import Ticket, TicketParser
-from ticket_engine.prompt import assemble_prompt, load_ticket_skill
+from ticket_engine.prompt import (
+    assemble_prompt,
+    load_ticket_skill,
+)
+from ticket_engine.prompt import (
+    extract_progress_note as _extract_progress_note,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -307,12 +312,6 @@ def _seconds_until_reset(reset_at: datetime.datetime | None) -> float:
     return max(delta, 0.0)
 
 
-def _extract_progress_note(ticket_text: str) -> str:
-    """Extract the most recent progress note from the ## Comments section."""
-    match = re.search(r"^##\s+Comments\s*\n(.*?)(?=^##|\Z)", ticket_text, re.MULTILINE | re.DOTALL)
-    if not match:
-        return ""
-    return match.group(1).strip()
 
 
 def _assemble_checkpoint_prompt(

@@ -23,6 +23,13 @@ Phase 1 Spec §Implementation Decisions and Ticket 06 / Ticket 07 Acceptance Cri
    to the claim branch and then send the stop message. The stop message is sent only
    after the commit lands, because the stop marker is what tells later runs the
    ticket is already escalated.
+10. ADR 0006 rule 6 / ticket 25: before evaluating, an unclaimed frontier ticket is
+    checked for a box checkpoint — a ticket branch the box pushed and released whose
+    head differs from the default branch. When one exists, its progress note is read
+    and carried into `WorldSnapshot.checkpoints`, so the pure core can attach a
+    `Handoff` to the `StartTicketAction` it hands Jules. This detection is the
+    adapter's job, not the core's, because it needs a branch-head SHA comparison and
+    a file read that a pure function cannot do.
 """
 from __future__ import annotations
 
@@ -41,6 +48,7 @@ from ticket_engine.dispatch import (
     EscalatedSessionStillWaiting,
     EscalatePRAction,
     EscalateWaitingSessionAction,
+    Handoff,
     NoBox,
     OpenPR,
     PauseRepoAction,
@@ -56,7 +64,7 @@ from ticket_engine.dispatch import (
     ticket_repo_path,
 )
 from ticket_engine.parser import TicketParser
-from ticket_engine.prompt import assemble_prompt, load_ticket_skill
+from ticket_engine.prompt import assemble_prompt, extract_progress_note, load_ticket_skill
 from ticket_engine.run_report import RunFacts
 from ticket_engine.ticket_lint import lint_tickets
 
@@ -550,6 +558,70 @@ class LiveDispatcher:
                 box = None
                 box_status_error = str(exc)
 
+        # 4e. Detect a box checkpoint for an unclaimed frontier ticket, to hand off
+        # to Jules (ADR 0006 rule 6, ticket 25). `Runner: windows` tickets are never
+        # handed to Jules, so their checkpoints (if any) are not worth reading here.
+        checkpoints: dict[int, Handoff] = {}
+        frontier_for_checkpoints = self.core.compute_frontier(WorldSnapshot(tickets=tickets))
+        for ticket in frontier_for_checkpoints:
+            if ticket.runner == "windows" or not ticket.slug:
+                continue
+            effort = ticket.effort or "phase-1"
+            if f"claim/{effort}/{ticket.number:02d}" in existing_claims:
+                continue
+            ticket_branch = f"ticket/{effort}-{ticket.number:02d}-{ticket.slug}"
+            try:
+                branch_head_time = self.github_client.get_branch_head_time(self.repo, ticket_branch)
+            except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                logger.warning(
+                    "Failed to check ticket branch %s for a box checkpoint on %s: %s",
+                    ticket_branch,
+                    self.repo,
+                    exc,
+                )
+                continue
+            if branch_head_time is None:
+                continue  # No box checkpoint branch pushed for this ticket.
+
+            try:
+                branch_sha = self.github_client.get_default_branch_sha(self.repo, ticket_branch)
+            except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                logger.warning(
+                    "Failed to read head SHA for ticket branch %s on %s: %s",
+                    ticket_branch,
+                    self.repo,
+                    exc,
+                )
+                continue
+            if branch_sha == base_sha:
+                continue  # Ticket branch never diverged from the default branch.
+
+            ticket_path_str = (
+                str(ticket.path).replace("\\", "/")
+                if ticket.path
+                else f".scratch/{effort}/issues/{ticket.number:02d}-{ticket.slug}.md"
+            )
+            try:
+                info = self.github_client.get_file_contents(
+                    repo=self.repo,
+                    path=ticket_path_str,
+                    ref=ticket_branch,
+                )
+            except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+                logger.warning(
+                    "Failed to read ticket file on branch %s for %s: %s",
+                    ticket_branch,
+                    self.repo,
+                    exc,
+                )
+                continue
+            content = (info.get("content") or "") if isinstance(info, dict) else ""
+            if not content:
+                continue
+            checkpoints[ticket.number] = Handoff(
+                branch=ticket_branch, note=extract_progress_note(content)
+            )
+
         # 5. Build WorldSnapshot and evaluate pure core
         snapshot = WorldSnapshot(
             tickets=tickets,
@@ -561,6 +633,7 @@ class LiveDispatcher:
             paused=self.paused,
             box=box,
             box_status_error=box_status_error,
+            checkpoints=checkpoints,
         )
         result = self.core.evaluate(snapshot)
 
@@ -637,7 +710,9 @@ class LiveDispatcher:
                 )
 
             # 7. Assemble prompt (pure, no logging of content)
-            prompt = assemble_prompt(self.skill_text, self.repo, ticket_path_str)
+            prompt = assemble_prompt(
+                self.skill_text, self.repo, ticket_path_str, handoff=action.handoff
+            )
 
             # 8. Create Jules session
             title = f"{effort}-{ticket.number:02d}: {ticket.title}"

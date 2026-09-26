@@ -21,6 +21,15 @@ The prompt brings together:
    without doing this, because the skill only told local workers to; the tickets then
    read as unfinished, kept their claims, and blocked the queue. It lives here for the
    same reason as rule 4, and the integrity gate fails any PR that skips it.
+6. An optional handoff section (ADR 0006 rule 6, ticket 25) when the box already
+   pushed a checkpoint for this ticket before it was released to Jules. The Jules
+   session still starts from the default branch, never the checkpoint branch,
+   because the PR Jules opens must have the default branch as its base; merging
+   the checkpoint into the session's own working copy is how it picks up where the
+   box left off without changing that base. The merge is best effort by design: if
+   the box's branch has diverged in a way that cannot fast-forward or auto-merge,
+   the worker starts the ticket fresh rather than getting stuck resolving another
+   worker's conflict.
 
 CRITICAL PRIVACY AND LOGGING INVARIANT:
 As required by ADR 0002 and the Phase 1 Spec: Prompts and secrets must NEVER
@@ -31,7 +40,10 @@ remain a pure function without I/O or logging side effects.
 from __future__ import annotations
 
 import pathlib
+import re
 from importlib import resources
+
+from ticket_engine.dispatch import Handoff
 
 _DEFAULT_SKILL_REL_PATH = pathlib.Path(".agents/skills/ticket/SKILL.md")
 
@@ -101,11 +113,25 @@ def _final_step_rule(ticket_path: str) -> str:
     )
 
 
-def assemble_prompt(skill_text: str, repo: str, ticket_path: str) -> str:
+def _handoff_section(handoff: Handoff) -> str:
+    return (
+        f"A previous worker pushed a checkpoint to branch {handoff.branch}.\n"
+        f"Run: git fetch origin {handoff.branch} && git merge --no-edit FETCH_HEAD\n"
+        "If that fails, start the ticket fresh from the default branch and say so under ## Comments.\n"
+        f"{handoff.note}"
+    )
+
+
+def assemble_prompt(
+    skill_text: str, repo: str, ticket_path: str, handoff: Handoff | None = None
+) -> str:
     """Assemble the prompt for an implementing worker (such as Jules).
 
     Takes the runner-agnostic skill text, the target repository name, and the
-    ticket path, and returns the full prompt.
+    ticket path, and returns the full prompt. When `handoff` is given, a
+    checkpoint section tells the worker to fetch and merge the branch the box
+    already pushed for this ticket and continue from its progress note
+    (ADR 0006 rule 6). Without a handoff, the output is unchanged.
 
     In accordance with ADR 0002 and the Spec, this function does NO logging,
     printing, or external I/O.
@@ -128,11 +154,38 @@ def assemble_prompt(skill_text: str, repo: str, ticket_path: str) -> str:
         "## UNATTENDED RUN — NO HUMAN IS WATCHING",
         _UNATTENDED_RULE,
         "",
-        "## FINAL STEP — MARK THE TICKET DONE IN THIS PR",
-        _final_step_rule(clean_ticket_path),
-        "",
-        "## TICKET IMPLEMENTATION SKILL AND RULES",
-        skill_text.strip(),
     ]
 
+    if handoff is not None:
+        prompt_parts.extend(
+            [
+                "## HANDOFF — CONTINUE FROM A CHECKPOINT",
+                _handoff_section(handoff),
+                "",
+            ]
+        )
+
+    prompt_parts.extend(
+        [
+            "## FINAL STEP — MARK THE TICKET DONE IN THIS PR",
+            _final_step_rule(clean_ticket_path),
+            "",
+            "## TICKET IMPLEMENTATION SKILL AND RULES",
+            skill_text.strip(),
+        ]
+    )
+
     return "\n".join(prompt_parts)
+
+
+def extract_progress_note(ticket_text: str) -> str:
+    """Extract the most recent progress note from a ticket's ## Comments section.
+
+    Shared by the live dispatcher (for a box's handoff to Jules, ADR 0006 rule 6)
+    and the local worker's own checkpoint/resume prompt, so both read a ticket's
+    progress note the same way.
+    """
+    match = re.search(r"^##\s+Comments\s*\n(.*?)(?=^##|\Z)", ticket_text, re.MULTILINE | re.DOTALL)
+    if not match:
+        return ""
+    return match.group(1).strip()

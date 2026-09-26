@@ -17,6 +17,7 @@ from ticket_engine.dispatch import (
     Claim,
     DispatchCore,
     EscalatePRAction,
+    Handoff,
     OpenPR,
     PauseRepoAction,
     ReleaseClaimAction,
@@ -377,3 +378,56 @@ def test_scenario_box_stale_claim_evaluated():
     assert releases[0].reason == "Stale box claim: no checkpoint in 8 hours"
 
 
+
+
+# --- Handoff (ticket 25 / ADR 0006 rule 6) ---------------------------------
+
+
+def test_evaluate_attaches_checkpoint_handoff_to_start_action():
+    ticket_with_checkpoint = make_ticket(1)
+    ticket_without_checkpoint = make_ticket(2)
+    handoff = Handoff(branch="ticket/box-primary-worker-1-ticket-1", note="Next: criterion 2.")
+
+    config = RepoConfig(concurrency=2, daily_cap=10)
+    snapshot = WorldSnapshot(
+        tickets=[ticket_with_checkpoint, ticket_without_checkpoint],
+        config=config,
+        checkpoints={1: handoff},
+    )
+
+    result = DispatchCore().evaluate(snapshot)
+    starts = {a.ticket.number: a for a in result.actions if isinstance(a, StartTicketAction)}
+
+    assert starts[1].handoff == handoff
+    assert starts[2].handoff is None
+
+
+def test_windows_ticket_with_checkpoint_is_never_handed_off():
+    windows_ticket = make_ticket(1, runner="windows")
+    handoff = Handoff(branch="ticket/box-primary-worker-1-ticket-1", note="Next: criterion 2.")
+
+    config = RepoConfig(concurrency=2, daily_cap=10)
+
+    # Box unavailable: normal Jules-eligible path.
+    snapshot = WorldSnapshot(
+        tickets=[windows_ticket],
+        config=config,
+        checkpoints={1: handoff},
+    )
+    result = DispatchCore().evaluate(snapshot)
+    assert not any(isinstance(a, StartTicketAction) for a in result.actions)
+    assert windows_ticket in result.skipped_windows_tickets
+
+    # Box available: frontier is left to the box, still no StartTicketAction.
+    from ticket_engine.box_status import BoxState, BoxStatus
+
+    box_snapshot = WorldSnapshot(
+        tickets=[windows_ticket],
+        config=config,
+        checkpoints={1: handoff},
+        box=BoxStatus(
+            checked_in_at=datetime.datetime.now(datetime.UTC), state=BoxState.idle
+        ),
+    )
+    box_result = DispatchCore().evaluate(box_snapshot)
+    assert not any(isinstance(a, StartTicketAction) for a in box_result.actions)
