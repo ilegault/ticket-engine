@@ -1,0 +1,2 @@
+{"type": "system", "subtype": "init", "session_id": "sess-2"}
+{"type": "system", "subtype": "api_retry", "error": "rate_limit"}

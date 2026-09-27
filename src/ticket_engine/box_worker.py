@@ -76,6 +76,7 @@ from ticket_engine.github import GitHubClient
 from ticket_engine.local_config import LocalRepoEntry, LocalWorkerConfig, load_local_config
 from ticket_engine.local_worker import LocalWorker, _load_tickets_from_path
 from ticket_engine.parser import Ticket
+from ticket_engine.sonnet import SonnetDriver
 
 logger = logging.getLogger(__name__)
 
@@ -556,7 +557,17 @@ def build_loop(config: LocalWorkerConfig) -> BoxLoop:
         quota_error_patterns=config.quota_error_patterns,
         auth_error_patterns=config.auth_error_patterns,
     )
-    worker = LocalWorker(config=config, github_client=github_client, agy_driver=agy_driver)
+    sonnet_driver = (
+        SonnetDriver(timeout_seconds=config.sonnet_timeout_seconds)
+        if config.sonnet_enabled
+        else None
+    )
+    worker = LocalWorker(
+        config=config,
+        github_client=github_client,
+        agy_driver=agy_driver,
+        sonnet_driver=sonnet_driver,
+    )
     return BoxLoop(config=config, worker=worker, github_client=github_client)
 
 

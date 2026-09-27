@@ -151,6 +151,7 @@ def run_work_windows(config_path: str | None, pipeline_token: str | None) -> int
     from ticket_engine.agy import AgyDriver
     from ticket_engine.local_config import load_local_config
     from ticket_engine.local_worker import LocalWorker
+    from ticket_engine.sonnet import SonnetDriver
 
     local_cfg = load_local_config(config_path)
     token = pipeline_token or os.environ.get("PIPELINE_TOKEN", "")
@@ -164,11 +165,17 @@ def run_work_windows(config_path: str | None, pipeline_token: str | None) -> int
         quota_error_patterns=local_cfg.quota_error_patterns,
         auth_error_patterns=local_cfg.auth_error_patterns,
     )
+    sonnet_driver = (
+        SonnetDriver(timeout_seconds=local_cfg.sonnet_timeout_seconds)
+        if local_cfg.sonnet_enabled
+        else None
+    )
 
     worker = LocalWorker(
         config=local_cfg,
         github_client=github_client,
         agy_driver=agy_driver,
+        sonnet_driver=sonnet_driver,
     )
     return worker.run()
 

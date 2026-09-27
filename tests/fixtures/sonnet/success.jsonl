@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "sess-1"}
+{"type": "assistant", "message": {"content": [{"type": "text", "text": "Implementing ticket."}]}}
+{"type": "result", "subtype": "success", "total_cost_usd": 0.0431, "session_id": "sess-1"}
