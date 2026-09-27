@@ -40,6 +40,13 @@ Phase 1 Spec §Implementation Decisions and Ticket 06 / Ticket 07 Acceptance Cri
     on the default branch or whose claim branch is gone
     (`_close_resolved_escalations`). A failed issue call is logged and recorded
     in `RunFacts.issue_failures`, never raised.
+12. Ticket 37: done tickets' claims are released at the top of every run, paused
+    or not, before any Jules quota call — the paused path, a failed
+    `count_recent_sessions` call, and a live-session match by title alone across
+    every repo and effort each used to leave a finished ticket holding a
+    concurrency slot. `_release_done_claims` fetches claim branches and Jules
+    sessions itself and hands them to the pure `dispatch.release_done_claims`,
+    which decides what to release and what to keep, and why.
 """
 from __future__ import annotations
 
@@ -76,7 +83,7 @@ from ticket_engine.dispatch import (
     count_repo_starts,
     evaluate_waiting_sessions,
     insert_claimed_by,
-    is_live_session_state,
+    release_done_claims,
     session_resource_name,
     ticket_repo_path,
 )
@@ -440,6 +447,67 @@ class LiveDispatcher:
             elif isinstance(action, EscalatedSessionStillWaiting):
                 facts.still_escalated.append((action.ticket_number, action.claim_ref))
 
+    def _release_done_claims(self, tickets: list[Ticket], facts: RunFacts) -> set[str]:
+        """Release claim branches whose ticket is already done, before any Jules
+        quota call and whether or not the repo is paused (ticket 37).
+
+        Calls `github_client.list_claim_branches` and `jules_client.list_sessions`
+        itself so this runs at the very top of `dispatch()`, ahead of the paused
+        check and the separate quota-counting calls those make later. A failure to
+        list either is never raised: a claim branch listing failure returns an
+        empty set (nothing to release this run), and a session listing failure is
+        passed to the core as `None`, which keeps every done claim rather than
+        releasing one blind.
+        """
+        try:
+            claim_refs = self.github_client.list_claim_branches(self.repo)
+        except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+            logger.warning("Failed to list claim branches for %s: %s", self.repo, exc)
+            return set()
+
+        sessions: list[dict[str, Any]] | None
+        try:
+            sessions = self.jules_client.list_sessions()
+        except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+            logger.warning(
+                "Failed to list Jules sessions while releasing done claims for %s: %s",
+                self.repo,
+                exc,
+            )
+            sessions = None
+
+        released_actions, kept = release_done_claims(tickets, claim_refs, sessions, self.repo)
+
+        released: set[str] = set()
+        for action in released_actions:
+            try:
+                self.github_client.delete_branch(repo=self.repo, branch=action.claim_ref)
+                logger.info(
+                    "Released done claim branch %s for %s (ticket %02d is done)",
+                    action.claim_ref,
+                    self.repo,
+                    action.ticket_number,
+                )
+                facts.released_done_claims.append((action.ticket_number, action.claim_ref))
+                released.add(action.claim_ref)
+            except urllib.error.HTTPError as exc:
+                logger.error("Failed to release done claim %s: %s", action.claim_ref, exc)
+                facts.kept_done_claims.append(
+                    (action.ticket_number, action.claim_ref, f"deleting the branch failed (HTTP {exc.code})")
+                )
+            except (urllib.error.URLError, ValueError, OSError) as exc:
+                logger.error("Failed to release done claim %s: %s", action.claim_ref, exc)
+                facts.kept_done_claims.append(
+                    (
+                        action.ticket_number,
+                        action.claim_ref,
+                        f"deleting the branch failed ({type(exc).__name__})",
+                    )
+                )
+
+        facts.kept_done_claims.extend(kept)
+        return released
+
     def dispatch(self, tickets: list[Ticket]) -> list[Ticket]:
         """Evaluate frontier and launch Jules sessions for eligible tickets.
 
@@ -459,6 +527,12 @@ class LiveDispatcher:
             lint_findings=lint_tickets(tickets),
         )
         self.last_run = facts
+
+        # Release done tickets' claims first, before the paused check and any Jules
+        # quota call, so a finished ticket never keeps holding a concurrency slot
+        # just because this run was paused or a later quota call failed (ticket 37).
+        released_done_refs = self._release_done_claims(tickets, facts)
+
         if self.paused:
             logger.info("Repository %s is paused (TICKET_ENGINE_PAUSED). Starting nothing.", self.repo)
             # Work in flight still finishes, so a waiting session is still answered.
@@ -510,53 +584,10 @@ class LiveDispatcher:
         # 4a. Answer or escalate sessions waiting on a question (ADR 0004).
         self._handle_waiting_sessions(tickets, all_sessions, facts)
 
-        # 4b. Release claim branches for tickets that are already done.
-        # A claim branch only ever gets created (step 6 below); nothing else
-        # ever deletes it. Once a ticket's PR has merged, its file on the
-        # default branch reads Status: done, so if there is also no Jules
-        # session still live for it, the claim it made is stale right now,
-        # not just after some staleness window. Releasing it immediately
-        # (rather than waiting on the separate, currently-unused staleness
-        # sweep) is what keeps a concurrency slot from being lost forever
-        # every time a ticket finishes.
+        # 4b. Subtract this run's already-released done claims, so a claim freed
+        # above frees its concurrency slot in the same run (ticket 37).
+        existing_claims -= released_done_refs
         ticket_by_number = {t.number: t for t in tickets}
-        released_claims: set[str] = set()
-        for claim_ref in existing_claims:
-            claim_parts = claim_ref.strip("/").split("/")
-            claim_ticket_num = int(claim_parts[-1]) if claim_parts[-1].isdigit() else None
-            claim_ticket = (
-                ticket_by_number.get(claim_ticket_num)
-                if claim_ticket_num is not None
-                else None
-            )
-            if claim_ticket is None or not claim_ticket.is_done():
-                continue
-
-            has_live_session = any(
-                isinstance(s, dict)
-                and is_live_session_state(s.get("state"))
-                and (
-                    f"-{claim_ticket_num:02d}:" in s.get("title", "")
-                    or f"-{claim_ticket_num}:" in s.get("title", "")
-                )
-                for s in all_sessions
-            )
-            if has_live_session:
-                continue
-
-            try:
-                self.github_client.delete_branch(repo=self.repo, branch=claim_ref)
-                logger.info(
-                    "Released completed claim branch %s for %s (ticket %02d is done)",
-                    claim_ref,
-                    self.repo,
-                    claim_ticket_num,
-                )
-                released_claims.add(claim_ref)
-            except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
-                logger.error("Failed to release completed claim %s: %s", claim_ref, exc)
-
-        existing_claims -= released_claims
         facts.repo_starts_24h = repo_starts_24h
         facts.claims_in_flight = sorted(existing_claims)
 

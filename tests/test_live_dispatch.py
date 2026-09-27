@@ -195,7 +195,12 @@ def test_live_dispatch_does_not_release_claim_with_live_jules_session():
     mock_jules = MagicMock()
     mock_jules.count_recent_sessions.return_value = 5
     mock_jules.list_sessions.return_value = [
-        {"id": "sessions/live1", "state": "RUNNING", "title": "phase-1-01: Still Going"}
+        {
+            "id": "sessions/live1",
+            "state": "RUNNING",
+            "title": "phase-1-01: Still Going",
+            "sourceContext": {"source": "sources/github/owner/repo"},
+        }
     ]
 
     config = RepoConfig(default_branch="master", concurrency=2)
@@ -213,6 +218,81 @@ def test_live_dispatch_does_not_release_claim_with_live_jules_session():
     dispatcher.dispatch(tickets=tickets)
 
     mock_github.delete_branch.assert_not_called()
+
+
+def test_live_dispatch_releases_done_claim_even_when_paused():
+    mock_github = MagicMock()
+    mock_github.list_claim_branches.return_value = ["claim/phase-1/01"]
+
+    mock_jules = MagicMock()
+    mock_jules.list_sessions.return_value = []
+
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        paused=True,
+    )
+
+    tickets = [make_ticket(1, title="Already Shipped", status="done")]
+
+    started = dispatcher.dispatch(tickets=tickets)
+
+    assert started == []
+    mock_github.delete_branch.assert_called_once_with(repo="owner/repo", branch="claim/phase-1/01")
+
+
+def test_live_dispatch_releases_done_claim_even_when_jules_quota_call_fails():
+    mock_github = MagicMock()
+    mock_github.get_default_branch_sha.return_value = "base123sha"
+    mock_github.list_claim_branches.return_value = ["claim/phase-1/01"]
+
+    mock_jules = MagicMock()
+    mock_jules.list_sessions.return_value = []
+    mock_jules.count_recent_sessions.side_effect = urllib.error.URLError("no route")
+
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=RepoConfig(default_branch="master", concurrency=2),
+    )
+
+    tickets = [make_ticket(1, title="Already Shipped", status="done")]
+
+    started = dispatcher.dispatch(tickets=tickets)
+
+    assert started == []
+    assert "could not query Jules sessions" in dispatcher.last_run.stopped_early
+    mock_github.delete_branch.assert_called_once_with(repo="owner/repo", branch="claim/phase-1/01")
+
+
+def test_live_dispatch_records_kept_reason_when_deleting_done_claim_fails():
+    mock_github = MagicMock()
+    mock_github.get_default_branch_sha.return_value = "base123sha"
+    mock_github.list_claim_branches.return_value = ["claim/phase-1/01"]
+    mock_github.delete_branch.side_effect = urllib.error.HTTPError(
+        "https://api.github.com/x", 403, "Forbidden", {}, None  # type: ignore[arg-type]
+    )
+
+    mock_jules = MagicMock()
+    mock_jules.list_sessions.return_value = []
+    mock_jules.count_recent_sessions.return_value = 0
+
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=RepoConfig(default_branch="master", concurrency=2),
+    )
+
+    tickets = [make_ticket(1, title="Already Shipped", status="done")]
+
+    dispatcher.dispatch(tickets=tickets)
+
+    assert dispatcher.last_run.kept_done_claims == [
+        (1, "claim/phase-1/01", "deleting the branch failed (HTTP 403)")
+    ]
 
 
 def test_live_dispatch_writes_claimed_by_jules_to_claim_branch():

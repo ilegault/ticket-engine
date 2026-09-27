@@ -198,6 +198,38 @@ def test_limits_under_their_thresholds_are_not_flagged():
     assert "claims in flight: 0/2" in report
 
 
+def test_released_done_claim_names_ticket_and_ref():
+    facts = RunFacts(released_done_claims=[(16, "claim/needs-you-waiting-on/16")])
+    report = build_run_report([], facts)
+    assert (
+        "🧹 Ticket 16 is done; released its claim `claim/needs-you-waiting-on/16`."
+        in report
+    )
+
+
+def test_kept_done_claim_names_ticket_ref_and_reason():
+    facts = RunFacts(
+        kept_done_claims=[
+            (16, "claim/needs-you-waiting-on/16", "a live Jules session for this ticket is still open (RUNNING)")
+        ]
+    )
+    report = build_run_report([], facts)
+    assert (
+        "⚠️ Ticket 16 is done but its claim `claim/needs-you-waiting-on/16` was kept: "
+        "a live Jules session for this ticket is still open (RUNNING)." in report
+    )
+
+
+def test_paused_run_report_still_shows_released_done_claim():
+    facts = RunFacts(paused=True, released_done_claims=[(16, "claim/needs-you-waiting-on/16")])
+    report = build_run_report([], facts)
+    assert "Repo is **paused**" in report
+    assert (
+        "🧹 Ticket 16 is done; released its claim `claim/needs-you-waiting-on/16`."
+        in report
+    )
+
+
 def test_paused_repo_says_paused():
     report = build_run_report([], RunFacts(paused=True))
     assert "Repo is **paused**" in report
