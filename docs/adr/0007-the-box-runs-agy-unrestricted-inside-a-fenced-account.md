@@ -23,10 +23,10 @@ account. The engine and every target repo are public (ADR 0002).
    The developer's storage belongs to his own account, and `agent` is denied
    access to it. A runaway agent can damage only its own account.
 3. **The box's GitHub token is fine-grained and narrow.** It covers the target
-   repos with Contents, Pull requests and Issues read/write, and the engine repo
-   with Issues read/write only. It has no Workflows permission and no
-   Administration permission, and it expires. The token lives only in the `agent`
-   account's secrets file.
+   repos with Contents, Pull requests and Issues read/write, and Variables read,
+   and the engine repo with Issues read/write only. It has no Workflows permission
+   and no Administration permission, and it expires. The token lives only in the
+   `agent` account's secrets file.
 4. **The box posts only fixed-template text to the engine repo.** The box status
    issue and box alerts are short status lines: states, ticket IDs, times. Raw
    error output and logs are never posted. A test enforces this.
@@ -44,3 +44,11 @@ account. The engine and every target repo are public (ADR 0002).
   yet.
 - Setting up the box includes a one-time interactive `agy` login under the `agent`
   account.
+
+## Amendment — 2026-09-26
+
+Rule 3's token gains **Variables: read** on the target repos. Reading
+`TICKET_ENGINE_PAUSED` is the only non-public read the box needs to honour a
+pause; without it, the circuit breaker that stops the dispatcher cannot stop
+the box. The developer approved this scope during spec review for the
+box-primary-worker effort.
