@@ -69,7 +69,8 @@ by* ticket is `done`. First by number wins. The frontier is computed from
 - **Jules worker** — a Jules session in Google's cloud. Linux. Takes `Runner: any`.
 - **Local worker** — the Antigravity CLI (`agy`) on one of the developer's
   machines, started by the engine's local command. It takes any ticket. See
-  **Box**.
+  **Box**. May optionally fall back to a Claude Sonnet session (`claude -p`)
+  on an agy quota error, when configured; still one ticket, one PR.
 
 **Box** — the developer's Windows mini PC, running the local worker permanently.
 The highest-priority worker: it takes any ticket, `windows` included (ADR 0006).
@@ -115,7 +116,7 @@ from. Jules workers do not checkpoint: a running Jules session is never cut
 off by quota.
 
 **Quota reserve** — the headroom the dispatcher keeps. Jules: never start a
-session when fewer than 10 of the rolling-24-hour allowance remain. Local worker: no pre-flight reserve (agy exposes no quota reading); it pauses on a quota error and keeps its claim.
+session when fewer than 10 of the rolling-24-hour allowance remain. Local worker: no pre-flight reserve (agy exposes no quota reading); it pauses on a quota error and keeps its claim. That pause is reached only once an optional Claude Sonnet fallback, when configured, has also been tried and also reports quota.
 
 **Daily cap** — the most tickets the dispatcher will start in one target repo in
 24 hours. A blast-radius limit, not a quota limit. Configured per repo.
