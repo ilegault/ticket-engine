@@ -1039,6 +1039,9 @@ def test_check_6_ticket_marked_done_with_no_test_change_fails():
 
 def test_check_6_ticket_marked_done_with_a_test_change_is_not_flagged():
     base_tree = {"tests/test_a.py": "def test_a():\n    assert 1 == 1\n"}
+    base_tree[".scratch/e/issues/38-t.md"] = (
+        "# 38: T\n**Status:** in-progress\n## Acceptance criteria\n- [ ] Built it\n"
+    )
     head_tree = dict(base_tree)
     head_tree[".scratch/e/issues/38-t.md"] = _DONE_TICKET_TEXT
     head_tree["tests/test_b.py"] = "def test_b():\n    assert 2 == 2\n"
@@ -1092,6 +1095,9 @@ _HEADINGLESS_DONE = (
 
 def _eval_ticket(ticket_text: str):
     base_tree = {"tests/test_a.py": "def test_a():\n    assert 1 == 1\n"}
+    base_tree[".scratch/e/issues/35-t.md"] = (
+        "# 35: T\n\n**Status:** ready-for-agent\n\n**What to build:** a thing.\n"
+    )
     head_tree = dict(base_tree)
     head_tree[".scratch/e/issues/35-t.md"] = ticket_text
     head_tree["tests/test_b.py"] = "def test_b():\n    assert 2 == 2\n"
@@ -1123,3 +1129,66 @@ def test_check_6_acceptance_heading_after_comments_is_still_read():
     )
     verdict = _eval_ticket(ticket)
     assert verdict.verdict == Verdict.PASS, verdict.reasons
+
+
+def test_check_8_new_ticket_file_produces_hold():
+    base_tree = {"tests/test_sample.py": "def test_a(): assert True\n"}
+    pr_diff = textwrap.dedent("""
+        diff --git a/.scratch/e/issues/50-new.md b/.scratch/e/issues/50-new.md
+        new file mode 100644
+        --- /dev/null
+        +++ b/.scratch/e/issues/50-new.md
+        @@ -0,0 +1,4 @@
+        +# 50: New
+        +**Status:** done
+        +## Acceptance criteria
+        +- [x] All done
+    """).strip() + "\n"
+    ticket_content = (
+        "# 50: New\n**Status:** done\n## Acceptance criteria\n- [x] All done\n"
+    )
+    ticket = TicketParser().parse_text(ticket_content, filename="50-new.md")
+    core = IntegrityCore()
+
+    verdict = core.evaluate(
+        base_tree=base_tree,
+        pr_diff=pr_diff,
+        ticket=ticket,
+    )
+
+    assert verdict.verdict == Verdict.HOLD
+    assert any(
+        "Check 8 hold" in r and ".scratch/e/issues/50-new.md" in r for r in verdict.reasons
+    )
+
+
+def test_check_8_editing_an_existing_ticket_file_is_not_flagged():
+    base_tree = {
+        "tests/test_sample.py": "def test_a(): assert True\n",
+        ".scratch/e/issues/50-t.md": (
+            "# 50: T\n**Status:** in-progress\n## Acceptance criteria\n- [ ] x\n"
+        ),
+    }
+    pr_diff = textwrap.dedent("""
+        diff --git a/.scratch/e/issues/50-t.md b/.scratch/e/issues/50-t.md
+        --- a/.scratch/e/issues/50-t.md
+        +++ b/.scratch/e/issues/50-t.md
+        @@ -1,3 +1,3 @@
+         # 50: T
+        -**Status:** in-progress
+        +**Status:** done
+         ## Acceptance criteria
+        -- [ ] x
+        +- [x] x
+    """).strip() + "\n"
+    ticket_content = "# 50: T\n**Status:** done\n## Acceptance criteria\n- [x] x\n"
+    ticket = TicketParser().parse_text(ticket_content, filename="50-t.md")
+    core = IntegrityCore()
+
+    verdict = core.evaluate(
+        base_tree=base_tree,
+        pr_diff=pr_diff,
+        ticket=ticket,
+    )
+
+    assert not any("Check 8" in r for r in verdict.reasons)

@@ -55,6 +55,16 @@ def test_tiny_fixture_project_new_test_fails_on_base_passes(tmp_path: pathlib.Pa
         "[tool.pytest.ini_options]\npythonpath = ['src']\n", encoding="utf-8"
     )
 
+    ticket_dir = tmp_path / ".scratch" / "phase-1" / "issues"
+    ticket_dir.mkdir(parents=True)
+    (ticket_dir / "05-new-feature.md").write_text(
+        "# 05: New feature\n"
+        "**Status:** ready-for-agent\n"
+        "## Acceptance criteria\n"
+        "- [ ] Multiply works\n",
+        encoding="utf-8",
+    )
+
     subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True, stdin=subprocess.DEVNULL)
     subprocess.run(["git", "commit", "-m", "base commit"], cwd=tmp_path, check=True, capture_output=True, stdin=subprocess.DEVNULL)
 
@@ -76,8 +86,6 @@ def test_tiny_fixture_project_new_test_fails_on_base_passes(tmp_path: pathlib.Pa
         encoding="utf-8",
     )
 
-    ticket_dir = tmp_path / ".scratch" / "phase-1" / "issues"
-    ticket_dir.mkdir(parents=True)
     (ticket_dir / "05-new-feature.md").write_text(
         "# 05: New feature\n"
         "**Status:** done\n"

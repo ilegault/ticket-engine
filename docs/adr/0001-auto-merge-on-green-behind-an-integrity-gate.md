@@ -2,7 +2,8 @@
 
 **Status:** accepted; amended by ADR 0005 (check 2 honours a ticket's
 `Deletes tests:` line from the base branch; a `hold` reports green and the developer
-merges it by hand)
+merges it by hand); amended by ADR 0008 (check 8: a PR that creates a new ticket
+file always holds)
 **Date:** 2026-09-23
 **Applies to:** every target repo wired to the engine
 
@@ -35,6 +36,8 @@ move those ADRs forbid.
    6. the ticket file is `done` with every acceptance box ticked;
    7. the PR's **new** tests fail when run against the base branch's code. A test
       that already passes before the feature exists is not testing the feature.
+   8. no new ticket file (one absent from the base branch) is added by the PR ->
+      `hold`, always, whatever the other checks say.
    It also runs the people-denylist scan (ADR 0002).
 3. **A ticket marked `Auto-merge: no` always ends in `hold`**, whatever the
    checks say. The planner sets this on safety-critical tickets.

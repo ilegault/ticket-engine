@@ -19,6 +19,7 @@ Checks implemented:
 - Check 5: tests-first escape hatch used (label, commit/PR tag) -> hold (ADR 0001 §2.5).
 - Check 6: ticket must be done with every acceptance box ticked (ADR 0001 §2.6).
 - Check 7: new test functions run against base source must fail on base; any new test passing on base -> hold, listing the tests (ADR 0001 §2.7). Silent if no new tests.
+- Check 8: PR adds a ticket file absent from the base branch -> hold, naming it. Fires independently of every other check (ADR 0001 §2.8, ADR 0008).
 - Auto-merge: no producing a merge hold regardless of other checks (ADR 0001 §3).
 - Verdict precedence: when both fail and hold reasons exist, verdict is fail (ADR 0001).
 """
@@ -198,6 +199,37 @@ def get_diff_changed_paths(
             if p and p != "/dev/null":
                 changed_paths.add(p.replace("\\", "/"))
     return changed_paths
+
+
+def get_diff_added_paths(
+    pr_diff: str | Mapping[str, str], base_tree: Mapping[str, str]
+) -> set[str]:
+    """Paths present in the PR but absent from `base_tree` (ADR 0008)."""
+    if isinstance(pr_diff, Mapping):
+        return {p.replace("\\", "/") for p in pr_diff if p not in base_tree}
+
+    added_paths: set[str] = set()
+    file_chunks: list[str] = []
+    lines = pr_diff.splitlines(keepends=True)
+    current_chunk: list[str] = []
+    for line in lines:
+        if line.startswith("diff --git ") and current_chunk:
+            file_chunks.append("".join(current_chunk))
+            current_chunk = []
+        current_chunk.append(line)
+    if current_chunk:
+        file_chunks.append("".join(current_chunk))
+
+    for chunk in file_chunks:
+        old_p = new_p = None
+        for line in chunk.splitlines():
+            if line.startswith("--- "):
+                old_p = line[4:].strip().removeprefix("a/")
+            elif line.startswith("+++ "):
+                new_p = line[4:].strip().removeprefix("b/")
+        if old_p == "/dev/null" and new_p and new_p != "/dev/null":
+            added_paths.add(new_p.replace("\\", "/"))
+    return added_paths
 
 
 def get_diff_added_lines_with_locations(
@@ -835,6 +867,16 @@ class IntegrityCore:
             if failed:
                 is_failing = True
                 reasons.append("Check fail: Test execution results indicate test failure")
+
+        # 8. Check 8: PR creates a new ticket file -> always hold (ADR 0001, ADR 0008).
+        added_paths = get_diff_added_paths(pr_diff, base_tree)
+        new_ticket_files = sorted(p for p in added_paths if _TICKET_FILE_RE.match(p))
+        if new_ticket_files:
+            is_holding = True
+            reasons.append(
+                "Check 8 hold: PR creates new ticket file(s), which always need the "
+                f"developer's own merge: {', '.join(new_ticket_files)}"
+            )
 
         # 9. Check auto-merge flag (ADR 0001 §3)
         if not ticket_obj.auto_merge:

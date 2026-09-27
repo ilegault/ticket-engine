@@ -1,0 +1,10 @@
+diff --git a/.scratch/e/issues/50-new.md b/.scratch/e/issues/50-new.md
+new file mode 100644
+--- /dev/null
++++ b/.scratch/e/issues/50-new.md
+@@ -0,0 +1,5 @@
++# 50: Check 8 new-ticket fixture
++**Status:** done
++**Blocked by:** None
++## Acceptance criteria
++- [x] All done
