@@ -81,6 +81,7 @@ from ticket_engine.prompt import (
 from ticket_engine.prompt import (
     extract_progress_note as _extract_progress_note,
 )
+from ticket_engine.sonnet import SonnetDriver
 
 logger = logging.getLogger(__name__)
 
@@ -138,10 +139,12 @@ class LocalWorker:
         ticket_loader: Callable[[LocalRepoEntry], list[Ticket]] | None = None,
         read_ticket_fn: Callable[[str | pathlib.Path], str] | None = None,
         write_ticket_fn: Callable[[str | pathlib.Path, str], None] | None = None,
+        sonnet_driver: SonnetDriver | None = None,
     ) -> None:
         self.config = config
         self.github_client = github_client
         self.agy_driver = agy_driver
+        self.sonnet_driver = sonnet_driver
         self._git_runner: GitRunner = (
             git_runner if git_runner is not None else _default_git_runner
         )
@@ -156,6 +159,21 @@ class LocalWorker:
         self._write_ticket = (
             write_ticket_fn if write_ticket_fn is not None else _default_write_ticket
         )
+
+    def _start_with_fallback(self, prompt: str, cwd: str) -> object:
+        """Try agy first; fall back to Sonnet only on an agy quota error.
+
+        Ticket 40 (spec §LocalWorker changes): every agy call site goes
+        through this method instead of calling agy_driver.start directly, so
+        _resolve_outcome's resume/auto-reply/escalation counters and
+        box_mode's return-to-caller pause behaviour only ever see the
+        combined result, whichever driver produced it.
+        """
+        result = self.agy_driver.start(prompt, cwd=cwd)
+        if result.quota_error and self.sonnet_driver is not None:
+            logger.info("agy out of quota; falling back to Sonnet for this attempt.")
+            return self.sonnet_driver.start(prompt, cwd=cwd)
+        return result
 
     @property
     def skill_text(self) -> str:
@@ -261,7 +279,7 @@ class LocalWorker:
 
         try:
             prompt = assemble_prompt(self.skill_text, entry.repo, ticket_path)
-            result = self.agy_driver.start(prompt, cwd=worktree_path)
+            result = self._start_with_fallback(prompt, cwd=worktree_path)
         finally:
             stop_event.set()
             pusher_thread.join(timeout=5)
@@ -326,7 +344,7 @@ class LocalWorker:
         fix_section = "\n\n## CI FAILED — FIX IT\n" + "\n".join(
             f"- {name}" for name in failing
         )
-        result = self.agy_driver.start(base_prompt + fix_section, cwd=worktree_path)
+        result = self._start_with_fallback(base_prompt + fix_section, cwd=worktree_path)
 
         push_env = _make_push_env(self.config.github_token) if self.config.github_token else None
         self._push_if_claimed(
@@ -464,7 +482,7 @@ class LocalWorker:
         checkpoint_prompt = _assemble_checkpoint_prompt(
             self.skill_text, entry.repo, ticket_path, progress_note
         )
-        return self.agy_driver.start(checkpoint_prompt, cwd=worktree_path)
+        return self._start_with_fallback(checkpoint_prompt, cwd=worktree_path)
 
     def _send_auto_reply(
         self, entry: LocalRepoEntry, ticket_path: str, worktree_path: str
@@ -472,7 +490,7 @@ class LocalWorker:
         """Start a fresh agy session whose prompt ends with `dispatch.AUTO_REPLY_TEXT`
         (ADR 0004: answer a waiting worker exactly as the engine answers Jules)."""
         prompt = assemble_prompt(self.skill_text, entry.repo, ticket_path)
-        return self.agy_driver.start(f"{prompt}\n\n{AUTO_REPLY_TEXT}", cwd=worktree_path)
+        return self._start_with_fallback(f"{prompt}\n\n{AUTO_REPLY_TEXT}", cwd=worktree_path)
 
     def _escalate(
         self,

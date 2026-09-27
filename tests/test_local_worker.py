@@ -18,11 +18,12 @@ import json
 
 import pytest
 
-from ticket_engine.agy import AgyDriver
+from ticket_engine.agy import AgyDriver, AgyResult
 from ticket_engine.dispatch import AUTO_REPLY_TEXT
 from ticket_engine.local_config import LocalRepoEntry, LocalWorkerConfig, load_local_config
 from ticket_engine.local_worker import LocalWorker
 from ticket_engine.parser import Ticket
+from ticket_engine.sonnet import SonnetResult
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1365,3 +1366,217 @@ def test_quota_outcomes_never_count_toward_resumes_or_escalate():
     mock_github.create_issue.assert_not_called()
     mock_github.convert_pr_to_draft.assert_not_called()
     mock_github.create_pull_request.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Ticket 40: LocalWorker falls back to Sonnet when agy is out of quota
+# ---------------------------------------------------------------------------
+
+class _FakeStepDriver:
+    """A bare test double exposing .start and recording every call's prompt/cwd.
+
+    Results are queued one per call; the last result repeats for any call
+    past the end of the queue.
+    """
+
+    def __init__(self, results):
+        self._results = list(results)
+        self.calls: list[tuple[str, str | None]] = []
+
+    def start(self, prompt: str, cwd: str | None = None):
+        self.calls.append((prompt, cwd))
+        idx = min(len(self.calls) - 1, len(self._results) - 1)
+        return self._results[idx]
+
+
+def test_start_with_fallback_no_sonnet_configured_passes_quota_through():
+    """With sonnet_driver=None (the default), a quota result passes through unchanged."""
+    quota_result = AgyResult(outcome="quota", quota_error=True)
+    agy = _FakeStepDriver([quota_result])
+
+    worker = LocalWorker(
+        config=make_config(), github_client=make_fake_github(), agy_driver=agy
+    )
+    result = worker._start_with_fallback("prompt", cwd="/worktree")
+
+    assert result is quota_result
+    assert agy.calls == [("prompt", "/worktree")]
+
+
+def test_start_with_fallback_agy_quota_sonnet_succeeds():
+    """agy quota, Sonnet configured and succeeds: the caller sees Sonnet's result."""
+    agy = _FakeStepDriver([AgyResult(outcome="quota", quota_error=True)])
+    success_result = SonnetResult(outcome="success", success=True)
+    sonnet = _FakeStepDriver([success_result])
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=make_fake_github(),
+        agy_driver=agy,
+        sonnet_driver=sonnet,
+    )
+    result = worker._start_with_fallback("prompt", cwd="/worktree")
+
+    assert result is success_result
+    assert agy.calls == [("prompt", "/worktree")]
+    assert sonnet.calls == [("prompt", "/worktree")]
+
+
+def test_start_with_fallback_agy_quota_sonnet_also_quota():
+    """agy quota, Sonnet also quota: the combined result is Sonnet's quota result,
+    with each driver called exactly once (no ping-pong)."""
+    agy_quota = AgyResult(outcome="quota", quota_error=True)
+    sonnet_quota = SonnetResult(outcome="quota", quota_error=True)
+    agy = _FakeStepDriver([agy_quota])
+    sonnet = _FakeStepDriver([sonnet_quota])
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=make_fake_github(),
+        agy_driver=agy,
+        sonnet_driver=sonnet,
+    )
+    result = worker._start_with_fallback("prompt", cwd="/worktree")
+
+    assert result is sonnet_quota
+    assert result.quota_error is True
+    assert len(agy.calls) == 1
+    assert len(sonnet.calls) == 1
+
+
+@pytest.mark.parametrize("outcome", ["success", "waiting", "timeout", "failed"])
+def test_start_with_fallback_non_quota_never_calls_sonnet(outcome):
+    """agy succeeds or fails for a non-quota reason: Sonnet is never called."""
+    agy_result = AgyResult(outcome=outcome, success=(outcome == "success"))
+    agy = _FakeStepDriver([agy_result])
+    sonnet = _FakeStepDriver([SonnetResult(outcome="success", success=True)])
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=make_fake_github(),
+        agy_driver=agy,
+        sonnet_driver=sonnet,
+    )
+    result = worker._start_with_fallback("prompt", cwd="/worktree")
+
+    assert result is agy_result
+    assert sonnet.calls == []
+
+
+def test_run_one_first_attempt_falls_back_to_sonnet_on_quota():
+    """run_one's first attempt goes through _start_with_fallback: an agy quota
+    result there also reaches sonnet_driver.start, with the identical prompt/cwd."""
+    ticket = make_ticket(9)
+    agy = _FakeStepDriver([AgyResult(outcome="quota", quota_error=True)])
+    sonnet = _FakeStepDriver([SonnetResult(outcome="success", success=True)])
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=make_fake_github(),
+        agy_driver=agy,
+        sonnet_driver=sonnet,
+        git_runner=_make_git_runner([]),
+        sleep_fn=lambda s: None,
+    )
+    success = worker.run_one(make_repo_entry(), ticket)
+
+    assert success is True
+    assert len(agy.calls) == 1
+    assert sonnet.calls == agy.calls
+
+
+def test_resume_from_checkpoint_falls_back_to_sonnet_on_quota():
+    """_resume_from_checkpoint goes through _start_with_fallback: an agy quota
+    result on resume also reaches sonnet_driver.start."""
+    ticket = make_ticket(9)
+    # First attempt fails outright (non-quota, no fallback); the resume attempt
+    # gets a quota result from agy, which falls back to Sonnet.
+    agy = _FakeStepDriver(
+        [AgyResult(outcome="failed"), AgyResult(outcome="quota", quota_error=True)]
+    )
+    sonnet = _FakeStepDriver([SonnetResult(outcome="success", success=True)])
+
+    worker = LocalWorker(
+        config=make_config(max_resumes_per_ticket=3),
+        github_client=make_fake_github(),
+        agy_driver=agy,
+        sonnet_driver=sonnet,
+        git_runner=_make_git_runner([]),
+        sleep_fn=lambda s: None,
+        read_ticket_fn=lambda p: "# 09: Test\n**Status:** in-progress\n\n## Comments\n",
+    )
+    success = worker.run_one(make_repo_entry(), ticket)
+
+    assert success is True
+    assert len(agy.calls) == 2
+    assert len(sonnet.calls) == 1
+    assert sonnet.calls[0] == agy.calls[1]
+
+
+def test_send_auto_reply_falls_back_to_sonnet_on_quota():
+    """_send_auto_reply goes through _start_with_fallback: an agy quota result
+    on the auto-reply attempt also reaches sonnet_driver.start."""
+    ticket = make_ticket(9)
+    # First attempt waits (non-quota); the auto-reply attempt gets a quota
+    # result from agy, which falls back to Sonnet.
+    agy = _FakeStepDriver(
+        [AgyResult(outcome="waiting"), AgyResult(outcome="quota", quota_error=True)]
+    )
+    sonnet = _FakeStepDriver([SonnetResult(outcome="success", success=True)])
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=make_fake_github(),
+        agy_driver=agy,
+        sonnet_driver=sonnet,
+        git_runner=_make_git_runner([]),
+        sleep_fn=lambda s: None,
+        read_ticket_fn=lambda p: "# 09: Test\n**Status:** in-progress\n\n## Comments\n",
+    )
+    success = worker.run_one(make_repo_entry(), ticket)
+
+    assert success is True
+    assert len(agy.calls) == 2
+    assert len(sonnet.calls) == 1
+    assert sonnet.calls[0][0].endswith(AUTO_REPLY_TEXT)
+    assert sonnet.calls[0] == agy.calls[1]
+
+
+def test_fix_ci_falls_back_to_sonnet_on_quota():
+    """fix_ci goes through _start_with_fallback: an agy quota result there also
+    reaches sonnet_driver.start with the identical prompt/cwd."""
+    ticket = make_ticket(30, effort="box-primary-worker")
+    entry = make_repo_entry(repo="owner/repo")
+    mock_github = make_fake_github()
+    mock_github.list_check_runs.return_value = [("integrity-gate", "failure")]
+
+    agy = _FakeStepDriver([AgyResult(outcome="quota", quota_error=True)])
+    success_result = SonnetResult(outcome="success", success=True)
+    sonnet = _FakeStepDriver([success_result])
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=mock_github,
+        agy_driver=agy,
+        sonnet_driver=sonnet,
+        git_runner=_make_git_runner([]),
+    )
+    result = worker.fix_ci(entry, ticket, pr_number=12)
+
+    assert result is success_result
+    assert len(agy.calls) == 1
+    assert sonnet.calls == agy.calls
+
+
+def test_no_direct_agy_driver_start_calls_outside_fallback():
+    """local_worker.py contains no remaining direct call to agy_driver.start
+    outside _start_with_fallback itself."""
+    import inspect
+
+    source = inspect.getsource(LocalWorker)
+    calls = [
+        line
+        for line in source.splitlines()
+        if "self.agy_driver.start(" in line
+    ]
+    assert len(calls) == 1, "the only direct call must be inside _start_with_fallback"
