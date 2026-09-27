@@ -25,6 +25,7 @@ from ticket_engine.dispatch import (
     StartTicketAction,
     WorldSnapshot,
     claim_precheck,
+    release_done_claims,
 )
 from ticket_engine.parser import Ticket
 
@@ -551,3 +552,91 @@ def test_claim_precheck_already_claimed_by_status_alone():
 def test_claim_precheck_claimable():
     t = make_ticket(38, status="ready-for-agent")
     assert claim_precheck(t, []) == "claimable"
+
+
+# ---------------------------------------------------------------------------
+# release_done_claims (ticket 37): which done tickets' claims to release, and
+# which to keep and why, before any Jules quota call.
+# ---------------------------------------------------------------------------
+
+REPO = "owner/repo"
+
+
+def _live_session(effort: str, number: int, state: str = "RUNNING", repo: str = REPO) -> dict:
+    return {
+        "state": state,
+        "title": f"{effort}-{number:02d}: Some title",
+        "sourceContext": {"source": f"sources/github/{repo}"},
+    }
+
+
+def test_release_done_claims_released_with_no_sessions():
+    tickets = [make_ticket(1, status="done")]
+    released, kept = release_done_claims(
+        tickets, ["claim/phase-1/01"], sessions=[], repo=REPO
+    )
+    assert kept == []
+    assert len(released) == 1
+    action = released[0]
+    assert action.claim_ref == "claim/phase-1/01"
+    assert action.ticket_number == 1
+    assert action.effort == "phase-1"
+    assert action.reason == "Ticket is done on the default branch"
+
+
+def test_release_done_claims_kept_by_matching_live_session():
+    tickets = [make_ticket(1, status="done")]
+    sessions = [_live_session("phase-1", 1, state="RUNNING")]
+    released, kept = release_done_claims(
+        tickets, ["claim/phase-1/01"], sessions=sessions, repo=REPO
+    )
+    assert released == []
+    assert kept == [
+        (1, "claim/phase-1/01", "a live Jules session for this ticket is still open (RUNNING)")
+    ]
+
+
+def test_release_done_claims_released_when_live_session_is_another_repo():
+    tickets = [make_ticket(1, status="done")]
+    sessions = [_live_session("phase-1", 1, state="RUNNING", repo="other/repo")]
+    released, kept = release_done_claims(
+        tickets, ["claim/phase-1/01"], sessions=sessions, repo=REPO
+    )
+    assert kept == []
+    assert len(released) == 1
+    assert released[0].ticket_number == 1
+
+
+def test_release_done_claims_released_when_live_session_is_another_effort():
+    tickets = [make_ticket(1, status="done", effort="phase-1")]
+    sessions = [_live_session("other-effort", 1, state="RUNNING")]
+    released, kept = release_done_claims(
+        tickets, ["claim/phase-1/01"], sessions=sessions, repo=REPO
+    )
+    assert kept == []
+    assert len(released) == 1
+    assert released[0].ticket_number == 1
+
+
+def test_release_done_claims_kept_for_every_done_claim_when_sessions_is_none():
+    tickets = [make_ticket(1, status="done"), make_ticket(2, status="done")]
+    released, kept = release_done_claims(
+        tickets,
+        ["claim/phase-1/01", "claim/phase-1/02"],
+        sessions=None,
+        repo=REPO,
+    )
+    assert released == []
+    assert kept == [
+        (1, "claim/phase-1/01", "Jules sessions could not be listed, so the claim was not released blind"),
+        (2, "claim/phase-1/02", "Jules sessions could not be listed, so the claim was not released blind"),
+    ]
+
+
+def test_release_done_claims_ignores_claim_for_ticket_not_done():
+    tickets = [make_ticket(1, status="in-progress")]
+    released, kept = release_done_claims(
+        tickets, ["claim/phase-1/01"], sessions=[], repo=REPO
+    )
+    assert released == []
+    assert kept == []

@@ -76,6 +76,10 @@ class RunFacts:
     box_status_error: str = ""
     # Stale claims released on this run: (ticket number, reason)
     released_stale: list[tuple[int, str]] = field(default_factory=list)
+    # Done tickets' claims released this run (ticket 37): (ticket number, claim ref)
+    released_done_claims: list[tuple[int, str]] = field(default_factory=list)
+    # Done tickets' claims kept this run: (ticket number, claim ref, reason)
+    kept_done_claims: list[tuple[int, str, str]] = field(default_factory=list)
 
 
 def _label(ticket: Ticket) -> str:
@@ -283,6 +287,10 @@ def build_run_report(tickets: Sequence[Ticket], facts: RunFacts) -> str:
         notes.append(msg)
     if facts.stopped_early:
         notes.append(f"⛔ Stopped before evaluating tickets: {facts.stopped_early}")
+    for n, ref in facts.released_done_claims:
+        notes.append(f"🧹 Ticket {n:02d} is done; released its claim `{ref}`.")
+    for n, ref, reason in facts.kept_done_claims:
+        notes.append(f"⚠️ Ticket {n:02d} is done but its claim `{ref}` was kept: {reason}.")
     if not facts.stopped_early and not facts.paused:
         notes.extend(f"🚦 {b}" for b in _limit_blocks(facts))
     for n in facts.claim_collisions:

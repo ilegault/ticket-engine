@@ -53,6 +53,14 @@ checkpoint commit for `box_stale_claim_hours` (default 8) is released, whether
 or not anything looks live. A Jules claim keeps the 12-hour rule (`stale_claim_hours`)
 and is kept if a live session exists for the ticket.
 
+DONE CLAIMS (ticket 37)
+------------------------
+Releasing a done ticket's claim used to happen only inside `LiveDispatcher.dispatch`'s
+step 4b, which the paused path and a failed `count_recent_sessions` call both returned
+before reaching, and which matched a live session by title alone across every repo and
+effort. `release_done_claims` is the one, pure, testable answer to which done claims to
+release, called at the top of every run before any of that.
+
 OVERFLOW (ADR 0006)
 -------------------
 The box (a Windows mini PC running the local worker permanently) is the primary worker
@@ -595,6 +603,83 @@ def stop_message_text(replies: int) -> str:
         "The engine has marked the ticket blocked and will not answer again. Stop work "
         "now and do not push further changes."
     )
+
+
+def release_done_claims(
+    tickets: Sequence[Ticket],
+    claim_refs: Sequence[str],
+    sessions: Sequence[dict[str, Any]] | None,
+    repo: str,
+) -> tuple[list[ReleaseClaimAction], list[tuple[int, str, str]]]:
+    """Which done tickets' claim branches to release right now, and which to keep
+    and why (ticket 37). Pure: no I/O.
+
+    Runs at the top of every live run, paused or not, before any Jules quota call,
+    so a done ticket never keeps holding a concurrency slot just because the repo
+    was paused or a quota call failed on that run. A live session protects a claim
+    only when it belongs to this repo *and* to the claim's own effort and ticket
+    number: matching a session by title alone, across every repo and effort, used
+    to keep a claim alive under a live session for a different ticket entirely.
+    """
+    ticket_map = {t.number: t for t in tickets}
+    released: list[ReleaseClaimAction] = []
+    kept: list[tuple[int, str, str]] = []
+
+    for ref in claim_refs:
+        ref_str = str(ref).strip()
+        parts = ref_str.strip("/").split("/")
+        if len(parts) < 2 or not parts[-1].isdigit():
+            continue
+        effort = parts[-2]
+        number = int(parts[-1])
+        ticket = ticket_map.get(number)
+        if ticket is None or (ticket.effort or "phase-1") != effort or not ticket.is_done():
+            continue
+
+        if sessions is None:
+            kept.append(
+                (
+                    number,
+                    ref_str,
+                    "Jules sessions could not be listed, so the claim was not released blind",
+                )
+            )
+            continue
+
+        live_state = ""
+        for sess in sessions:
+            if not isinstance(sess, dict):
+                continue
+            state = sess.get("state")
+            if not is_live_session_state(state):
+                continue
+            if not _session_source_matches(sess, repo):
+                continue
+            m = _SESSION_TITLE_RE.match(str(sess.get("title") or ""))
+            if not m or m.group("effort") != effort or int(m.group("num")) != number:
+                continue
+            live_state = str(state or "").strip().upper()
+            break
+
+        if live_state:
+            kept.append(
+                (
+                    number,
+                    ref_str,
+                    f"a live Jules session for this ticket is still open ({live_state})",
+                )
+            )
+        else:
+            released.append(
+                ReleaseClaimAction(
+                    claim_ref=ref_str,
+                    ticket_number=number,
+                    effort=effort,
+                    reason="Ticket is done on the default branch",
+                )
+            )
+
+    return released, kept
 
 
 def evaluate_waiting_sessions(snapshot: WorldSnapshot) -> list[object]:
