@@ -154,6 +154,11 @@ integrity gate as written. A ticket with findings is not started (ADR 0005).
 labelled `engine:hold`, but it is never auto-merged: the developer merges it by hand.
 Tickets that depend on it wait; nothing is built on top of an unmerged PR.
 
+**New ticket file** — a ticket markdown file the PR adds that did not exist on
+the base branch. Check 8 holds any PR that creates one, always, whatever every
+other check says: the developer merges it by hand. A worker editing its own
+existing ticket's `Status:` or `## Comments` is not affected.
+
 **Waiting session** — a Jules session in `AWAITING_USER_FEEDBACK`: the worker
 stopped to ask a question. It is live, so its claim is kept (ADR 0004).
 

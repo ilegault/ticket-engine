@@ -120,6 +120,18 @@ def test_fixture_check4_protected_path_holds():
     assert any("Check 4 hold" in r and ".github/workflows/ci.yml" in r for r in verdict.reasons)
 
 
+def test_fixture_check8_new_ticket_holds():
+    base_tree, pr_diff, ticket_content = _load_fixture("check8_new_ticket")
+    core = IntegrityCore()
+    verdict = core.evaluate(
+        base_tree=base_tree,
+        pr_diff=pr_diff,
+        ticket=ticket_content,
+    )
+    assert verdict.verdict == Verdict.HOLD
+    assert any("Check 8 hold" in r for r in verdict.reasons)
+
+
 def test_fixture_check5_escape_hatch_holds():
     base_tree, pr_diff, ticket_content = _load_fixture("check5_escape_hatch")
     core = IntegrityCore()
