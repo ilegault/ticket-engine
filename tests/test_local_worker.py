@@ -115,6 +115,30 @@ def test_load_local_config_missing_file_returns_defaults(tmp_path):
     assert config.print_timeout == "7200"
 
 
+def test_load_local_config_sonnet_keys_default(tmp_path):
+    """With neither sonnet key set, load_local_config returns the stated defaults."""
+    config_file = tmp_path / "local.toml"
+    config_file.write_text(
+        '[[repos]]\npath = "/code/myrepo"\nrepo = "owner/myrepo"\n',
+        encoding="utf-8",
+    )
+    config = load_local_config(config_file)
+    assert config.sonnet_enabled is False
+    assert config.sonnet_timeout_seconds == 7200
+
+
+def test_load_local_config_sonnet_keys_round_trip(tmp_path):
+    """sonnet_enabled and sonnet_timeout_seconds are flat top-level TOML keys."""
+    config_file = tmp_path / "local.toml"
+    config_file.write_text(
+        "sonnet_enabled = true\nsonnet_timeout_seconds = 3600\n",
+        encoding="utf-8",
+    )
+    config = load_local_config(config_file)
+    assert config.sonnet_enabled is True
+    assert config.sonnet_timeout_seconds == 3600
+
+
 def test_windows_frontier_returns_only_windows_tickets():
     """find_windows_frontier returns only runner=windows tickets on the frontier."""
     tickets = [

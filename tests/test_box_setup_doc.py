@@ -22,7 +22,7 @@ PYPROJECT_PATH = pathlib.Path(__file__).resolve().parent.parent / "pyproject.tom
 REQUIRED_HEADINGS = [
     "The agent account",
     "Python and the engine checkout",
-    "agy login",
+    "agy and Claude logins",
     "GitHub token",
     "Local config",
     "Start at boot",

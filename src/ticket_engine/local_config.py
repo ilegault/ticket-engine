@@ -60,6 +60,8 @@ class LocalWorkerConfig:
     weekly_cap_backoff_hours: int = 12
     engine_repo: str = "ilegault/ticket-engine"
     logs_dir: str = field(default_factory=_default_logs_dir)
+    sonnet_enabled: bool = False
+    sonnet_timeout_seconds: int = 7200
 
 
 def load_local_config(path: pathlib.Path | str | None = None) -> LocalWorkerConfig:
@@ -124,4 +126,6 @@ def load_local_config(path: pathlib.Path | str | None = None) -> LocalWorkerConf
         weekly_cap_backoff_hours=int(data.get("weekly_cap_backoff_hours", 12)),
         engine_repo=str(data.get("engine_repo", "ilegault/ticket-engine")),
         logs_dir=str(data.get("logs_dir", "")) or _default_logs_dir(),
+        sonnet_enabled=bool(data.get("sonnet_enabled", False)),
+        sonnet_timeout_seconds=int(data.get("sonnet_timeout_seconds", 7200)),
     )

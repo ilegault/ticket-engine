@@ -14,7 +14,8 @@ from __future__ import annotations
 import pathlib
 from unittest.mock import MagicMock, patch
 
-from ticket_engine.cli import main, run_dispatch_dry_run
+from ticket_engine.cli import main, run_dispatch_dry_run, run_work_windows
+from ticket_engine.local_config import LocalWorkerConfig
 
 
 def test_cli_dry_run_prints_frontier_actions_skipped_and_findings(tmp_path: pathlib.Path, capsys):
@@ -99,3 +100,57 @@ def test_cli_live_dispatch_with_env_tokens(tmp_path: pathlib.Path, monkeypatch, 
         assert exit_code == 0
         mock_disp_cls.assert_called_once()
         mock_disp_instance.dispatch.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Ticket 41: run_work_windows wires the optional Sonnet fallback
+# ---------------------------------------------------------------------------
+
+def _run_work_windows_with_fake_config(monkeypatch, sonnet_enabled: bool):
+    fake_config = LocalWorkerConfig(sonnet_enabled=sonnet_enabled, sonnet_timeout_seconds=3600)
+    monkeypatch.setattr(
+        "ticket_engine.local_config.load_local_config", lambda path: fake_config
+    )
+    monkeypatch.setattr("ticket_engine.cli.GitHubClient", lambda token: MagicMock())
+
+    seen_sonnet_drivers = []
+    monkeypatch.setattr(
+        "ticket_engine.sonnet.SonnetDriver",
+        lambda timeout_seconds: seen_sonnet_drivers.append(timeout_seconds) or MagicMock(),
+    )
+    monkeypatch.setattr("ticket_engine.agy.AgyDriver", lambda **kwargs: MagicMock())
+
+    seen_worker_kwargs = {}
+
+    class FakeWorker:
+        def __init__(self, **kwargs):
+            seen_worker_kwargs.update(kwargs)
+
+        def run(self) -> int:
+            return 0
+
+    monkeypatch.setattr("ticket_engine.local_worker.LocalWorker", FakeWorker)
+
+    exit_code = run_work_windows(config_path=None, pipeline_token="tok")
+    assert exit_code == 0
+    return seen_worker_kwargs, seen_sonnet_drivers
+
+
+def test_run_work_windows_sonnet_enabled_passes_sonnet_driver(monkeypatch):
+    """sonnet_enabled=True in the loaded config results in a SonnetDriver
+    being constructed with the configured timeout and passed to LocalWorker."""
+    worker_kwargs, seen_sonnet_drivers = _run_work_windows_with_fake_config(
+        monkeypatch, sonnet_enabled=True
+    )
+    assert seen_sonnet_drivers == [3600]
+    assert worker_kwargs["sonnet_driver"] is not None
+
+
+def test_run_work_windows_sonnet_disabled_passes_none(monkeypatch):
+    """sonnet_enabled=False in the loaded config results in sonnet_driver=None,
+    and no SonnetDriver is constructed."""
+    worker_kwargs, seen_sonnet_drivers = _run_work_windows_with_fake_config(
+        monkeypatch, sonnet_enabled=False
+    )
+    assert seen_sonnet_drivers == []
+    assert worker_kwargs["sonnet_driver"] is None

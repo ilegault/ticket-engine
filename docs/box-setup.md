@@ -25,11 +25,17 @@ python -m venv .venv
 pip install -e . ruff pytest
 ```
 
-## agy login
+## agy and Claude logins
 
 Run `agy` once interactively, under the `agent` account, and complete its
 login flow. This is the one-time interactive step ADR 0007 calls out — every
 run after this is headless.
+
+If the Sonnet quota fallback is enabled (below), also run `claude` once
+interactively, under the same `agent` account, and complete its login flow.
+This draws on the developer's own Claude subscription plan — no API key, no
+`--bare` — and, like `agy`'s login, is a one-time interactive step; every
+headless `claude -p` run after this uses the same login.
 
 ## GitHub token
 
@@ -62,6 +68,8 @@ weekly_cap_after_hours = 5
 weekly_cap_backoff_hours = 12
 engine_repo = "ilegault/ticket-engine"
 logs_dir = "C:/Users/agent/ticket-engine-box/logs"
+sonnet_enabled = false
+sonnet_timeout_seconds = 7200
 
 [agy]
 print_timeout = "7200"

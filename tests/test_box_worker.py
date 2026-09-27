@@ -27,6 +27,7 @@ from ticket_engine.box_core import CloseAlert, RaiseAlert
 from ticket_engine.box_status import AlertKind, BoxState, parse_box_status, render_box_alert
 from ticket_engine.local_config import LocalRepoEntry, LocalWorkerConfig
 from ticket_engine.parser import Ticket, TicketParser
+from ticket_engine.sonnet import SonnetDriver
 
 _NOW = datetime.datetime(2026, 9, 26, 12, 0, tzinfo=datetime.UTC)
 
@@ -500,3 +501,27 @@ def test_gitignore_excludes_box_logs_dir():
 
 def test_module_docstring_explains_local_state_vs_dispatcher_invariant():
     assert "invariant 2" in box_worker.__doc__
+
+
+# ---------------------------------------------------------------------------
+# Ticket 41: build_loop wires the optional Sonnet fallback
+# ---------------------------------------------------------------------------
+
+def test_build_loop_sonnet_disabled_by_default():
+    """build_loop(config) with sonnet_enabled=False leaves worker.sonnet_driver None."""
+    config = LocalWorkerConfig(repos=[LocalRepoEntry(path="/fake", repo="owner/repo")])
+    loop = box_worker.build_loop(config)
+    assert loop.worker.sonnet_driver is None
+
+
+def test_build_loop_sonnet_enabled_wiring():
+    """build_loop(config) with sonnet_enabled=True passes a SonnetDriver with
+    the configured timeout_seconds through to worker.sonnet_driver."""
+    config = LocalWorkerConfig(
+        repos=[LocalRepoEntry(path="/fake", repo="owner/repo")],
+        sonnet_enabled=True,
+        sonnet_timeout_seconds=3600,
+    )
+    loop = box_worker.build_loop(config)
+    assert isinstance(loop.worker.sonnet_driver, SonnetDriver)
+    assert loop.worker.sonnet_driver.timeout_seconds == 3600
