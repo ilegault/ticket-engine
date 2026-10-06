@@ -1,6 +1,6 @@
 # 50: A pull request GitHub refuses never crashes the box
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
