@@ -21,8 +21,13 @@ work-windows console; AgyDriver never runs in Actions, so ADR 0007 rule 4 holds.
 from __future__ import annotations
 
 import datetime
+import functools
 import json
 import logging
+import os
+import re
+import signal
+import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
@@ -44,10 +49,73 @@ class AgyResult:
     raw: dict = field(default_factory=dict)
 
 
-def _default_run(args: list[str], cwd: str | None = None) -> tuple[int, str]:
-    import subprocess
-    result = subprocess.run(args, capture_output=True, text=True, cwd=cwd, check=False)
-    return result.returncode, result.stdout or result.stderr
+_IS_WINDOWS = os.name == "nt"
+
+_DURATION_RE = re.compile(r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?")
+
+
+def _duration_seconds(value: str) -> float:
+    """Parse an agy duration such as "2h", "90m", "1h30m" or "45s" into seconds.
+
+    A bare number is refused, as agy refuses it: the box should not start at all
+    rather than run every session into agy's own rejection.
+    """
+    match = _DURATION_RE.fullmatch(value)
+    if not value or match is None or not any(match.groups()):
+        raise ValueError(f"invalid agy duration {value!r}: use h, m or s units, e.g. '2h'")
+    hours, minutes, seconds = (int(g) if g else 0 for g in match.groups())
+    return float(hours * 3600 + minutes * 60 + seconds)
+
+
+def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
+    """Kill agy and every process it started."""
+    if _IS_WINDOWS:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            capture_output=True,
+            check=False,
+        )
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def _default_run(
+    args: list[str], cwd: str | None = None, timeout: float | None = None
+) -> tuple[int, str]:
+    proc = subprocess.Popen(
+        args,
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        start_new_session=not _IS_WINDOWS,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(proc)
+        try:
+            proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            pass
+        logger.warning("agy killed after the %.0fs hard timeout", timeout)
+        return 124, json.dumps(
+            {
+                "status": "INTERRUPTED",
+                "message": "killed by the box after the hard timeout",
+            }
+        )
+    stdout = stdout or ""
+    stderr = stderr or ""
+    if proc.returncode != 0 and stdout.strip() and stderr.strip():
+        logger.warning("agy stderr: %s", stderr.strip()[-4000:])
+    return proc.returncode, stdout if stdout.strip() else stderr
 
 
 class AgyDriver:
@@ -63,9 +131,15 @@ class AgyDriver:
         print_timeout: str = "2h",
         quota_error_patterns: Sequence[str] | None = None,
         auth_error_patterns: Sequence[str] | None = None,
+        hard_timeout_margin_s: float = 900.0,
     ) -> None:
-        self._run: RunFn = run_fn if run_fn is not None else _default_run
         self.print_timeout = str(print_timeout)
+        self.hard_timeout_s = _duration_seconds(self.print_timeout) + hard_timeout_margin_s
+        self._run: RunFn = (
+            run_fn
+            if run_fn is not None
+            else functools.partial(_default_run, timeout=self.hard_timeout_s)
+        )
         self.quota_error_patterns = (
             list(quota_error_patterns)
             if quota_error_patterns is not None
@@ -93,6 +167,7 @@ class AgyDriver:
             "--print-timeout",
             self.print_timeout,
         ]
+        logger.info("agy started in %s (print timeout %s)", cwd, self.print_timeout)
         returncode, output = self._run(args, cwd)
         result = _parse_agy_output(
             returncode,

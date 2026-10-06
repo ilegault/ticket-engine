@@ -1957,3 +1957,24 @@ def test_fix_ci_never_starts_agy_without_a_worktree():
 
     assert worker.fix_ci(make_repo_entry(), make_ticket(9), 5) is None
     assert agy_calls == []
+
+
+def test_successful_push_logs_the_branch_and_git_summary(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO)
+    out = "To https://github.com/o/r.git\n   c33b160..9a1f2e3  HEAD -> ticket/e-09-x\n"
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=make_fake_github(),
+        agy_driver=AgyDriver(run_fn=lambda a, cwd=None: (0, "")),
+        git_runner=_make_git_runner([], {"push": (0, out)}),
+    )
+    worker._push_branch("/wt", "ticket/e-09-x", None)
+    hits = [
+        r for r in caplog.records
+        if r.levelno == logging.INFO
+        and "Pushed ticket/e-09-x" in r.getMessage()
+        and "c33b160..9a1f2e3" in r.getMessage()
+    ]
+    assert len(hits) == 1

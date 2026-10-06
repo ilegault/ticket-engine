@@ -11,12 +11,22 @@ Ticket 19 and Spec §agy adapter mandate that:
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 import pathlib
+import sys
+import time
 
 import pytest
 
-from ticket_engine.agy import AgyDriver
+from ticket_engine.agy import (
+    AgyDriver,
+    _default_run,
+    _duration_seconds,
+    _kill_process_tree,
+    _parse_agy_output,
+)
 from ticket_engine.local_config import LocalWorkerConfig
 
 FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures" / "agy"
@@ -61,7 +71,7 @@ def test_agy_driver_start_custom_print_timeout():
         seen_calls.append(list(args))
         return 0, '{"status": "SUCCESS"}'
 
-    driver = AgyDriver(run_fn=fake_run, print_timeout="3600")
+    driver = AgyDriver(run_fn=fake_run, print_timeout="90m")
     driver.start("do something")
 
     assert seen_calls[0] == [
@@ -72,7 +82,7 @@ def test_agy_driver_start_custom_print_timeout():
         "json",
         "--dangerously-skip-permissions",
         "--print-timeout",
-        "3600",
+        "90m",
     ]
 
 
@@ -174,3 +184,73 @@ def test_agy_driver_logs_failed_output_but_never_the_prompt(caplog):
     assert 'invalid value "7200"' in msg
     assert "PROMPT-MARKER-do-not-log" not in caplog.text
 
+
+
+def test_duration_seconds_accepts_units_and_rejects_bare_numbers():
+    assert _duration_seconds("2h") == 7200
+    assert _duration_seconds("90m") == 5400
+    assert _duration_seconds("1h30m") == 5400
+    assert _duration_seconds("45s") == 45
+    for bad in ["7200", "", "2 h", "m5"]:
+        with pytest.raises(ValueError) as exc:
+            _duration_seconds(bad)
+        assert repr(bad) in str(exc.value) or bad in str(exc.value)
+    with pytest.raises(ValueError):
+        AgyDriver(run_fn=lambda a, c=None: (0, ""), print_timeout="7200")
+    d = AgyDriver(run_fn=lambda a, c=None: (0, ""), print_timeout="2h")
+    assert d.hard_timeout_s == 7200 + 900
+
+
+def test_default_run_returns_stdout_and_logs_stderr_on_failure(caplog):
+    caplog.set_level(logging.WARNING)
+    rc, out = _default_run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; print('out'); print('err-text', file=sys.stderr); sys.exit(3)",
+        ]
+    )
+    assert (rc, out) == (3, "out\n")
+    assert any("agy stderr: err-text" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+def test_default_run_kills_a_child_and_its_grandchild_at_the_hard_timeout():
+    script = (
+        "import subprocess, sys, time\n"
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "time.sleep(60)\n"
+    )
+    start = time.monotonic()
+    rc, out = _default_run([sys.executable, "-c", script], timeout=1)
+    assert time.monotonic() - start < 15
+    assert rc == 124
+    assert _parse_agy_output(rc, out, [], []).outcome == "timeout"
+
+
+def test_kill_process_tree_uses_taskkill_on_windows(monkeypatch):
+    import ticket_engine.agy as agy_mod
+
+    recorded = []
+    monkeypatch.setattr(agy_mod, "_IS_WINDOWS", True)
+    monkeypatch.setattr(
+        agy_mod.subprocess, "run", lambda args, **kw: recorded.append(list(args))
+    )
+
+    class P:
+        pid = 4242
+
+    _kill_process_tree(P())
+    assert recorded == [["taskkill", "/F", "/T", "/PID", "4242"]]
+
+
+def test_agy_driver_logs_start_with_cwd_but_never_the_prompt(caplog):
+    caplog.set_level(logging.INFO)
+
+    def fake_run(args, cwd=None):
+        assert "agy started in C:/wt/x (print timeout 2h)" in caplog.text
+        return 0, json.dumps({"status": "SUCCESS"})
+
+    driver = AgyDriver(run_fn=fake_run, print_timeout="2h")
+    driver.start("PROMPT-MARKER-do-not-log", cwd="C:/wt/x")
+    assert "PROMPT-MARKER-do-not-log" not in caplog.text

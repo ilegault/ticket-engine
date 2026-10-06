@@ -745,6 +745,9 @@ class LocalWorker:
         rc, out = self._git_runner(args, worktree_path, push_env)
         if rc != 0:
             logger.warning("Push failed for %s (rc=%d): %s", ticket_branch, rc, out)
+            return
+        lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+        logger.info("Pushed %s: %s", ticket_branch, lines[-1] if lines else "ok")
 
     def _cleanup_worktree(
         self, repo_path: str, worktree_path: str, ticket_branch: str
