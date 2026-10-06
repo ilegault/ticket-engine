@@ -44,7 +44,7 @@ class LocalWorkerConfig:
     repos: list[LocalRepoEntry] = field(default_factory=list)
     worktree_base: str = ""   # empty → sibling directory named "worktrees"
     github_token: str = ""    # falls back to PIPELINE_TOKEN env var
-    print_timeout: str = "7200"
+    print_timeout: str = "2h"
     checkpoint_push_minutes: int = 20
     max_resumes_per_ticket: int = 3
     quota_error_patterns: list[str] = field(
@@ -79,7 +79,7 @@ def load_local_config(path: pathlib.Path | str | None = None) -> LocalWorkerConf
         github_token = "ghp_..."   # optional; falls back to PIPELINE_TOKEN
 
         [agy]
-        print_timeout = "7200"
+        print_timeout = "2h"
         quota_error_patterns = ["quota", "rate limit", "exhausted"]
         auth_error_patterns = ["auth", "login", "credential"]
 
@@ -110,7 +110,7 @@ def load_local_config(path: pathlib.Path | str | None = None) -> LocalWorkerConf
         repos=repos,
         worktree_base=str(data.get("worktree_base", "")),
         github_token=str(data.get("github_token", "")),
-        print_timeout=str(agy.get("print_timeout", "7200")),
+        print_timeout=str(agy.get("print_timeout", "2h")),
         checkpoint_push_minutes=int(data.get("checkpoint_push_minutes", 20)),
         max_resumes_per_ticket=int(data.get("max_resumes_per_ticket", 3)),
         quota_error_patterns=(

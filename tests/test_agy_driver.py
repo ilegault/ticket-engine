@@ -11,6 +11,7 @@ Ticket 19 and Spec §agy adapter mandate that:
 """
 from __future__ import annotations
 
+import logging
 import pathlib
 
 import pytest
@@ -143,3 +144,33 @@ def test_removed_symbols_not_stubbed():
     assert not hasattr(AgyDriver, "read_quota")
     assert not hasattr(LocalWorkerConfig, "agy_quota_url")
     assert not hasattr(LocalWorkerConfig, "agy_quota_reserve_pct")
+
+
+def test_agy_driver_parses_recorded_real_success_output():
+    fixture_text = (FIXTURES_DIR / "success_recorded.json").read_text(encoding="utf-8")
+    driver = AgyDriver(run_fn=lambda args, cwd=None: (0, fixture_text))
+    result = driver.start("prompt")
+
+    assert result.outcome == "success"
+    assert result.success is True
+    assert result.session_id == "0614ac83-77db-445a-beb6-c0221aaa2a2f"
+
+
+def test_agy_driver_logs_failed_output_but_never_the_prompt(caplog):
+    driver = AgyDriver(
+        run_fn=lambda args, cwd=None: (1, 'Error: invalid value "7200" for flag --print-timeout')
+    )
+    prompt = "PROMPT-MARKER-do-not-log"
+
+    with caplog.at_level(logging.WARNING):
+        result = driver.start(prompt)
+
+    assert result.outcome == "failed"
+    warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warning_records) == 1
+    msg = warning_records[0].getMessage()
+    assert "outcome failed" in msg
+    assert "exit 1" in msg
+    assert 'invalid value "7200"' in msg
+    assert "PROMPT-MARKER-do-not-log" not in caplog.text
+
