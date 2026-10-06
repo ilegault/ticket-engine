@@ -1,6 +1,6 @@
 # 59: Repo environments: one Python environment per repo, rebuilt when its dependencies change
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
