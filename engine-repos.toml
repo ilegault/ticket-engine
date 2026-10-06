@@ -1,18 +1,18 @@
-# engine-repos.toml — engine-level list of target repos to include in the morning report.
+# engine-repos.toml — engine-level list of target repos.
 #
 # WHY THIS EXISTS
 # ---------------
-# Ticket 08 AC: "Target repos to report on come from an engine-level list in the engine repo."
-# The morning-report workflow reads this file to know which repos to gather data from.
-# Adding a new repo here is the only change needed to include it in the report.
+# ADR 0009: engine-repos.toml is the single repo list and the single on-switch.
+# The morning report, the box, and the dispatcher all read it.
+# Merging a PR that adds a [[repos]] entry is what turns a repo on.
 #
-# Format: repos is a list of "owner/repo" strings.
+# Format:
+# [[repos]]
+# repo = "owner/name"
+# box = true  # optional, default true. Setting box = false keeps the box away from a repo (ADR 0009).
 
-repos = [
-    "ilegault/slackbot",
-    "ilegault/tds-t8",
-]
+[[repos]]
+repo = "ilegault/slackbot"
 
-# Roll in after adoption (ticket 13 / 15):
-# "ilegault/tds-t8",
-# "ilegault/rbl",
+[[repos]]
+repo = "ilegault/tds-t8"

@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import datetime
 import importlib.util
+import logging
 import pathlib
 import urllib.error
+from unittest.mock import MagicMock
 
 from ticket_engine.box_status import BoxState, BoxStatus, render_box_status
 from ticket_engine.config import RepoConfig
@@ -564,3 +566,18 @@ def test_run_morning_report_main_failed_box_fetch_is_unreadable(monkeypatch):
     updated, _ = _run_main(monkeypatch, error)
     assert len(updated) == 1
     assert _line_under_title(updated[0]) == "**Box:** status unreadable"
+
+
+def test_run_morning_report_main_unreadable_repo_list_returns_1(monkeypatch, caplog):
+    runner = _load_runner()
+    monkeypatch.setenv("PIPELINE_TOKEN", "fake-token")
+    monkeypatch.setenv("ENGINE_REPO", "owner/engine")
+    monkeypatch.setattr(
+        runner,
+        "repo_names_for_report",
+        MagicMock(side_effect=runner.RepoListError("corrupted format")),
+    )
+    with caplog.at_level(logging.ERROR):
+        assert runner.main() == 1
+    assert "engine-repos.toml unreadable: corrupted format" in caplog.text
+
