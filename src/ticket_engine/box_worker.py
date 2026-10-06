@@ -49,6 +49,9 @@ can be seen:
 - a failed `git pull` of a target clone is logged as a warning rather than
   silently ignored (the tick carries on with the tickets already on disk;
   claims and PRs come from GitHub, so a stale clone cannot double-claim);
+- a claim or resume whose `run_one` returns False (refused, or the worktree
+  could not be made) waits one poll interval before the next tick, because
+  `BoxCore` would otherwise pick the same step again at once (ticket 47);
 - every git call has `LocalWorkerConfig.git_timeout_seconds` as its upper
   bound, because a git credential prompt nobody can see would otherwise hang
   the loop forever;
@@ -318,13 +321,31 @@ class BoxLoop:
         entry = self._entry_for(step.repo)
         result = self.worker.run_one(entry, step.ticket, box_mode=True)
         self._append_ledger(step.repo, step.ticket.number, world.now)
+        if result is False:
+            self._wait_after_no_op(world, _describe_step(step))
+            return
         self._handle_run_result(result, world)
 
     def _do_resume(self, world: BoxWorld, step: ResumeClaim) -> None:
         entry = self._entry_for(step.repo)
         ticket = self._ticket_for(world, step.repo, step.ticket_number)
         result = self.worker.run_one(entry, ticket, box_mode=True)
+        if result is False:
+            self._wait_after_no_op(world, _describe_step(step))
+            return
         self._handle_run_result(result, world)
+
+    def _wait_after_no_op(self, world: BoxWorld, what: str) -> None:
+        """`run_one` returned False: the claim was refused or the ticket could
+        not be started, and `LocalWorker` has logged why. `BoxCore` would pick
+        the same step again on the very next tick, so wait one poll interval
+        rather than spin against the GitHub API (ticket 47)."""
+        logger.warning(
+            "%s did nothing; waiting %d minutes before the next tick",
+            what,
+            world.poll_interval_minutes,
+        )
+        self._sleep(world.poll_interval_minutes * 60)
 
     def _do_fix_ci(self, world: BoxWorld, step: FixCI) -> None:
         entry = self._entry_for(step.repo)

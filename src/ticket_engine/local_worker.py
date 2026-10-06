@@ -48,6 +48,21 @@ loop (`box_worker.py`) needs and `work-windows` must never see:
   (`after_quota_error`) and the box-worker's login-expired handling own the
   retry pacing instead. Every other outcome (`waiting`, `timeout`, `failed`,
   and their resume/auto-reply/escalation handling) is unchanged in both modes.
+
+Ticket 47 (the box's first real run): resuming has to survive what a crash,
+a quota pause or a restart leaves behind.
+
+- A claim branch that already exists and already says `Claimed-by: box` is the
+  box's own claim, so `run_one` works it instead of reporting a collision.
+  Before this, `BoxCore`'s ResumeClaim could never resume anything: `run_one`
+  always tried to create the claim branch first, read "already exists" as
+  someone else's claim, and returned at once.
+- An existing worktree folder (one with a `.git` entry) is reused as it is.
+  Otherwise stale worktree registrations are pruned, and a fresh claim uses
+  `worktree add -B`, so a local ticket branch left over from a failed run is
+  reset to the claim head rather than making git refuse.
+- If git still cannot create the worktree, `run_one` logs git's message and
+  returns `False`. agy is never started in a folder that does not exist.
 """
 from __future__ import annotations
 
@@ -84,6 +99,10 @@ from ticket_engine.prompt import (
 from ticket_engine.sonnet import SonnetDriver
 
 logger = logging.getLogger(__name__)
+
+
+class WorktreeError(RuntimeError):
+    """`git worktree add` failed; the message carries git's output (ticket 47)."""
 
 # Buffer added to the reset time before resuming (seconds).
 _QUOTA_RESET_BUFFER_SECS = 60
@@ -252,7 +271,14 @@ class LocalWorker:
             ticket_number=ticket.number,
             sha=base_sha,
         )
-        if not claimed:
+        if claimed:
+            # 2. Commit Claimed-by: box to the ticket file on the claim branch.
+            self._commit_claimed_by(entry.repo, ticket_path, claim_branch)
+        elif self._claim_owner(entry.repo, claim_branch, ticket_path) == "box":
+            logger.info(
+                "Resuming the box's own claim %s for %s.", claim_branch, entry.repo
+            )
+        else:
             logger.info(
                 "Ticket %02d already claimed for %s, skipping.",
                 ticket.number,
@@ -260,12 +286,18 @@ class LocalWorker:
             )
             return False
 
-        # 2. Commit Claimed-by: box to the ticket file on the claim branch.
-        self._commit_claimed_by(entry.repo, ticket_path, claim_branch)
-
         # 3. Create worktree from the claim branch head (or resume existing ticket branch).
         worktree_path = self._worktree_path(entry, ticket)
-        self._create_worktree(entry.path, worktree_path, ticket_branch, claim_branch)
+        try:
+            self._create_worktree(entry.path, worktree_path, ticket_branch, claim_branch)
+        except WorktreeError as exc:
+            logger.error(
+                "Ticket %02d not started: could not create worktree %s: %s",
+                ticket.number,
+                worktree_path,
+                exc,
+            )
+            return False
 
         # 4-6. Start pusher, run agy, push after every outcome.
         push_env = _make_push_env(self.config.github_token) if self.config.github_token else None
@@ -325,7 +357,7 @@ class LocalWorker:
 
     def fix_ci(
         self, entry: LocalRepoEntry, ticket: Ticket, pr_number: int
-    ) -> object:
+    ) -> object | None:
         """Run agy again on the ticket branch, naming the PR's failing checks.
 
         Ticket 30 (spec §Local worker orchestration): the dispatcher's own
@@ -343,6 +375,18 @@ class LocalWorker:
         claim_branch = f"claim/{effort}/{ticket.number:02d}"
 
         logger.info("Fixing CI for ticket %02d PR #%s", ticket.number, pr_number)
+        # A finished run removed its worktree, so make (or reuse) it before
+        # agy runs in it (ticket 47).
+        try:
+            self._create_worktree(entry.path, worktree_path, ticket_branch, claim_branch)
+        except WorktreeError as exc:
+            logger.error(
+                "CI fix for ticket %02d not started: could not create worktree %s: %s",
+                ticket.number,
+                worktree_path,
+                exc,
+            )
+            return None
         checks = self.github_client.list_check_runs(entry.repo, ticket_branch)
         failing = [name for name, conclusion in checks if conclusion == "failure"]
 
@@ -634,11 +678,28 @@ class LocalWorker:
     ) -> None:
         """Create a git worktree for ticket_branch.
 
-        If the ticket branch already exists on the remote, resume from it using
-        --track (no new branch created). Otherwise create a fresh branch from
-        the claim branch head. In both cases, fetch the claim branch first so
-        origin/claim/... is available locally.
+        An existing worktree folder (one with a `.git` entry) is reused as it
+        is: a quota pause or a restart leaves it in place on purpose.
+        Otherwise stale worktree registrations are pruned first. If the ticket
+        branch already exists on the remote, resume from it using --track (no
+        new branch created). Otherwise create the branch from the claim branch
+        head with -B, which resets a local branch left over from an earlier
+        failed run instead of failing. In both cases, fetch the claim branch
+        first so origin/claim/... is available locally.
+
+        Raises WorktreeError, carrying git's output, if the worktree cannot be
+        created (ticket 47).
         """
+        if (pathlib.Path(worktree_path) / ".git").exists():
+            logger.info("Reusing existing worktree %s", worktree_path)
+            return
+
+        self._git_runner(
+            ["git", "-C", repo_path, "worktree", "prune"],
+            repo_path,
+            None,
+        )
+
         # Check whether the ticket branch already exists on the remote.
         rc_ls, out_ls = self._git_runner(
             ["git", "-C", repo_path, "ls-remote", "--heads", "origin", ticket_branch],
@@ -664,12 +725,13 @@ class LocalWorker:
             # Fresh claim: create a new local branch from the claim branch head.
             args = [
                 "git", "-C", repo_path, "worktree", "add",
-                worktree_path, "-b", ticket_branch, f"origin/{claim_branch}",
+                worktree_path, "-B", ticket_branch, f"origin/{claim_branch}",
             ]
 
         rc, out = self._git_runner(args, repo_path, None)
         if rc != 0:
-            logger.warning("git worktree add returned %d: %s", rc, out)
+            msg = f"git worktree add returned {rc}: {out.strip()}"
+            raise WorktreeError(msg)
 
     def _push_branch(
         self,
@@ -740,6 +802,23 @@ class LocalWorker:
         )
         if rc != 0:
             logger.warning("git worktree remove --force returned %d: %s", rc, out)
+
+    def _claim_owner(self, repo: str, claim_branch: str, ticket_path: str) -> str | None:
+        """The `Claimed-by` value on an existing claim branch's ticket file.
+
+        None if the file cannot be read: an unreadable claim is never treated
+        as the box's own (ticket 47).
+        """
+        try:
+            file_data = self.github_client.get_file_contents(
+                repo, ticket_path, ref=claim_branch
+            )
+        except (OSError, KeyError, RuntimeError) as exc:
+            logger.warning(
+                "Failed to read claim branch %s ticket file: %s", claim_branch, exc
+            )
+            return None
+        return TicketParser().parse_text(file_data.get("content", "")).claimed_by
 
     def _claim_still_mine(self, repo: str, claim_branch: str, ticket_path: str) -> bool:
         """True unless the claim branch is gone, or its ticket file now reads

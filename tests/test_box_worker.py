@@ -688,3 +688,57 @@ def test_box_loop_pulls_with_the_configured_git_timeout(tmp_path, monkeypatch):
     loop.tick()
 
     assert seen == [(["git", "-C", "/fake/repo", "pull", "--ff-only"], 42)]
+
+
+# ---------------------------------------------------------------------------
+# Ticket 47: a claim or resume that does nothing must not spin the loop.
+# ---------------------------------------------------------------------------
+
+def test_a_resume_that_does_nothing_waits_a_poll_interval(tmp_path, caplog):
+    """run_one returning False (refused or could not start) for a ResumeClaim
+    makes the loop wait poll_interval_minutes, so the same no-op step is not
+    retried in a tight loop against the GitHub API."""
+    ticket = make_ticket(2, status="in-progress")
+    worker = FakeWorker()
+    worker.claims = {2: "box"}
+    worker.run_one_result = False
+    loop = make_loop(tmp_path, worker, make_github(), tickets=[ticket])
+    loop._last_status_write = _NOW
+    sleeps: list[float] = []
+    loop._sleep = sleeps.append
+
+    with caplog.at_level(logging.WARNING, logger="ticket_engine.box_worker"):
+        loop.tick()
+
+    assert len(worker.run_one_calls) == 1
+    assert sleeps == [10 * 60]
+    assert "did nothing" in caplog.text
+
+
+def test_a_claim_that_does_nothing_waits_a_poll_interval(tmp_path):
+    ticket = make_ticket(3)
+    worker = FakeWorker()
+    worker.run_one_result = False
+    loop = make_loop(tmp_path, worker, make_github(), tickets=[ticket])
+    loop._last_status_write = _NOW
+    sleeps: list[float] = []
+    loop._sleep = sleeps.append
+
+    loop.tick()
+
+    assert len(worker.run_one_calls) == 1
+    assert sleeps == [10 * 60]
+
+
+def test_a_claim_that_worked_does_not_add_a_wait(tmp_path):
+    ticket = make_ticket(3)
+    worker = FakeWorker()
+    loop = make_loop(tmp_path, worker, make_github(), tickets=[ticket])
+    loop._last_status_write = _NOW
+    sleeps: list[float] = []
+    loop._sleep = sleeps.append
+
+    loop.tick()
+
+    assert len(worker.run_one_calls) == 1
+    assert sleeps == []

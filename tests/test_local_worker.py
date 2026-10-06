@@ -644,7 +644,10 @@ def test_run_one_git_arg_order_for_fresh_claim():
     wt_add_calls = [c for c in git_calls if "worktree" in c and "add" in c]
     assert wt_add_calls, "git worktree add must be called"
     wt_args = wt_add_calls[0]
-    assert "-b" in wt_args
+    # -B, not -b: a stale local branch left by an earlier failed run is reset
+    # to the claim head instead of making `worktree add` fail (ticket 47).
+    assert "-B" in wt_args
+    assert "-b" not in wt_args
     assert ticket_branch in wt_args
     assert "origin/claim/box-primary-worker/09" in wt_args
 
@@ -1802,3 +1805,155 @@ def test_escalation_writes_brief_into_the_worktree_copy_of_a_loaded_ticket(tmp_p
     mock_github.create_pull_request.assert_called_once()
     assert mock_github.create_pull_request.call_args.kwargs["draft"] is True
 
+
+
+# ---------------------------------------------------------------------------
+# Ticket 47: the box resumes its own claim; a worktree that cannot be made
+# never gets agy started in it.
+# ---------------------------------------------------------------------------
+
+def _claim_branch_content(claimed_by: str | None) -> dict:
+    line = f"**Claimed-by:** {claimed_by}\n\n" if claimed_by else ""
+    return {
+        "content": f"# 09: Ticket 9\n\n**Status:** ready-for-agent\n\n{line}",
+        "sha": "def456",
+    }
+
+
+def test_run_one_resumes_its_own_claim_when_the_claim_branch_already_exists():
+    """A claim branch that already says Claimed-by: box is the box's own claim
+    (a quota pause or a restart left it): run_one works it, and does not
+    re-commit Claimed-by."""
+    agy_calls = []
+
+    def run_fn(args, cwd=None):
+        agy_calls.append(args)
+        return 0, json.dumps({"status": "SUCCESS"})
+
+    gh = make_fake_github(claim_result=False)
+    gh.get_file_contents.return_value = _claim_branch_content("box")
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=gh,
+        agy_driver=AgyDriver(run_fn=run_fn),
+        git_runner=_make_git_runner([]),
+    )
+
+    result = worker.run_one(make_repo_entry(), make_ticket(9))
+
+    assert result is True
+    assert len(agy_calls) == 1, "agy must run on the box's own existing claim"
+    gh.commit_file_change.assert_not_called()
+
+
+def test_run_one_skips_a_claim_branch_claimed_by_jules():
+    """An existing claim branch that says Claimed-by: jules is not the box's."""
+    agy_calls = []
+    gh = make_fake_github(claim_result=False)
+    gh.get_file_contents.return_value = _claim_branch_content("jules")
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=gh,
+        agy_driver=AgyDriver(run_fn=lambda a, cwd=None: agy_calls.append(a) or (0, "{}")),
+        git_runner=_make_git_runner([]),
+    )
+
+    assert worker.run_one(make_repo_entry(), make_ticket(9)) is False
+    assert agy_calls == []
+
+
+def test_failed_worktree_add_never_starts_agy(caplog):
+    """If git cannot create the worktree, agy is never started in a folder
+    that does not exist, nothing is pushed, and git's message is logged."""
+    agy_calls = []
+    git_calls: list = []
+    runner = _make_git_runner(
+        git_calls, {"add": (255, "fatal: a branch named 'x' already exists")}
+    )
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=make_fake_github(),
+        agy_driver=AgyDriver(run_fn=lambda a, cwd=None: agy_calls.append(a) or (0, "{}")),
+        git_runner=runner,
+    )
+
+    with caplog.at_level("ERROR", logger="ticket_engine.local_worker"):
+        result = worker.run_one(make_repo_entry(), make_ticket(9), box_mode=True)
+
+    assert result is False
+    assert agy_calls == []
+    assert not [c for c in git_calls if "push" in c]
+    assert "fatal: a branch named 'x' already exists" in caplog.text
+
+
+def test_existing_worktree_folder_is_reused_not_re_added(tmp_path):
+    """A worktree left in place (quota pause, restart) is reused as it is:
+    no second `git worktree add`, and agy runs in that folder."""
+    seen_cwds = []
+    git_calls: list = []
+    base = tmp_path / "wt"
+    worktree = base / "ticket-phase-1-09-ticket-9"
+    worktree.mkdir(parents=True)
+    (worktree / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
+
+    worker = LocalWorker(
+        config=make_config(worktree_base=str(base)),
+        github_client=make_fake_github(),
+        agy_driver=AgyDriver(
+            run_fn=lambda a, cwd=None: seen_cwds.append(cwd) or (0, '{"status": "SUCCESS"}')
+        ),
+        git_runner=_make_git_runner(git_calls),
+    )
+    worker.run_one(make_repo_entry(), make_ticket(9))
+
+    assert not [c for c in git_calls if "worktree" in c and "add" in c]
+    assert seen_cwds == [str(worktree)]
+
+
+def test_fix_ci_makes_the_worktree_before_running_agy():
+    """A finished run removed its worktree, so fix_ci must create it again
+    (on the existing remote ticket branch) before agy runs in it."""
+    order: list[str] = []
+    git_calls: list = []
+    ticket_branch = "ticket/phase-1-09-ticket-9"
+    base_runner = _make_git_runner(
+        git_calls, {"ls-remote": (0, f"abc123\trefs/heads/{ticket_branch}\n")}
+    )
+
+    def runner(args, cwd=None, env=None):
+        if "worktree" in args and "add" in args:
+            order.append("worktree add")
+        return base_runner(args, cwd, env)
+
+    def run_fn(args, cwd=None):
+        order.append("agy")
+        return 0, json.dumps({"status": "SUCCESS"})
+
+    gh = make_fake_github()
+    gh.list_check_runs.return_value = [("tests", "failure")]
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=gh,
+        agy_driver=AgyDriver(run_fn=run_fn),
+        git_runner=runner,
+    )
+    worker.fix_ci(make_repo_entry(), make_ticket(9), 5)
+
+    assert order == ["worktree add", "agy"]
+    wt_add = next(c for c in git_calls if "worktree" in c and "add" in c)
+    assert f"origin/{ticket_branch}" in wt_add
+
+
+def test_fix_ci_never_starts_agy_without_a_worktree():
+    agy_calls = []
+    gh = make_fake_github()
+    gh.list_check_runs.return_value = [("tests", "failure")]
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=gh,
+        agy_driver=AgyDriver(run_fn=lambda a, cwd=None: agy_calls.append(a) or (0, "{}")),
+        git_runner=_make_git_runner([], {"add": (128, "fatal: invalid reference")}),
+    )
+
+    assert worker.fix_ci(make_repo_entry(), make_ticket(9), 5) is None
+    assert agy_calls == []
