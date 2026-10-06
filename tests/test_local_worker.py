@@ -1604,3 +1604,46 @@ def test_no_direct_agy_driver_start_calls_outside_fallback():
         if "self.agy_driver.start(" in line
     ]
     assert len(calls) == 1, "the only direct call must be inside _start_with_fallback"
+
+
+# ---------------------------------------------------------------------------
+# Git calls have a timeout (box setup follow-up): a git command waiting on a
+# credential prompt nobody can see must not hang the worker forever.
+# ---------------------------------------------------------------------------
+
+def test_local_worker_default_git_runner_gives_up_after_its_timeout():
+    import sys
+    import time
+
+    from ticket_engine import local_worker
+
+    started = time.monotonic()
+    rc, out = local_worker._default_git_runner(
+        [sys.executable, "-c", "import time; time.sleep(30)"], None, None, timeout=0.5
+    )
+    assert rc != 0
+    assert "timed out after 0.5s" in out
+    assert time.monotonic() - started < 10
+
+
+def test_local_worker_runs_git_with_the_configured_timeout(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from ticket_engine import local_worker
+
+    seen: list[object] = []
+
+    def fake_runner(args, cwd=None, env=None, timeout=None):
+        seen.append(timeout)
+        return 0, ""
+
+    monkeypatch.setattr(local_worker, "_default_git_runner", fake_runner)
+    worker = LocalWorker(
+        config=LocalWorkerConfig(git_timeout_seconds=42),
+        github_client=MagicMock(),
+        agy_driver=MagicMock(),
+    )
+
+    worker._git_runner(["git", "status"], None, None)
+
+    assert seen == [42]

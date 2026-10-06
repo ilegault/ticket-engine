@@ -25,6 +25,16 @@ python -m venv .venv
 pip install -e . ruff pytest
 ```
 
+A fresh account blocks PowerShell scripts, so `activate` fails until you run
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once as `agent`.
+
+Clone every target repo the box should work, also as `agent` (for example
+under `C:\Users\agent\projects\`). These are the paths the `[[repos]]`
+blocks below point at. Run one `git pull` in each by hand: if git asks for a
+login, complete it now, because the scheduled task has no window to show it
+in. Never edit or commit inside these clones by hand; the box pulls them with
+`--ff-only` on every tick, and a local commit makes that pull fail.
+
 ## agy and Claude logins
 
 Run `agy` once interactively, under the `agent` account, and complete its
@@ -49,8 +59,19 @@ Create a fine-grained personal access token, scoped to:
   (ADR 0007 rule 3).
 - An expiration date, never "no expiration".
 
-Store the token only in the `agent` account's local config file (below). It
-never goes in a commit, a log, or a status issue.
+A fine-grained token applies one permission set to every repo it covers, so
+the engine repo ends up with the same permissions as the target repos. That
+is acceptable only while the engine repo's default branch accepts changes
+through pull requests alone.
+
+Use a separate token from the one in the target repos' `PIPELINE_TOKEN`
+Actions secret, so the box's token can be revoked on its own.
+
+Store the token only in the `agent` account's local config file (below), as
+`github_token`. The box falls back to a `PIPELINE_TOKEN` environment variable
+only when the config has none; environment variables do not reliably reach a
+scheduled task, so the config file is the one to rely on. The token never
+goes in a commit, a log, or a status issue.
 
 ## Local config
 
@@ -70,6 +91,7 @@ engine_repo = "ilegault/ticket-engine"
 logs_dir = "C:/Users/agent/ticket-engine-box/logs"
 sonnet_enabled = false
 sonnet_timeout_seconds = 7200
+git_timeout_seconds = 300
 
 [agy]
 print_timeout = "7200"
@@ -92,6 +114,22 @@ Register a Windows Task Scheduler task, running as the `agent` account, that
 starts at boot and launches `box-worker`. Configure it to restart on failure,
 so a crash or a reboot resumes the loop without the developer's attention.
 
+- Give `agent` a password first: Windows will not run a task for a
+  passwordless account while nobody is logged on. Set it from inside the
+  `agent` account (Ctrl+Alt+Del, Change a password), not as an admin reset,
+  so `agent`'s saved agy and Claude logins survive.
+- Create the task from the developer's admin account (Task Scheduler, Run as
+  administrator), with `agent` chosen under Change User or Group. A standard
+  account cannot register a task that runs while logged off. If Windows says
+  the account needs "Log on as a batch job", grant it in `secpol.msc` under
+  Local Policies, User Rights Assignment.
+- General: "Run whether user is logged on or not", password stored, not
+  "Run with highest privileges", Configure for Windows 10.
+- Trigger: At startup. Action: `C:\Users\agent\ticket-engine\.venv\Scripts\box-worker.exe`,
+  Start in `C:\Users\agent\ticket-engine`.
+- Settings: restart on failure every 5 minutes, and untick "Stop the task if
+  it runs longer than".
+
 ## Checking it works
 
 From an `agent` session:
@@ -103,5 +141,11 @@ box-worker --once
 `--once` runs a single pass of the loop and exits, instead of looping
 forever — the fastest way to confirm the box, its config, and its GitHub
 token all work before trusting it to the scheduled task. Check the box's
-status issue on the engine repo for a fresh update, and confirm the Task
-Scheduler task itself is enabled and set to run at startup.
+status issue on the engine repo for a fresh update (its `Checked in:` time is
+UTC), and confirm the Task Scheduler task itself is enabled and set to run at
+startup.
+
+The box's log, `box-worker.log` under `logs_dir`, gets one `tick: …` line per
+tick. A recent `tick:` line means the loop is alive; `tick failed` lines carry
+the traceback of whatever stopped it, and `git pull failed` warnings name a
+target clone the box could not update.

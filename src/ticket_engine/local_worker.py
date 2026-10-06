@@ -145,8 +145,14 @@ class LocalWorker:
         self.github_client = github_client
         self.agy_driver = agy_driver
         self.sonnet_driver = sonnet_driver
+        # The default runner looks `_default_git_runner` up at call time and
+        # always passes the configured timeout (box setup follow-up).
         self._git_runner: GitRunner = (
-            git_runner if git_runner is not None else _default_git_runner
+            git_runner
+            if git_runner is not None
+            else lambda args, cwd, env: _default_git_runner(
+                args, cwd, env, timeout=self.config.git_timeout_seconds
+            )
         )
         self._sleep = sleep_fn if sleep_fn is not None else time.sleep
         self._skill_text = skill_text
@@ -903,15 +909,27 @@ def _default_git_runner(
     args: list[str],
     cwd: str | None = None,
     env: dict[str, str] | None = None,
+    timeout: float | None = None,
 ) -> tuple[int, str]:
+    """Run one git command. A timeout is reported as a non-zero result.
+
+    On timeout the child is killed and (124, "... timed out after Ns") is
+    returned, so callers handle it through the same non-zero path as any other
+    git failure. The message names only the duration: `env` can carry the
+    push token, so nothing from it is echoed.
+    """
     import os
     import subprocess
     merged_env: dict[str, str] | None = None
     if env:
         merged_env = {**os.environ, **env}
-    result = subprocess.run(
-        args, capture_output=True, text=True, cwd=cwd, env=merged_env, check=False
-    )
+    try:
+        result = subprocess.run(
+            args, capture_output=True, text=True, cwd=cwd, env=merged_env,
+            check=False, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return 124, f"git command timed out after {timeout}s"
     return result.returncode, result.stdout or result.stderr
 
 
