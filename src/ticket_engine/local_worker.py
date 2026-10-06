@@ -73,6 +73,7 @@ import pathlib
 import re
 import threading
 import time
+import urllib.error
 from collections.abc import Callable
 
 from ticket_engine.agy import AgyDriver
@@ -572,12 +573,19 @@ class LocalWorker:
 
         reason_text = "resumes exhausted" if reason == EscalationReason.resumes_exhausted else "kept asking"
         commit_message = f"Escalate {ticket.number:02d}: {reason_text}"
-        self._git_runner(["git", "-C", worktree_path, "add", ticket_path], worktree_path, None)
-        self._git_runner(
-            ["git", "-C", worktree_path, "commit", "-m", commit_message], worktree_path, None
-        )
+        for step, git_args in (
+            ("add", ["git", "-C", worktree_path, "add", ticket_path]),
+            ("commit", ["git", "-C", worktree_path, "commit", "-m", commit_message]),
+        ):
+            rc, out = self._git_runner(git_args, worktree_path, None)
+            if rc != 0:
+                logger.warning(
+                    "Escalation %s for ticket %02d failed (rc=%d): %s",
+                    step, ticket.number, rc, out.strip()[-2000:],
+                )
         self._push_branch(worktree_path, ticket_branch, push_env)
 
+        pr_number: int | None
         existing_pr = self.github_client.find_open_pr(entry.repo, ticket_branch)
         if existing_pr is None:
             title = f"{effort}-{ticket.number:02d}: {ticket.title}"
@@ -585,21 +593,31 @@ class LocalWorker:
                 f"Ticket {ticket.number:02d} worked by the box.\n\n"
                 f"Ticket file: {ticket_path}\nBranch: {ticket_branch}"
             )
-            pr_number = self.github_client.create_pull_request(
-                repo=entry.repo,
-                head=ticket_branch,
-                base=self._default_branch(entry),
-                title=title,
-                body=body,
-                draft=True,
-            )
+            try:
+                pr_number = self.github_client.create_pull_request(
+                    repo=entry.repo,
+                    head=ticket_branch,
+                    base=self._default_branch(entry),
+                    title=title,
+                    body=body,
+                    draft=True,
+                )
+            except urllib.error.HTTPError as exc:
+                logger.warning(
+                    "GitHub refused the escalation PR for %s (HTTP %d); "
+                    "opening the escalation issue with a branch link.",
+                    ticket_branch, exc.code,
+                )
+                pr_number = None
         else:
             pr_number = existing_pr
             self.github_client.convert_pr_to_draft(entry.repo, pr_number)
 
-        self.github_client.add_issue_labels(entry.repo, pr_number, ["engine:escalated"])
-
-        link = f"https://github.com/{entry.repo}/pull/{pr_number}"
+        if pr_number is None:
+            link = f"https://github.com/{entry.repo}/tree/{ticket_branch}"
+        else:
+            self.github_client.add_issue_labels(entry.repo, pr_number, ["engine:escalated"])
+            link = f"https://github.com/{entry.repo}/pull/{pr_number}"
         owner = entry.repo.split("/")[0]
         title, body = render_escalation_issue(
             ref=TicketRef(repo=entry.repo, number=ticket.number),
@@ -908,13 +926,20 @@ class LocalWorker:
             f"Ticket {ticket.number:02d} worked by the box.\n\n"
             f"Ticket file: {ticket_path}\nBranch: {ticket_branch}"
         )
-        self.github_client.create_pull_request(
-            repo=entry.repo,
-            head=ticket_branch,
-            base=self._default_branch(entry),
-            title=title,
-            body=body,
-        )
+        try:
+            self.github_client.create_pull_request(
+                repo=entry.repo,
+                head=ticket_branch,
+                base=self._default_branch(entry),
+                title=title,
+                body=body,
+            )
+        except urllib.error.HTTPError as exc:
+            logger.warning(
+                "GitHub refused the PR for %s (HTTP %d); the branch is pushed, the box carries on.",
+                ticket_branch, exc.code,
+            )
+            return
 
     def _read_progress_note(self, worktree_path: str, ticket_path: str) -> str:
         """Read the progress note from the ticket file inside the worktree."""
