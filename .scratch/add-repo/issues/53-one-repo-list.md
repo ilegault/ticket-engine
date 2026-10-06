@@ -1,6 +1,6 @@
 # 53: One repo list: `engine-repos.toml` entries, a reader, and a token-reach probe
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
