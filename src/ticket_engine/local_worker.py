@@ -946,8 +946,17 @@ def _default_branch_for(entry: LocalRepoEntry) -> str:
 
 
 def _ticket_path_str(ticket: Ticket, effort: str) -> str:
+    """The ticket file's path relative to the repo root, `/`-separated.
+
+    GitHub's contents API, the worker prompt, and `git -C <worktree> add` all
+    need this form. `Ticket.path` from `_load_tickets_from_path` is absolute
+    (the box's clone), so keep only the part from the last `.scratch` on.
+    """
     if ticket.path:
-        return str(ticket.path).replace("\\", "/")
+        parts = str(ticket.path).replace("\\", "/").split("/")
+        if ".scratch" in parts:
+            idx = len(parts) - 1 - parts[::-1].index(".scratch")
+            return "/".join(parts[idx:])
     return f".scratch/{effort}/issues/{ticket.number:02d}-{ticket.slug}.md"
 
 
