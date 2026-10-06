@@ -18,6 +18,8 @@ Checks implemented:
 - Check 4: PR touching .github/, gate scripts, docs/adr/, AGENTS.md, CONTEXT.md -> hold, naming paths (ADR 0001 §2.4).
 - Check 5: tests-first escape hatch used (label, commit/PR tag) -> hold (ADR 0001 §2.5).
 - Check 6: ticket must be done with every acceptance box ticked (ADR 0001 §2.6).
+  Planning PRs hold instead of failing: several changed ticket files, or one ticket
+  still ready-for-agent / ready-for-developer (no worker claimed it).
 - Check 7: new test functions run against base source must fail on base; any new test passing on base -> hold, listing the tests (ADR 0001 §2.7). Silent if no new tests.
 - Check 8: PR adds a ticket file absent from the base branch -> hold, naming it. Fires independently of every other check (ADR 0001 §2.8, ADR 0008).
 - Auto-merge: no producing a merge hold regardless of other checks (ADR 0001 §3).
@@ -164,6 +166,10 @@ def parse_ratchet_value(content: str | None) -> float | int | dict[str, float | 
 
 
 _TICKET_FILE_RE = re.compile(r"^\.scratch/[^/]+/issues/[^/]+\.md$")
+
+# Statuses a ticket has before any worker claims it. A worker's first commit sets
+# in-progress, so a PR whose ticket still reads one of these is a planning edit.
+_UNCLAIMED_STATUSES = frozenset({"ready-for-agent", "ready-for-developer"})
 
 
 def get_diff_changed_paths(
@@ -831,6 +837,19 @@ class IntegrityCore:
             reasons.append(
                 f"{ESCALATED_REASON_PREFIX}; answer the escalation under ## Comments, "
                 "or rewrite the ticket and delete the claim branch to retry"
+            )
+        elif ticket_obj.status in _UNCLAIMED_STATUSES:
+            # A worker's first commit sets its ticket in-progress (ticket skill), so a
+            # ticket that is still ready-for-agent or ready-for-developer in the PR was
+            # never claimed. The PR is the developer editing one ticket (with its ADR,
+            # glossary or conventions), not a worker finishing it. Failing it on
+            # "expected 'done'" and every unticked box blocked that planning edit, the
+            # single-ticket twin of the several-ticket case above. A hold never
+            # auto-merges; only Check 6 is relaxed.
+            is_holding = True
+            reasons.append(
+                f"Check 6 hold: the PR's ticket is still '{ticket_obj.status}', so no worker "
+                "claimed it; this is a planning edit, and a human must review and merge it"
             )
         else:
             if not ticket_obj.is_done():

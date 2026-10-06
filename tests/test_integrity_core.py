@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import textwrap
 
+import pytest
+
 from ticket_engine.integrity import (
     ESCALATED_REASON_PREFIX,
     BaseTestResults,
@@ -1080,6 +1082,51 @@ def test_check_6_single_ticket_pr_is_still_judged_on_its_ticket():
 
     assert verdict.verdict == Verdict.FAIL
     assert any("expected 'done'" in r for r in verdict.reasons)
+
+
+@pytest.mark.parametrize("open_status", ["ready-for-agent", "ready-for-developer"])
+def test_check_6_pr_editing_one_unclaimed_ticket_is_held_as_planning(open_status):
+    # Slackbot buyer-picker PR: the developer rewrote one existing ticket and, with it,
+    # an ADR, CONTEXT.md and AGENTS.md. One changed ticket file made the gate treat it
+    # as a worker finishing that ticket, so it failed on "expected 'done'" and on every
+    # unticked box. A worker sets its ticket in-progress as its first commit (ticket
+    # skill), so a ticket still open in the PR was never claimed: this is a planning
+    # edit, and a human merges it.
+    base_ticket = (
+        f"# 74: Buyer picker\n**Status:** {open_status}\n"
+        "## Acceptance criteria\n- [ ] Pure function\n"
+    )
+    head_ticket = (
+        f"# 74: Buyer picker\n**Status:** {open_status}\n"
+        "## Acceptance criteria\n- [ ] Pure function, two options in order\n"
+        "- [ ] Only buyers on all three cards\n"
+    )
+    base_tree = {
+        "tests/test_a.py": "def test_a():\n    assert 1 == 1\n",
+        ".scratch/e/issues/74-buyer-picker.md": base_ticket,
+        "AGENTS.md": "# Agents\n",
+        "CONTEXT.md": "# Context\n",
+    }
+    head_tree = dict(base_tree)
+    head_tree[".scratch/e/issues/74-buyer-picker.md"] = head_ticket
+    head_tree["AGENTS.md"] = "# Agents\nNew convention.\n"
+    head_tree["CONTEXT.md"] = "# Context\n**Buyer picker**: lists only buyers.\n"
+    head_tree["docs/adr/0014-the-buyer-picker-lists-only-buyers.md"] = "# 14\n"
+
+    verdict = IntegrityCore().evaluate(
+        base_tree=base_tree, pr_diff=head_tree, ticket=head_ticket, base_ticket=base_ticket
+    )
+
+    assert verdict.verdict == Verdict.HOLD, verdict.reasons
+    assert any(
+        r.startswith("Check 6 hold")
+        and f"'{open_status}'" in r
+        and "planning edit" in r
+        for r in verdict.reasons
+    ), verdict.reasons
+    assert not any(r.startswith("Check 6 fail") for r in verdict.reasons)
+    # Check 4 still holds it for the governance paths; that part is unchanged.
+    assert any(r.startswith("Check 4 hold") for r in verdict.reasons)
 
 
 # Tickets written from the /to-tickets template put their checkboxes straight under
