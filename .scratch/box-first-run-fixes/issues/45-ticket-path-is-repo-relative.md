@@ -22,7 +22,7 @@ path, and prove it through the real loader. No caller changes.
 
 **Blocked by:** None (can start immediately)
 
-**Status:** in-progress
+**Status:** done
 
 **Runner:** any
 
@@ -36,7 +36,7 @@ client (`MagicMock`, as `make_fake_github` does), agy (`AgyDriver(run_fn=...)`) 
 git (`_make_git_runner`). The ticket loader and parser must be real:
 `_load_tickets_from_path` over a ticket file written under pytest's `tmp_path`.
 
-- [ ] **`_ticket_path_str` returns the repo-relative path.** In
+- [x] **`_ticket_path_str` returns the repo-relative path.** In
   `src/ticket_engine/local_worker.py`, replace the body of `_ticket_path_str` with
   exactly this, and give it this docstring:
   ```python
@@ -61,7 +61,7 @@ git (`_make_git_runner`). The ticket loader and parser must be real:
   returns exactly `".scratch/e/issues/50-x.md"`. A second assertion in the same
   test: a ticket with `path=None`, `effort="e"`, `number=7`, `slug="y"` returns
   `".scratch/e/issues/07-y.md"`.
-- [ ] **`run_one` sends GitHub the relative path.** New test
+- [x] **`run_one` sends GitHub the relative path.** New test
   `test_run_one_uses_repo_relative_ticket_path_with_a_loaded_ticket`: write
   `.scratch/e/issues/50-x.md` under `tmp_path` (a `ready-for-agent` ticket with
   `**Runner:** any` and one `- [ ]` criterion), load it with
@@ -70,11 +70,11 @@ git (`_make_git_runner`). The ticket loader and parser must be real:
   `(0, '{"status": "SUCCESS"}')`. Assert that every `get_file_contents` call's path
   argument and the `commit_file_change` call's `path=` keyword are exactly
   `".scratch/e/issues/50-x.md"`.
-- [ ] **The prompt names the relative path.** In the same scenario, the fake
+- [x] **The prompt names the relative path.** In the same scenario, the fake
   `run_fn` records the args it received. Assert that the prompt (the argument after
   `-p`) contains `.scratch/e/issues/50-x.md` and does **not** contain
   `str(tmp_path)`.
-- [ ] **Escalation writes into the worktree and commits.** New test
+- [x] **Escalation writes into the worktree and commits.** New test
   `test_escalation_writes_brief_into_the_worktree_copy_of_a_loaded_ticket`: same
   loaded ticket. Copy the setup of `test_resumes_exhausted_escalates_with_all_five_effects`
   (agy always returns `(1, '{"status": "ERROR", "message": "boom"}')`,
@@ -90,7 +90,7 @@ git (`_make_git_runner`). The ticket loader and parser must be real:
   This proves the escalation commit lands on the ticket branch, so an escalated
   ticket's branch is never empty. That is what caused the 422. Do not add a
   `try/except` around `create_pull_request`.
-- [ ] **Existing tests unchanged.** Every existing test in `tests/` still passes
+- [x] **Existing tests unchanged.** Every existing test in `tests/` still passes
   with its assertions as they are. No test is deleted, skipped or weakened.
 
 Gates, in CI order: `ruff check .`, `python scripts/check_tests_first.py`,
@@ -104,3 +104,9 @@ Gates, in CI order: `ruff check .`, `python scripts/check_tests_first.py`,
 - The box loop (`box_worker.py`, `box_core.py`): unchanged.
 
 ## Comments
+
+2026-10-06: Implemented repo-relative ticket path handling in `_ticket_path_str`.
+- Updated `_ticket_path_str` in `src/ticket_engine/local_worker.py` to strip absolute clone paths down to repo-relative `.scratch/...` paths.
+- Added tests `test_ticket_path_str_strips_an_absolute_windows_path`, `test_run_one_uses_repo_relative_ticket_path_with_a_loaded_ticket`, and `test_escalation_writes_brief_into_the_worktree_copy_of_a_loaded_ticket` in `tests/test_local_worker.py`.
+- Verified all new tests fail before implementation and pass after. All 61 tests in `tests/test_local_worker.py` pass.
+- Verified `ruff check .` and `check_tests_first.py` pass cleanly.

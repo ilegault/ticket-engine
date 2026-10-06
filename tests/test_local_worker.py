@@ -15,13 +15,18 @@ Ticket 09 Acceptance Criteria 1-8 mandate that:
 from __future__ import annotations
 
 import json
+import pathlib
 
 import pytest
 
 from ticket_engine.agy import AgyDriver, AgyResult
 from ticket_engine.dispatch import AUTO_REPLY_TEXT
 from ticket_engine.local_config import LocalRepoEntry, LocalWorkerConfig, load_local_config
-from ticket_engine.local_worker import LocalWorker
+from ticket_engine.local_worker import (
+    LocalWorker,
+    _load_tickets_from_path,
+    _ticket_path_str,
+)
 from ticket_engine.parser import Ticket
 from ticket_engine.sonnet import SonnetResult
 
@@ -1647,3 +1652,153 @@ def test_local_worker_runs_git_with_the_configured_timeout(monkeypatch):
     worker._git_runner(["git", "status"], None, None)
 
     assert seen == [42]
+
+
+# ---------------------------------------------------------------------------
+# Ticket 45: repo-relative ticket path everywhere
+# ---------------------------------------------------------------------------
+
+def test_ticket_path_str_strips_an_absolute_windows_path():
+    """_ticket_path_str returns the repo-relative, /-separated path."""
+    t1 = Ticket(
+        number=50,
+        title="x",
+        slug="x",
+        status="ready-for-agent",
+        effort="e",
+        path=pathlib.Path(r"C:\Users\agent\projects\Slackbot\.scratch\e\issues\50-x.md"),
+    )
+    assert _ticket_path_str(t1, "e") == ".scratch/e/issues/50-x.md"
+
+    t2 = Ticket(
+        number=7,
+        title="y",
+        slug="y",
+        status="ready-for-agent",
+        effort="e",
+        path=None,
+    )
+    assert _ticket_path_str(t2, "e") == ".scratch/e/issues/07-y.md"
+
+
+def test_run_one_uses_repo_relative_ticket_path_with_a_loaded_ticket(tmp_path):
+    """run_one sends GitHub the relative path and prompt names the relative path."""
+    ticket_file = tmp_path / ".scratch" / "e" / "issues" / "50-x.md"
+    ticket_file.parent.mkdir(parents=True, exist_ok=True)
+    ticket_content = (
+        "# 50: Test ticket\n\n"
+        "**Status:** ready-for-agent\n\n"
+        "**Runner:** any\n\n"
+        "## Acceptance criteria\n\n"
+        "- [ ] Criterion 1\n\n"
+        "## Comments\n"
+    )
+    ticket_file.write_text(ticket_content, encoding="utf-8")
+
+    loaded_tickets = _load_tickets_from_path(tmp_path)
+    assert len(loaded_tickets) == 1
+    ticket = loaded_tickets[0]
+
+    mock_github = make_fake_github()
+    args_seen = []
+
+    def run_fn(args, cwd=None):
+        args_seen.append(args)
+        return 0, json.dumps({"status": "SUCCESS"})
+
+    done_content = (
+        "# 50: Test ticket\n\n"
+        "**Status:** done\n\n"
+        "**Runner:** any\n\n"
+        "## Acceptance criteria\n\n"
+        "- [x] Criterion 1\n\n"
+        "## Comments\n"
+    )
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=run_fn),
+        git_runner=_make_git_runner([]),
+        read_ticket_fn=lambda p: done_content,
+    )
+    entry = make_repo_entry(path=str(tmp_path))
+    success = worker.run_one(entry, ticket)
+    assert success
+
+    assert mock_github.get_file_contents.called
+    for call in mock_github.get_file_contents.call_args_list:
+        path_arg = call.args[1] if len(call.args) > 1 else call.kwargs.get("path")
+        assert path_arg == ".scratch/e/issues/50-x.md"
+
+    assert mock_github.commit_file_change.called
+    for call in mock_github.commit_file_change.call_args_list:
+        assert call.kwargs.get("path") == ".scratch/e/issues/50-x.md"
+
+    p_calls = [a for a in args_seen if "-p" in a]
+    assert p_calls, "agy should have been invoked with -p"
+    p_idx = p_calls[0].index("-p")
+    prompt = p_calls[0][p_idx + 1]
+    assert ".scratch/e/issues/50-x.md" in prompt
+    assert str(tmp_path) not in prompt
+
+
+def test_escalation_writes_brief_into_the_worktree_copy_of_a_loaded_ticket(tmp_path):
+    """Escalation writes into the worktree copy of a loaded ticket and commits."""
+    ticket_file = tmp_path / ".scratch" / "e" / "issues" / "50-x.md"
+    ticket_file.parent.mkdir(parents=True, exist_ok=True)
+    ticket_content = (
+        "# 50: Test ticket\n\n"
+        "**Status:** ready-for-agent\n\n"
+        "**Runner:** any\n\n"
+        "## Acceptance criteria\n\n"
+        "- [ ] Criterion 1\n\n"
+        "## Comments\n"
+    )
+    ticket_file.write_text(ticket_content, encoding="utf-8")
+
+    loaded_tickets = _load_tickets_from_path(tmp_path)
+    assert len(loaded_tickets) == 1
+    ticket = loaded_tickets[0]
+
+    git_calls = []
+    recorded_write_paths = []
+
+    def run_fn(args, cwd=None):
+        return 1, json.dumps({"status": "ERROR", "message": "boom"})
+
+    mock_github = make_fake_github()
+    mock_github.find_open_pr.return_value = None
+    mock_github.create_pull_request.return_value = 77
+    mock_github.find_open_issue.return_value = None
+
+    def write_ticket_fn(p, c):
+        recorded_write_paths.append(pathlib.Path(p))
+
+    worker = LocalWorker(
+        config=make_config(max_resumes_per_ticket=3),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=run_fn),
+        git_runner=_make_git_runner(git_calls),
+        sleep_fn=lambda s: None,
+        read_ticket_fn=lambda p: "# 50: Test\n**Status:** in-progress\n\n## Comments\n",
+        write_ticket_fn=write_ticket_fn,
+    )
+    success = worker.run_one(make_repo_entry(path=str(tmp_path), repo="owner/repo"), ticket)
+
+    assert success is False
+    worktree_add_calls = [c for c in git_calls if "worktree" in c and "add" in c]
+    assert worktree_add_calls
+    worktree_path = _extract_worktree_path(worktree_add_calls[0])
+    assert worktree_path
+
+    assert recorded_write_paths
+    assert recorded_write_paths[-1] == pathlib.Path(worktree_path) / ".scratch/e/issues/50-x.md"
+
+    git_add_calls = [c for c in git_calls if "add" in c and "worktree" not in c]
+    assert git_add_calls
+    assert git_add_calls[-1][-1] == ".scratch/e/issues/50-x.md"
+
+    mock_github.create_pull_request.assert_called_once()
+    assert mock_github.create_pull_request.call_args.kwargs["draft"] is True
+
