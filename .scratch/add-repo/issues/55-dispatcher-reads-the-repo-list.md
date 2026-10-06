@@ -1,6 +1,6 @@
 # 55: The dispatcher reads the repo list instead of `box_enabled`, and `jules_enabled = false` stops Jules
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
