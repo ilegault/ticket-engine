@@ -347,14 +347,26 @@ For the planner session. None of this is for a worker.
 <!-- ACTIVE-PLAN:START -->
 ## Active implementation plan
 
+_Written by the planning model on 2026-10-06 17:16. Implement this. If something in it is wrong, say so before changing course._
+
 This is a **pointer**, not the work. The work is a ticket set.
 
-- Spec: `.scratch/needs-you-waiting-on/spec.md`
-- Tickets: `.scratch/needs-you-waiting-on/issues/` — 16 → 17 → 18
-- Next: **16** (run report Waiting on column). 17 is blocked by 16. 18 is
-  `ready-for-developer` (move `v1`, confirm on Slackbot).
+- Effort: `.scratch/box-first-run-fixes/` (no spec; the background is in each ticket and in tickets 45–47, all `done`)
+- Tickets: `.scratch/box-first-run-fixes/issues/` — 48, 49, 50
+- Binding ADRs: 0004 (escalation), 0006 (the box is the primary worker), 0007 (agy unrestricted in a fenced account; rules 4 and 5: logs stay on the box, nothing raw is posted)
+- Glossary: no new terms. Uses Box, Checkpoint, Escalation, Claim from `CONTEXT.md`.
+- Conventions: `docs/agents/issue-tracker.md`
+- **Next:** **48** first (the box logs agy's start and each checkpoint push, and kills an agy that outlives its timeout); it is what makes a hung run visible. **49** has no blockers and can run alongside it.
+- Graph: 48 → 50. 49 is independent. Nothing is held; nothing is `ready-for-developer`.
 
-Phase 1 (`.scratch/phase-1/`) is complete except its developer tickets 13–15.
+Requirements an implementer might treat as preferences:
+- Never log agy's prompt or args (48). Nothing new is posted to GitHub (ADR 0007 rule 4).
+- The hard-timeout test runs a real child plus grandchild process and must kill both (48). A test that fakes the subprocess does not satisfy it.
+- `RunFn`'s `(args, cwd)` signature does not change (48): every existing agy fake depends on it.
+- Unexpected GitHub codes still log at ERROR with GitHub's body (49). Only codes a caller already handles go quiet.
+- An escalation whose PR is refused still opens its escalation issue (50).
+
+The set deliberately does not: make `load_local_config` refuse a missing config, let `dispatch --dry-run` simulate the box, touch `sonnet.py`, the Jules client, the box status issue, or `docs/box-setup.md`.
 <!-- ACTIVE-PLAN:END -->
 
 ## Implementation Protocol
