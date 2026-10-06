@@ -1,6 +1,6 @@
 # 57: The box's config has no repo list, and a bad config stops the box
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Runner:** any
 
@@ -27,12 +27,12 @@ changing `src/`. Config files are real TOML written into `tmp_path`.
 `box_worker.build_loop` and `_configure_logging` may be monkeypatched, as
 `test_main_once_runs_exactly_one_tick` does.
 
-- [ ] **Two folder settings.** `LocalWorkerConfig` gains `projects_dir: str` (default
+- [x] **Two folder settings.** `LocalWorkerConfig` gains `projects_dir: str` (default
   `str(pathlib.Path.home() / "projects")`) and `envs_dir: str` (default
   `str(pathlib.Path.home() / "envs")`), each via a module-level default function
   like `_default_logs_dir`. `load_local_config` reads both; an empty string falls
   back to the default. Test `test_local_config_reads_projects_and_envs_dirs`.
-- [ ] **A strict loader for the box.** Add `class BoxConfigError(ValueError)` and
+- [x] **A strict loader for the box.** Add `class BoxConfigError(ValueError)` and
   `load_box_config(path: pathlib.Path | str | None = None) -> LocalWorkerConfig`
   to `local_config.py`. It raises `BoxConfigError` when the file does not exist
   (message contains the path and `not found`), when it is not valid TOML (message
@@ -40,7 +40,7 @@ changing `src/`. Config files are real TOML written into `tmp_path`.
   contains `[[repos]]` and `engine-repos.toml`). Otherwise it returns
   `load_local_config(path)`. Tests: one per case, plus
   `test_load_box_config_accepts_a_config_without_repos`.
-- [ ] **`box-worker` refuses to start on a bad config.** `box_worker.main` calls
+- [x] **`box-worker` refuses to start on a bad config.** `box_worker.main` calls
   `load_box_config(args.config)`. On `BoxConfigError` it calls
   `_configure_logging(_default_logs_dir())` (import `_default_logs_dir` from
   `local_config`), logs `logger.error("box-worker refuses to start: %s", exc)`,
@@ -48,7 +48,7 @@ changing `src/`. Config files are real TOML written into `tmp_path`.
   `test_main_refuses_a_missing_config` and `test_main_refuses_a_config_with_repos`
   (monkeypatched `build_loop` that fails the test if called; assert rc 2 and the
   ERROR record text). `test_main_once_runs_exactly_one_tick` passes unchanged.
-- [ ] **The runbook's example config matches.** In `docs/box-setup.md`, in the one
+- [x] **The runbook's example config matches.** In `docs/box-setup.md`, in the one
   fenced `toml` block, take out the `[[repos]]` block and add
   `projects_dir = "C:/Users/agent/projects"` and `envs_dir = "C:/Users/agent/envs"`.
   Replace the sentence beginning "`repos` lists every target repo clone" with:
@@ -59,7 +59,7 @@ changing `src/`. Config files are real TOML written into `tmp_path`.
   name**: the block still contains every `LocalWorkerConfig` field except `repos`
   and `github_token`, and loads with `load_box_config` without raising (in place
   of `len(config.repos) >= 1`).
-- [ ] **Existing tests unchanged.** Apart from the one in-place rewrite above, every
+- [x] **Existing tests unchanged.** Apart from the one in-place rewrite above, every
   existing test passes with its assertions as they are. No test is deleted,
   skipped or weakened.
 
@@ -78,3 +78,10 @@ In CI order:
 - The rest of `docs/box-setup.md` (ticket 67).
 
 ## Comments
+
+2026-10-06:
+- Added `projects_dir` and `envs_dir` to `LocalWorkerConfig` with module-level default functions `_default_projects_dir` and `_default_envs_dir`. `load_local_config` reads both and falls back on empty strings (covered by `test_local_config_reads_projects_and_envs_dirs`).
+- Added `BoxConfigError` and `load_box_config` strict loader to `local_config.py` that raises on missing, unreadable, or repos-containing config files (covered by `test_load_box_config_raises_when_missing`, `test_load_box_config_raises_when_unreadable`, `test_load_box_config_raises_when_has_repos`, and `test_load_box_config_accepts_a_config_without_repos`).
+- Updated `box_worker.main` to use `load_box_config`, log error, configure default logs dir, and exit with code 2 on `BoxConfigError` without invoking `build_loop` (covered by `test_main_refuses_a_missing_config` and `test_main_refuses_a_config_with_repos`).
+- Updated `docs/box-setup.md` example to remove `[[repos]]`, add `projects_dir` and `envs_dir`, and rewritten `test_config_example_is_real` in `tests/test_box_setup_doc.py` in-place to verify against `load_box_config`.
+- All existing tests pass unchanged.

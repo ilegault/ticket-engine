@@ -57,7 +57,10 @@ can be seen:
   the loop forever;
 - the GitHub token is `LocalWorkerConfig.github_token`, falling back to the
   `PIPELINE_TOKEN` environment variable. Environment variables do not
-  reliably reach a scheduled task, so the config file is the primary home.
+  reliably reach a scheduled task, so the config file is the primary home;
+- Ticket 57 (ADR 0009 rule 7): the box's config must not list repos, and a
+  missing, unreadable or repos-containing config makes box-worker refuse to
+  start immediately with exit code 2.
 """
 from __future__ import annotations
 
@@ -96,7 +99,13 @@ from ticket_engine.box_status import (
 )
 from ticket_engine.config import RepoConfig, load_repo_config
 from ticket_engine.github import GitHubClient
-from ticket_engine.local_config import LocalRepoEntry, LocalWorkerConfig, load_local_config
+from ticket_engine.local_config import (
+    BoxConfigError,
+    LocalRepoEntry,
+    LocalWorkerConfig,
+    _default_logs_dir,
+    load_box_config,
+)
 from ticket_engine.local_worker import LocalWorker, _load_tickets_from_path
 from ticket_engine.parser import Ticket
 from ticket_engine.sonnet import SonnetDriver
@@ -685,7 +694,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    local_cfg = load_local_config(args.config)
+    try:
+        local_cfg = load_box_config(args.config)
+    except BoxConfigError as exc:
+        _configure_logging(_default_logs_dir())
+        logger.error("box-worker refuses to start: %s", exc)
+        return 2
+
     _configure_logging(local_cfg.logs_dir)
 
     loop = build_loop(local_cfg)

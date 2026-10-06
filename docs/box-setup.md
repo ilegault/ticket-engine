@@ -89,6 +89,8 @@ weekly_cap_after_hours = 5
 weekly_cap_backoff_hours = 12
 engine_repo = "ilegault/ticket-engine"
 logs_dir = "C:/Users/agent/ticket-engine-box/logs"
+projects_dir = "C:/Users/agent/projects"
+envs_dir = "C:/Users/agent/envs"
 sonnet_enabled = false
 sonnet_timeout_seconds = 7200
 git_timeout_seconds = 300
@@ -97,16 +99,13 @@ git_timeout_seconds = 300
 print_timeout = "2h"
 quota_error_patterns = ["quota", "rate limit", "exhausted"]
 auth_error_patterns = ["auth", "login", "credential"]
-
-[[repos]]
-path = "C:/Users/agent/projects/target-repo"
-repo = "owner/target-repo"
 ```
 
 `github_token` is deliberately left out of this example — paste the real
 token, from the previous section, into this file directly on the box.
-`repos` lists every target repo clone the box should work; add one `[[repos]]`
-block per repo.
+The box takes its repos from `engine-repos.toml` in the engine repo (ADR 0009);
+this file must not list any. It clones each repo into `projects_dir` and keeps
+one Python environment per repo in `envs_dir`.
 
 `print_timeout` is a duration with a unit (`2h`, `90m`). agy rejects a bare
 number such as `7200`, and every session then fails within seconds. Save the

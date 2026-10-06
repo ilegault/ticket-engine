@@ -14,7 +14,10 @@ import pathlib
 import re
 import tomllib
 
-from ticket_engine.local_config import LocalWorkerConfig, load_local_config
+from ticket_engine.local_config import (
+    LocalWorkerConfig,
+    load_box_config,
+)
 
 DOC_PATH = pathlib.Path(__file__).resolve().parent.parent / "docs" / "box-setup.md"
 PYPROJECT_PATH = pathlib.Path(__file__).resolve().parent.parent / "pyproject.toml"
@@ -61,8 +64,8 @@ def test_config_example_is_real(tmp_path):
     } - {"repos", "github_token"}
     assert expected_fields <= flat_keys
 
-    config = load_local_config(config_path)
-    assert len(config.repos) >= 1
+    config = load_box_config(config_path)
+    assert isinstance(config, LocalWorkerConfig)
 
 
 def test_no_secrets_no_names():

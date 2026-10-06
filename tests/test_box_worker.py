@@ -25,7 +25,12 @@ import pytest
 from ticket_engine import box_worker
 from ticket_engine.box_core import CloseAlert, RaiseAlert
 from ticket_engine.box_status import AlertKind, BoxState, parse_box_status, render_box_alert
-from ticket_engine.local_config import LocalRepoEntry, LocalWorkerConfig
+from ticket_engine.local_config import (
+    BoxConfigError,
+    LocalRepoEntry,
+    LocalWorkerConfig,
+    load_box_config,
+)
 from ticket_engine.parser import Ticket, TicketParser
 from ticket_engine.sonnet import SonnetDriver
 
@@ -175,6 +180,124 @@ def test_local_config_loads_box_fields_from_toml(tmp_path):
     assert cfg.weekly_cap_backoff_hours == 8
     assert cfg.engine_repo == "owner/engine"
     assert cfg.logs_dir == str(tmp_path / "logs")
+
+
+# ---------------------------------------------------------------------------
+# Ticket 57: folder settings and strict box config loader
+# ---------------------------------------------------------------------------
+
+def test_local_config_reads_projects_and_envs_dirs(tmp_path):
+    from ticket_engine.local_config import load_local_config
+
+    default_cfg = LocalWorkerConfig()
+    assert default_cfg.projects_dir == str(pathlib.Path.home() / "projects")
+    assert default_cfg.envs_dir == str(pathlib.Path.home() / "envs")
+
+    custom_file = tmp_path / "custom.toml"
+    custom_file.write_text(
+        'projects_dir = "/custom/projects"\n'
+        'envs_dir = "/custom/envs"\n',
+        encoding="utf-8",
+    )
+    custom_cfg = load_local_config(custom_file)
+    assert custom_cfg.projects_dir == "/custom/projects"
+    assert custom_cfg.envs_dir == "/custom/envs"
+
+    empty_file = tmp_path / "empty.toml"
+    empty_file.write_text(
+        'projects_dir = ""\n'
+        'envs_dir = ""\n',
+        encoding="utf-8",
+    )
+    fallback_cfg = load_local_config(empty_file)
+    assert fallback_cfg.projects_dir == str(pathlib.Path.home() / "projects")
+    assert fallback_cfg.envs_dir == str(pathlib.Path.home() / "envs")
+
+
+def test_load_box_config_raises_when_missing(tmp_path):
+    missing_path = tmp_path / "nonexistent.toml"
+    with pytest.raises(BoxConfigError) as exc_info:
+        load_box_config(missing_path)
+    msg = str(exc_info.value)
+    assert str(missing_path) in msg
+    assert "not found" in msg
+
+
+def test_load_box_config_raises_when_unreadable(tmp_path):
+    unreadable_path = tmp_path / "corrupt.toml"
+    unreadable_path.write_text("invalid = [toml unclosed", encoding="utf-8")
+    with pytest.raises(BoxConfigError) as exc_info:
+        load_box_config(unreadable_path)
+    msg = str(exc_info.value)
+    assert str(unreadable_path) in msg
+    assert "unreadable" in msg
+
+
+def test_load_box_config_raises_when_has_repos(tmp_path):
+    repos_path = tmp_path / "with_repos.toml"
+    repos_path.write_text(
+        '[[repos]]\npath = "/a"\nrepo = "b/c"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(BoxConfigError) as exc_info:
+        load_box_config(repos_path)
+    msg = str(exc_info.value)
+    assert "[[repos]]" in msg
+    assert "engine-repos.toml" in msg
+
+
+def test_load_box_config_accepts_a_config_without_repos(tmp_path):
+    valid_path = tmp_path / "valid.toml"
+    valid_path.write_text(
+        'engine_repo = "owner/custom"\n',
+        encoding="utf-8",
+    )
+    cfg = load_box_config(valid_path)
+    assert isinstance(cfg, LocalWorkerConfig)
+    assert cfg.engine_repo == "owner/custom"
+    assert cfg.repos == []
+
+
+def test_main_refuses_a_missing_config(tmp_path, monkeypatch, caplog):
+    missing_path = tmp_path / "missing.toml"
+
+    def fail_build_loop(config):
+        pytest.fail("build_loop should not be called on bad config")
+
+    monkeypatch.setattr(box_worker, "build_loop", fail_build_loop)
+    monkeypatch.setattr(box_worker, "_configure_logging", lambda logs_dir: None)
+
+    with caplog.at_level(logging.ERROR, logger="ticket_engine.box_worker"):
+        rc = box_worker.main(["--config", str(missing_path)])
+
+    assert rc == 2
+    assert any(
+        "box-worker refuses to start:" in r.getMessage() and r.levelno == logging.ERROR
+        for r in caplog.records
+    )
+
+
+def test_main_refuses_a_config_with_repos(tmp_path, monkeypatch, caplog):
+    repos_path = tmp_path / "repos.toml"
+    repos_path.write_text(
+        '[[repos]]\npath = "/a"\nrepo = "b/c"\n',
+        encoding="utf-8",
+    )
+
+    def fail_build_loop(config):
+        pytest.fail("build_loop should not be called on bad config")
+
+    monkeypatch.setattr(box_worker, "build_loop", fail_build_loop)
+    monkeypatch.setattr(box_worker, "_configure_logging", lambda logs_dir: None)
+
+    with caplog.at_level(logging.ERROR, logger="ticket_engine.box_worker"):
+        rc = box_worker.main(["--config", str(repos_path)])
+
+    assert rc == 2
+    assert any(
+        "box-worker refuses to start:" in r.getMessage() and r.levelno == logging.ERROR
+        for r in caplog.records
+    )
 
 
 def test_main_once_runs_exactly_one_tick(tmp_path, monkeypatch):
