@@ -40,8 +40,18 @@ class GitHubClient:
         self.base_url = base_url.rstrip("/")
 
     def _request(
-        self, method: str, endpoint: str, payload: dict[str, Any] | None = None
+        self,
+        method: str,
+        endpoint: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        expected_codes: tuple[int, ...] = (),
     ) -> Any:
+        """Call GitHub. `expected_codes` are answers the caller treats as normal.
+
+        An HTTPError with an expected code is logged at DEBUG and re-raised; any
+        other HTTPError is logged at ERROR with GitHub's body and re-raised.
+        """
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
         headers = {
@@ -61,6 +71,11 @@ class GitHubClient:
                     return None
                 return json.loads(resp_bytes.decode("utf-8"))
         except urllib.error.HTTPError as exc:
+            if exc.code in expected_codes:
+                logger.debug(
+                    "GitHub API %s %s returned expected %s", method, endpoint, exc.code
+                )
+                raise
             err_body = exc.read().decode("utf-8", errors="replace")
             logger.error("GitHub API HTTPError %s %s: %s", exc.code, exc.reason, err_body)
             raise
@@ -81,7 +96,7 @@ class GitHubClient:
         }
 
         try:
-            self._request("POST", endpoint, payload)
+            self._request("POST", endpoint, payload, expected_codes=(422,))
             return True
         except urllib.error.HTTPError as exc:
             if exc.code == 422:
@@ -108,7 +123,7 @@ class GitHubClient:
         """
         endpoint = f"/repos/{repo}/branches/{branch.lstrip('/')}"
         try:
-            data = self._request("GET", endpoint)
+            data = self._request("GET", endpoint, expected_codes=(404,))
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return None
@@ -148,7 +163,7 @@ class GitHubClient:
         """Fetch an Actions variable from the repo, returning None if not found."""
         endpoint = f"/repos/{repo}/actions/variables/{name}"
         try:
-            data = self._request("GET", endpoint)
+            data = self._request("GET", endpoint, expected_codes=(404,))
             if isinstance(data, dict):
                 return data.get("value")
             return None
@@ -161,7 +176,7 @@ class GitHubClient:
         """List active claim branch names for the repo."""
         endpoint = f"/repos/{repo}/git/matching-refs/heads/claim/"
         try:
-            refs = self._request("GET", endpoint)
+            refs = self._request("GET", endpoint, expected_codes=(404,))
             if isinstance(refs, list):
                 result = []
                 for item in refs:
@@ -354,7 +369,7 @@ class GitHubClient:
         """Remove one label from an issue or PR. False when it was not there (404)."""
         endpoint = f"/repos/{repo}/issues/{issue_number}/labels/{urllib.parse.quote(label, safe='')}"
         try:
-            self._request("DELETE", endpoint)
+            self._request("DELETE", endpoint, expected_codes=(404,))
             return True
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
@@ -372,7 +387,7 @@ class GitHubClient:
 
         endpoint = f"/repos/{repo}/git/refs/{ref_path}"
         try:
-            self._request("DELETE", endpoint)
+            self._request("DELETE", endpoint, expected_codes=(404,))
             return True
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
@@ -383,7 +398,12 @@ class GitHubClient:
         """Set or update an Actions repository variable."""
         patch_endpoint = f"/repos/{repo}/actions/variables/{name}"
         try:
-            self._request("PATCH", patch_endpoint, {"name": name, "value": value})
+            self._request(
+                "PATCH",
+                patch_endpoint,
+                {"name": name, "value": value},
+                expected_codes=(404,),
+            )
             return True
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
@@ -407,7 +427,7 @@ class GitHubClient:
                 label_str = str(labels)
             endpoint += f"&labels={urllib.parse.quote(label_str, safe=',')}"
         try:
-            res = self._request("GET", endpoint)
+            res = self._request("GET", endpoint, expected_codes=(404,))
             return res if isinstance(res, list) else []
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
@@ -551,7 +571,7 @@ class GitHubClient:
         owner = repo.split("/", 1)[0]
         endpoint = f"/repos/{repo}/pulls?state=open&head={urllib.parse.quote(owner)}:{urllib.parse.quote(head_branch)}"
         try:
-            res = self._request("GET", endpoint)
+            res = self._request("GET", endpoint, expected_codes=(404,))
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return None

@@ -584,11 +584,13 @@ def test_github_client_methods_for_escalation_and_claims():
     with patch.object(client, "_request", return_value=None) as mock_req:
         res = client.delete_branch("owner/repo", "claim/phase-1/01")
         assert res is True
-        mock_req.assert_called_once_with("DELETE", "/repos/owner/repo/git/refs/heads/claim/phase-1/01")
+        mock_req.assert_called_once_with(
+            "DELETE", "/repos/owner/repo/git/refs/heads/claim/phase-1/01", expected_codes=(404,)
+        )
 
     # 6. set_repo_variable
     with patch.object(client, "_request", return_value=None) as mock_req:
         res = client.set_repo_variable("owner/repo", "TICKET_ENGINE_PAUSED", "true")
         assert res is True
-        mock_req.assert_called_once_with("PATCH", "/repos/owner/repo/actions/variables/TICKET_ENGINE_PAUSED", {"name": "TICKET_ENGINE_PAUSED", "value": "true"})
+        mock_req.assert_called_once_with("PATCH", "/repos/owner/repo/actions/variables/TICKET_ENGINE_PAUSED", {"name": "TICKET_ENGINE_PAUSED", "value": "true"}, expected_codes=(404,))
 

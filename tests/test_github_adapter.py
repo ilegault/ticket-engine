@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime
 import io
 import json
+import logging
 import pathlib
 import urllib.error
 from unittest.mock import MagicMock, patch
@@ -392,3 +393,80 @@ def test_list_open_issues_returns_the_recorded_list():
         "https://api.github.com/repos/owner/repo/issues?state=open&labels=escalation"
     )
 
+
+
+# --- Ticket 49: expected GitHub answers are not logged as errors -------------
+
+_PAUSE_404_BODY = (
+    '{"message":"Not Found","documentation_url":"https://docs.github.com/rest/'
+    'actions/variables#get-a-repository-variable","status":"404"}'
+)
+
+
+def _http_error(code: int, reason: str, body: str) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        url="https://api.github.com/x",
+        code=code,
+        msg=reason,
+        hdrs={},
+        fp=MagicMock(read=MagicMock(return_value=body.encode("utf-8"))),
+    )
+
+
+def _loud_records(caplog):
+    return [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_get_repo_variable_missing_returns_none_without_an_error_log(caplog):
+    caplog.set_level(logging.DEBUG, logger="ticket_engine.github")
+    client = GitHubClient(token="mock_token")
+    err = _http_error(404, "Not Found", _PAUSE_404_BODY)
+    with patch("urllib.request.urlopen", side_effect=err):
+        assert client.get_repo_variable("o/r", "TICKET_ENGINE_PAUSED") is None
+    assert _loud_records(caplog) == []
+
+
+def test_create_claim_branch_already_exists_logs_no_error(caplog):
+    caplog.set_level(logging.DEBUG, logger="ticket_engine.github")
+    client = GitHubClient(token="mock_token")
+    err = _http_error(422, "Unprocessable Entity", '{"message":"Reference already exists"}')
+    with patch("urllib.request.urlopen", side_effect=err):
+        assert client.create_claim_branch("o/r", "e", 1, "abc") is False
+    assert _loud_records(caplog) == []
+
+
+@pytest.mark.parametrize(
+    ("call", "expected"),
+    [
+        (lambda c: c.get_branch_head_time("o/r", "b"), None),
+        (lambda c: c.list_claim_branches("o/r"), []),
+        (lambda c: c.remove_issue_label("o/r", 1, "l"), False),
+        (lambda c: c.delete_branch("o/r", "b"), False),
+        (lambda c: c.list_issues("o/r"), []),
+        (lambda c: c.find_open_pr("o/r", "b"), None),
+    ],
+)
+def test_expected_404s_return_their_missing_value_without_an_error_log(
+    caplog, call, expected
+):
+    caplog.set_level(logging.DEBUG, logger="ticket_engine.github")
+    client = GitHubClient(token="mock_token")
+    err = _http_error(404, "Not Found", '{"message":"Not Found"}')
+    with patch("urllib.request.urlopen", side_effect=err):
+        assert call(client) == expected
+    assert _loud_records(caplog) == []
+
+
+def test_unexpected_status_still_logs_error_with_body(caplog):
+    caplog.set_level(logging.DEBUG, logger="ticket_engine.github")
+    client = GitHubClient(token="mock_token")
+    err = _http_error(
+        403, "Forbidden", '{"message":"Resource not accessible by personal access token"}'
+    )
+    with patch("urllib.request.urlopen", side_effect=err), pytest.raises(urllib.error.HTTPError):
+        client.get_repo_variable("o/r", "TICKET_ENGINE_PAUSED")
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1
+    msg = errors[0].getMessage()
+    assert "403" in msg
+    assert "Resource not accessible by personal access token" in msg
