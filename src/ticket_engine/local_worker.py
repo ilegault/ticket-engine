@@ -260,7 +260,7 @@ class LocalWorker:
         # 1. Get default branch SHA and create claim branch.
         try:
             base_sha = self.github_client.get_default_branch_sha(
-                entry.repo, _default_branch_for(entry)
+                entry.repo, self._default_branch(entry)
             )
         except (OSError, ValueError, RuntimeError) as exc:
             logger.error("Failed to get default branch SHA for %s: %s", entry.repo, exc)
@@ -1046,10 +1046,6 @@ def _default_read_ticket(path: str | pathlib.Path) -> str:
 
 def _default_write_ticket(path: str | pathlib.Path, content: str) -> None:
     pathlib.Path(path).write_text(content, encoding="utf-8")
-
-
-def _default_branch_for(entry: LocalRepoEntry) -> str:
-    return "master"
 
 
 def _ticket_path_str(ticket: Ticket, effort: str) -> str:
