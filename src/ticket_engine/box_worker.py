@@ -36,10 +36,30 @@ Everything the box posts publicly — the pinned status issue and every
 alert — goes through `box_status`'s fixed-template renderers (ADR 0007 rule
 4). The box's own logs (including any `agy` output) go only to a rotating
 file under `LocalWorkerConfig.logs_dir`, never to a GitHub request body.
+
+Operating the box (follow-ups from its first real setup). The box runs as a
+windowless scheduled task, so its log file is the only place anything it does
+can be seen:
+
+- every tick logs one INFO line naming the step it took (`tick: write
+  status`, `tick: wait until …`, `tick: claim owner/repo #09`), so a healthy
+  idle box is distinguishable from a stuck one;
+- a tick that raises is logged with its traceback (`tick failed`) and then
+  re-raised, so the task's restart-on-failure still sees the crash;
+- a failed `git pull` of a target clone is logged as a warning rather than
+  silently ignored (the tick carries on with the tickets already on disk;
+  claims and PRs come from GitHub, so a stale clone cannot double-claim);
+- every git call has `LocalWorkerConfig.git_timeout_seconds` as its upper
+  bound, because a git credential prompt nobody can see would otherwise hang
+  the loop forever;
+- the GitHub token is `LocalWorkerConfig.github_token`, falling back to the
+  `PIPELINE_TOKEN` environment variable. Environment variables do not
+  reliably reach a scheduled task, so the config file is the primary home.
 """
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import datetime
 import json
 import logging
@@ -106,7 +126,15 @@ class BoxLoop:
         self.worker = worker
         self.github_client = github_client
         self.box_core = box_core if box_core is not None else BoxCore()
-        self._git_runner: GitRunner = git_runner if git_runner is not None else _default_git_runner
+        # The default runner looks `_default_git_runner` up at call time and
+        # always passes the configured timeout.
+        self._git_runner: GitRunner = (
+            git_runner
+            if git_runner is not None
+            else lambda args, cwd, env: _default_git_runner(
+                args, cwd, env, timeout=self.config.git_timeout_seconds
+            )
+        )
         self._sleep = sleep_fn if sleep_fn is not None else time.sleep
         self._now = now_fn if now_fn is not None else _utcnow
         self._ticket_loader = (
@@ -122,18 +150,32 @@ class BoxLoop:
     # ------------------------------------------------------------------
 
     def tick(self) -> None:
-        """Build the world, decide one step, and carry it out."""
+        """Build the world, decide one step, and carry it out.
+
+        Logs one line naming the step, and logs any exception before letting
+        it propagate (see the module docstring).
+        """
+        try:
+            self._tick()
+        except Exception:
+            logger.exception("tick failed")
+            raise
+
+    def _tick(self) -> None:
         world = self._build_world()
 
         if self._auth_retry_at is not None and world.now < self._auth_retry_at:
             step = self.box_core.next_step(world)
             if isinstance(step, WriteStatus):
+                logger.info("tick: %s", _describe_step(step))
                 self._carry_out(step, world)
             else:
+                logger.info("tick: %s", _describe_step(Wait(until=self._auth_retry_at)))
                 self._sleep(max((self._auth_retry_at - world.now).total_seconds(), 0.0))
             return
 
         step = self.box_core.next_step(world)
+        logger.info("tick: %s", _describe_step(step))
         self._carry_out(step, world)
 
     def run_forever(self) -> None:
@@ -149,9 +191,13 @@ class BoxLoop:
         now = self._now()
         repos: list[BoxRepo] = []
         for entry in self.config.repos:
-            self._git_runner(
+            rc, out = self._git_runner(
                 ["git", "-C", entry.path, "pull", "--ff-only"], entry.path, None
             )
+            if rc != 0:
+                logger.warning(
+                    "git pull failed in %s (exit %d): %s", entry.path, rc, out.strip()
+                )
             tickets = self._ticket_loader(entry)
             repo_path = pathlib.Path(entry.path)
             repo_config = load_repo_config(repo_path) if repo_path.is_dir() else RepoConfig()
@@ -520,14 +566,43 @@ def _default_git_runner(
     args: list[str],
     cwd: str | None = None,
     env: dict[str, str] | None = None,
+    timeout: float | None = None,
 ) -> tuple[int, str]:
+    """Run one git command. A timeout is reported as a non-zero result.
+
+    On timeout the child is killed and (124, "... timed out after Ns") is
+    returned, so the caller's ordinary failure handling covers it.
+    """
     import subprocess
 
     merged_env = {**os.environ, **env} if env else None
-    result = subprocess.run(
-        args, capture_output=True, text=True, cwd=cwd, env=merged_env, check=False
-    )
+    try:
+        result = subprocess.run(
+            args, capture_output=True, text=True, cwd=cwd, env=merged_env,
+            check=False, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return 124, f"git command timed out after {timeout}s"
     return result.returncode, result.stdout or result.stderr
+
+
+def _describe_step(step: object) -> str:
+    """One short, fixed-shape phrase for a step, for the per-tick log line."""
+    if isinstance(step, WriteStatus):
+        return "write status"
+    if isinstance(step, Wait):
+        return "wait until " + step.until.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%MZ")
+    if isinstance(step, ClaimTicket):
+        return f"claim {step.repo} #{step.ticket.number:02d}"
+    if isinstance(step, ResumeClaim):
+        return f"resume {step.repo} #{step.ticket_number:02d}"
+    if isinstance(step, FixCI):
+        return f"fix CI {step.repo} #{step.ticket_number:02d} (PR {step.pr_number})"
+    if isinstance(step, RaiseAlert):
+        return f"raise alert {step.kind.value}"
+    if isinstance(step, CloseAlert):
+        return f"close alert {step.kind.value}"
+    return type(step).__name__
 
 
 def _configure_logging(logs_dir: str) -> None:
@@ -550,7 +625,11 @@ def _configure_logging(logs_dir: str) -> None:
 
 
 def build_loop(config: LocalWorkerConfig) -> BoxLoop:
-    token = os.environ.get("PIPELINE_TOKEN", "")
+    # The config file's token first; PIPELINE_TOKEN only as a fallback. The
+    # resolved token is written back into the config so the worker's pushes
+    # (which read config.github_token) use the same one as the API client.
+    token = config.github_token or os.environ.get("PIPELINE_TOKEN", "")
+    config = dataclasses.replace(config, github_token=token)
     github_client = GitHubClient(token=token)
     agy_driver = AgyDriver(
         print_timeout=config.print_timeout,

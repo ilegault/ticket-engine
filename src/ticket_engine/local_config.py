@@ -62,6 +62,10 @@ class LocalWorkerConfig:
     logs_dir: str = field(default_factory=_default_logs_dir)
     sonnet_enabled: bool = False
     sonnet_timeout_seconds: int = 7200
+    # Upper bound on any one git subprocess. A git call waiting on a
+    # credential prompt in the box's windowless scheduled task would
+    # otherwise hang the loop forever.
+    git_timeout_seconds: int = 300
 
 
 def load_local_config(path: pathlib.Path | str | None = None) -> LocalWorkerConfig:
@@ -128,4 +132,5 @@ def load_local_config(path: pathlib.Path | str | None = None) -> LocalWorkerConf
         logs_dir=str(data.get("logs_dir", "")) or _default_logs_dir(),
         sonnet_enabled=bool(data.get("sonnet_enabled", False)),
         sonnet_timeout_seconds=int(data.get("sonnet_timeout_seconds", 7200)),
+        git_timeout_seconds=int(data.get("git_timeout_seconds", 300)),
     )

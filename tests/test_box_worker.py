@@ -525,3 +525,166 @@ def test_build_loop_sonnet_enabled_wiring():
     loop = box_worker.build_loop(config)
     assert isinstance(loop.worker.sonnet_driver, SonnetDriver)
     assert loop.worker.sonnet_driver.timeout_seconds == 3600
+
+
+# ---------------------------------------------------------------------------
+# Box setup follow-ups (found during the first real box setup):
+# - the API token comes from the local config, not only PIPELINE_TOKEN;
+# - every tick leaves one log line, so a healthy box is distinguishable from
+#   a stuck one;
+# - a failed `git pull` is logged, never silently ignored;
+# - git calls have a timeout, so a hidden credential prompt cannot hang the box;
+# - a tick that raises is logged before it propagates (the scheduled task has
+#   no console, so an unlogged traceback is lost).
+# ---------------------------------------------------------------------------
+
+def _box_records(caplog, level: int) -> list[logging.LogRecord]:
+    return [
+        r for r in caplog.records
+        if r.name == "ticket_engine.box_worker" and r.levelno == level
+    ]
+
+
+def test_build_loop_uses_the_config_token_for_the_github_api(monkeypatch):
+    monkeypatch.delenv("PIPELINE_TOKEN", raising=False)
+    config = LocalWorkerConfig(
+        repos=[LocalRepoEntry(path="/fake", repo="owner/repo")],
+        github_token="tok-from-config",
+    )
+    loop = box_worker.build_loop(config)
+    assert loop.github_client.token == "tok-from-config"
+    assert loop.worker.config.github_token == "tok-from-config"
+
+
+def test_build_loop_config_token_wins_over_the_env_var(monkeypatch):
+    monkeypatch.setenv("PIPELINE_TOKEN", "tok-from-env")
+    config = LocalWorkerConfig(
+        repos=[LocalRepoEntry(path="/fake", repo="owner/repo")],
+        github_token="tok-from-config",
+    )
+    loop = box_worker.build_loop(config)
+    assert loop.github_client.token == "tok-from-config"
+
+
+def test_build_loop_falls_back_to_pipeline_token_for_api_and_pushes(monkeypatch):
+    monkeypatch.setenv("PIPELINE_TOKEN", "tok-from-env")
+    config = LocalWorkerConfig(repos=[LocalRepoEntry(path="/fake", repo="owner/repo")])
+    loop = box_worker.build_loop(config)
+    assert loop.github_client.token == "tok-from-env"
+    # The worker authenticates its pushes with config.github_token, so the
+    # fallback must reach it too, not just the API client.
+    assert loop.worker.config.github_token == "tok-from-env"
+
+
+def test_every_tick_logs_the_step_it_took(tmp_path, caplog):
+    loop = make_loop(tmp_path, FakeWorker(), make_github(), tickets=[])
+
+    with caplog.at_level(logging.INFO, logger="ticket_engine.box_worker"):
+        loop.tick()  # first tick of a run always writes the status issue
+        loop.tick()  # then nothing to do: wait one poll interval
+
+    assert [r.getMessage() for r in _box_records(caplog, logging.INFO)] == [
+        "tick: write status",
+        "tick: wait until 2026-09-26T12:10Z",
+    ]
+
+
+def test_tick_log_names_the_ticket_it_claims(tmp_path, caplog):
+    loop = make_loop(tmp_path, FakeWorker(), make_github(), tickets=[make_ticket(9)])
+    loop._last_status_write = _NOW
+
+    with caplog.at_level(logging.INFO, logger="ticket_engine.box_worker"):
+        loop.tick()
+
+    assert [r.getMessage() for r in _box_records(caplog, logging.INFO)] == [
+        "tick: claim owner/repo #09",
+    ]
+
+
+def test_failed_pull_is_logged_and_the_tick_still_runs(tmp_path, caplog):
+    github = make_github()
+    loop = make_loop(tmp_path, FakeWorker(), github, tickets=[])
+    loop._git_runner = lambda args, cwd, env: (
+        128, "fatal: Not possible to fast-forward, aborting."
+    )
+
+    with caplog.at_level(logging.WARNING, logger="ticket_engine.box_worker"):
+        loop.tick()
+
+    warnings = [r.getMessage() for r in _box_records(caplog, logging.WARNING)]
+    assert warnings == [
+        (
+            "git pull failed in /fake/repo (exit 128): "
+            "fatal: Not possible to fast-forward, aborting."
+        )
+    ]
+    github.update_issue_body.assert_called_once()
+
+
+def test_successful_pull_logs_no_warning(tmp_path, caplog):
+    loop = make_loop(tmp_path, FakeWorker(), make_github(), tickets=[])
+
+    with caplog.at_level(logging.WARNING, logger="ticket_engine.box_worker"):
+        loop.tick()
+
+    assert _box_records(caplog, logging.WARNING) == []
+
+
+def test_a_failing_tick_is_logged_then_raised(tmp_path, caplog):
+    github = make_github()
+    github.update_issue_body.side_effect = RuntimeError("boom")
+    loop = make_loop(tmp_path, FakeWorker(), github, tickets=[])
+
+    with (
+        caplog.at_level(logging.ERROR, logger="ticket_engine.box_worker"),
+        pytest.raises(RuntimeError, match="boom"),
+    ):
+        loop.tick()
+
+    errors = _box_records(caplog, logging.ERROR)
+    assert [r.getMessage() for r in errors] == ["tick failed"]
+    assert errors[0].exc_info is not None
+
+
+def test_local_config_git_timeout_default_and_toml(tmp_path):
+    from ticket_engine.local_config import load_local_config
+
+    assert LocalWorkerConfig().git_timeout_seconds == 300
+    config_file = tmp_path / "local.toml"
+    config_file.write_text("git_timeout_seconds = 45\n", encoding="utf-8")
+    assert load_local_config(config_file).git_timeout_seconds == 45
+
+
+def test_default_git_runner_gives_up_after_its_timeout():
+    import sys
+    import time
+
+    started = time.monotonic()
+    rc, out = box_worker._default_git_runner(
+        [sys.executable, "-c", "import time; time.sleep(30)"], None, None, timeout=0.5
+    )
+    assert rc != 0
+    assert "timed out after 0.5s" in out
+    assert time.monotonic() - started < 10
+
+
+def test_box_loop_pulls_with_the_configured_git_timeout(tmp_path, monkeypatch):
+    seen: list[tuple[list[str], object]] = []
+
+    def fake_runner(args, cwd=None, env=None, timeout=None):
+        seen.append((args, timeout))
+        return 0, ""
+
+    monkeypatch.setattr(box_worker, "_default_git_runner", fake_runner)
+    loop = box_worker.BoxLoop(
+        config=make_config(tmp_path, git_timeout_seconds=42),
+        worker=FakeWorker(),
+        github_client=make_github(),
+        sleep_fn=lambda s: None,
+        now_fn=lambda: _NOW,
+        ticket_loader=lambda entry: [],
+    )
+
+    loop.tick()
+
+    assert seen == [(["git", "-C", "/fake/repo", "pull", "--ff-only"], 42)]
