@@ -1,6 +1,6 @@
 # 54: Target repos declare their Python and install command, and can switch Jules off
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
