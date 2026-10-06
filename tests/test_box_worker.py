@@ -164,7 +164,7 @@ def test_local_config_loads_box_fields_from_toml(tmp_path):
         "weekly_cap_after_hours = 4\n"
         "weekly_cap_backoff_hours = 8\n"
         'engine_repo = "owner/engine"\n'
-        f'logs_dir = "{tmp_path / "logs"}"\n',
+        f"logs_dir = '{tmp_path / 'logs'}'\n",
         encoding="utf-8",
     )
     cfg = load_local_config(config_file)
@@ -180,7 +180,7 @@ def test_local_config_loads_box_fields_from_toml(tmp_path):
 def test_main_once_runs_exactly_one_tick(tmp_path, monkeypatch):
     config_path = tmp_path / "local.toml"
     config_path.write_text(
-        f'engine_repo = "owner/engine"\nlogs_dir = "{tmp_path / "logs"}"\n',
+        f"engine_repo = 'owner/engine'\nlogs_dir = '{tmp_path / 'logs'}'\n",
         encoding="utf-8",
     )
 
