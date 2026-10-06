@@ -225,6 +225,12 @@ def test_jules_setup_script_is_shell_script():
     assert "bash" in script or "sh" in script or script.startswith("#")
 
 
+def test_jules_setup_script_uses_the_declared_install():
+    result = github_setup(_base_input(install="pip install -r requirements.txt"))
+    assert "pip install -r requirements.txt" in result.jules_setup_script
+    assert "2>/dev/null" not in result.jules_setup_script
+
+
 def test_manual_steps_checklist_not_empty():
     result = github_setup(_base_input())
     assert len(result.manual_steps) >= 3, (

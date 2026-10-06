@@ -23,7 +23,8 @@ and returns a list of file writes, diffs and PII findings. No file I/O is done
 here. The ``run_adopt`` and ``run_new`` adapters read/write disk.
 
 ADR references: ADR 0001 (tests-first, gate scripts), ADR 0002 (no real names
-or IDs in public files, denylist enforcement).
+or IDs in public files, denylist enforcement), ADR 0010 (install keys and Python
+version declared in config, used by Jules setup script; ticket 54).
 """
 from __future__ import annotations
 
@@ -99,6 +100,9 @@ default_branch = "master"
 daily_cap = 10
 concurrency = 2
 jules_reserve = 10
+python_version = "3.12"
+install = "pip install -e .[dev]"
+jules_enabled = true
 """
 
 TICKET_TEMPLATE = """\
@@ -978,6 +982,7 @@ class GitHubSetupInput:
     existing_ruleset_names: list[str]
     python_version: str
     system_libraries: list[str]
+    install: str = "pip install -e .[dev]"
 
 
 @dataclass
@@ -987,7 +992,9 @@ class GitHubSetupResult:
     manual_steps: list[str]
 
 
-def _build_jules_setup_script(python_version: str, system_libraries: list[str]) -> str:
+def _build_jules_setup_script(
+    python_version: str, install: str, system_libraries: list[str]
+) -> str:
     nl = chr(10)
     lines = [
         "#!/usr/bin/env bash",
@@ -1006,7 +1013,7 @@ def _build_jules_setup_script(python_version: str, system_libraries: list[str]) 
         lines.append(f"apt-get install -y {libs}")
         lines.append("")
     lines.append("# Install project")
-    lines.append("pip install -e .[dev] 2>/dev/null || pip install -e .")
+    lines.append(install)
     return nl.join(lines) + nl
 
 
@@ -1062,7 +1069,7 @@ def github_setup(inp: GitHubSetupInput) -> GitHubSetupResult:
                 description=label["description"],
             ))
 
-    script = _build_jules_setup_script(inp.python_version, inp.system_libraries)
+    script = _build_jules_setup_script(inp.python_version, inp.install, inp.system_libraries)
     steps = _build_manual_steps()
 
     return GitHubSetupResult(operations=ops, jules_setup_script=script, manual_steps=steps)

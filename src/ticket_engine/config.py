@@ -7,6 +7,8 @@ mandate that every target repo has an engine config file defining its default br
 daily cap, concurrency (default 2), Jules reserve (default 10 of 100), test command,
 and paths. ADR 0004 adds `max_auto_replies` (default 2): how many questions from a
 waiting Jules session the engine answers before it escalates the ticket.
+Ticket 54 adds `python_version` (default "3.12"), `install` (default "pip install -e .[dev]"),
+and `jules_enabled` (default True) per ADR 0010 rule 1.
 Every tunable has one home: the configuration, never hardcoded literals in logic.
 """
 from __future__ import annotations
@@ -58,6 +60,9 @@ class RepoConfig:
     test_env: dict[str, str] = field(default_factory=dict)
     box_silent_hours: int = 12
     box_enabled: bool = False
+    python_version: str = "3.12"
+    install: str = "pip install -e .[dev]"
+    jules_enabled: bool = True
 
 
 def load_repo_config(repo_path: pathlib.Path | str | None = None) -> RepoConfig:
@@ -123,4 +128,7 @@ def load_repo_config(repo_path: pathlib.Path | str | None = None) -> RepoConfig:
         test_env={str(k): str(v) for k, v in dict(config_data.get("test_env", {})).items()},
         box_silent_hours=int(config_data.get("box_silent_hours", 12)),
         box_enabled=bool(config_data.get("box_enabled", False)),
+        python_version=str(config_data.get("python_version", "3.12")),
+        install=str(config_data.get("install", "pip install -e .[dev]")),
+        jules_enabled=bool(config_data.get("jules_enabled", True)),
     )
