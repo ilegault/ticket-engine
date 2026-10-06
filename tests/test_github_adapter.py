@@ -470,3 +470,36 @@ def test_unexpected_status_still_logs_error_with_body(caplog):
     msg = errors[0].getMessage()
     assert "403" in msg
     assert "Resource not accessible by personal access token" in msg
+
+
+# --- Token-reach probe (ticket 53) -------------------------------------------
+
+
+def test_can_read_variables_true_on_200():
+    client = GitHubClient(token="mock_token")
+    mock_resp = _resp({"total_count": 0, "variables": []})
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        assert client.can_read_variables("owner/repo") is True
+    req = mock_urlopen.call_args[0][0]
+    assert req.method == "GET"
+    assert req.full_url == "https://api.github.com/repos/owner/repo/actions/variables"
+
+
+@pytest.mark.parametrize("status_code", [403, 404])
+def test_can_read_variables_false_on_403_and_404_without_an_error_log(
+    caplog, status_code: int
+):
+    caplog.set_level(logging.DEBUG, logger="ticket_engine.github")
+    client = GitHubClient(token="mock_token")
+    err = _http_error(status_code, "Failed", '{"message":"Error"}')
+    with patch("urllib.request.urlopen", side_effect=err):
+        assert client.can_read_variables("owner/repo") is False
+    assert _loud_records(caplog) == []
+
+
+def test_can_read_variables_raises_on_500():
+    client = GitHubClient(token="mock_token")
+    err = _http_error(500, "Internal Server Error", '{"message":"Server Error"}')
+    with patch("urllib.request.urlopen", side_effect=err), pytest.raises(urllib.error.HTTPError):
+        client.can_read_variables("owner/repo")
+

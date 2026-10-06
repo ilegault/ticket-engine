@@ -172,6 +172,17 @@ class GitHubClient:
                 return None
             raise
 
+    def can_read_variables(self, repo: str) -> bool:
+        """Check whether the token can read Actions variables on the repo."""
+        endpoint = f"/repos/{repo}/actions/variables"
+        try:
+            self._request("GET", endpoint, expected_codes=(403, 404))
+            return True
+        except urllib.error.HTTPError as exc:
+            if exc.code in (403, 404):
+                return False
+            raise
+
     def list_claim_branches(self, repo: str) -> list[str]:
         """List active claim branch names for the repo."""
         endpoint = f"/repos/{repo}/git/matching-refs/heads/claim/"

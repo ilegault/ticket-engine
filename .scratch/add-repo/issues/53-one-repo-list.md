@@ -1,6 +1,6 @@
 # 53: One repo list: `engine-repos.toml` entries, a reader, and a token-reach probe
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Runner:** any
 
@@ -28,7 +28,7 @@ Tests may fake HTTP exactly as `test_get_repo_variable_missing_returns_none_with
 in `tests/test_github_adapter.py` does (`patch("urllib.request.urlopen", side_effect=...)`
 with `_http_error`). The parser tests use real TOML text.
 
-- [ ] **The parser.** New module `src/ticket_engine/repo_list.py` with
+- [x] **The parser.** New module `src/ticket_engine/repo_list.py` with
   `@dataclass(frozen=True) class RepoListEntry` (`repo: str`, `box: bool = True`),
   `class RepoListError(ValueError)`, and pure `parse_repo_list(text: str) -> list[RepoListEntry]`
   that keeps file order. It raises `RepoListError` when: the text is not valid TOML;
@@ -38,18 +38,18 @@ with `_http_error`). The parser tests use real TOML text.
   `duplicate`). A file with no `repos` key returns `[]`. Test
   `test_parse_repo_list_reads_entries_in_order_with_box_default` and one test per
   rejection, each asserting the exception type and the message fragment.
-- [ ] **The file moves to the new format.** Rewrite `engine-repos.toml` at the repo
+- [x] **The file moves to the new format.** Rewrite `engine-repos.toml` at the repo
   root as `[[repos]]` tables, keeping every repo the file lists when you start, in
   the same order, and keeping a comment block that explains the format and that
   `box = false` keeps the box away from a repo (ADR 0009). Test
   `test_engine_repos_toml_parses_and_lists_slackbot` reads the real file and
   asserts `RepoListEntry(repo="ilegault/slackbot", box=True)` is in the result.
-- [ ] **The fetcher.** `fetch_repo_list(client: GitHubClient, engine_repo: str) -> list[RepoListEntry]`
+- [x] **The fetcher.** `fetch_repo_list(client: GitHubClient, engine_repo: str) -> list[RepoListEntry]`
   in `repo_list.py` calls `client.get_file_contents(engine_repo, "engine-repos.toml")`
   with no `ref` (the default branch) and returns `parse_repo_list` of its
   `"content"`. Errors propagate. Test with a `MagicMock` client asserting the call
   arguments and the parsed result.
-- [ ] **The morning report uses the parser.** Add pure
+- [x] **The morning report uses the parser.** Add pure
   `repo_names_for_report(text: str) -> list[str]` to `repo_list.py`: the `repo` of
   every entry, in file order, whatever `box` says. In
   `scripts/run_morning_report.py`, replace `repos_data.get("repos", [])` with
@@ -57,7 +57,7 @@ with `_http_error`). The parser tests use real TOML text.
   `RepoListError` is logged with `logger.error("engine-repos.toml unreadable: %s", exc)`
   and the script returns 1. Test
   `test_repo_names_for_report_includes_box_false_repos`.
-- [ ] **The token-reach probe.** `GitHubClient.can_read_variables(repo: str) -> bool`
+- [x] **The token-reach probe.** `GitHubClient.can_read_variables(repo: str) -> bool`
   in `src/ticket_engine/github.py` sends `GET /repos/{repo}/actions/variables`
   through `self._request(..., expected_codes=(403, 404))`. It returns True on
   success, False on 403 or 404, and re-raises any other `HTTPError`. Copy
@@ -65,7 +65,7 @@ with `_http_error`). The parser tests use real TOML text.
   `test_can_read_variables_true_on_200`,
   `test_can_read_variables_false_on_403_and_404_without_an_error_log` (copy
   `_loud_records`), `test_can_read_variables_raises_on_500`.
-- [ ] **Existing tests unchanged.** Every existing test passes with its assertions
+- [x] **Existing tests unchanged.** Every existing test passes with its assertions
   as they are. No test is deleted, skipped or weakened.
 
 ## Gate
@@ -82,3 +82,12 @@ In CI order:
 - `.github/workflows/morning-report.yml`.
 
 ## Comments
+
+2026-10-06: Completed ticket 53.
+- Implemented `src/ticket_engine/repo_list.py` with `RepoListEntry`, `RepoListError`, pure `parse_repo_list`, `fetch_repo_list`, and `repo_names_for_report`.
+- Updated `engine-repos.toml` to new `[[repos]]` table format with explanatory comments and preserving listed repos.
+- Wired `scripts/run_morning_report.py` to use `repo_names_for_report` and handle `RepoListError`.
+- Added `can_read_variables` reach-probe method to `GitHubClient` in `src/ticket_engine/github.py`.
+- Added unit and integration tests in `tests/test_repo_list.py`, `tests/test_github_adapter.py`, and `tests/test_morning_report.py`.
+- Suite clean, all gates passing.
+

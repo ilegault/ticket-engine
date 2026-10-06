@@ -23,9 +23,10 @@ import datetime
 import logging
 import os
 import sys
-import tomllib
 import urllib.error
 import urllib.request
+
+from ticket_engine.repo_list import RepoListError, repo_names_for_report
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -238,9 +239,11 @@ def main() -> int:
         logger.error("engine-repos.toml not found at %s", repos_config)
         return 1
 
-    with repos_config.open("rb") as f:
-        repos_data = tomllib.load(f)
-    target_repos: list[str] = repos_data.get("repos", [])
+    try:
+        target_repos = repo_names_for_report(repos_config.read_text(encoding="utf-8"))
+    except RepoListError as exc:
+        logger.error("engine-repos.toml unreadable: %s", exc)
+        return 1
 
     if not target_repos:
         logger.warning("No repos listed in engine-repos.toml; report will be empty.")
