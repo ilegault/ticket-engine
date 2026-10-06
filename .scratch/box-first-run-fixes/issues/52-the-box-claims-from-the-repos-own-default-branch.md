@@ -1,6 +1,6 @@
 # 52: The box claims from the repo's own default branch
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Runner:** any
 
@@ -36,7 +36,7 @@ GitHub with `make_fake_github()` and agy with `AgyDriver(run_fn=...)` from
 `tests/test_local_worker.py`. The repo config is real: a `.ticket-engine.toml`
 written into `tmp_path`, which is the `LocalRepoEntry` path.
 
-- [ ] **The claim's base commit comes from the configured default branch.** In
+- [x] **The claim's base commit comes from the configured default branch.** In
   `LocalWorker.run_one`, replace `_default_branch_for(entry)` with
   `self._default_branch(entry)`. The module-level `_default_branch_for` then has
   no callers; take it out of `src/`. New test
@@ -44,14 +44,14 @@ written into `tmp_path`, which is the `LocalRepoEntry` path.
   `default_branch = "main"\n` to `tmp_path / ".ticket-engine.toml"`, call
   `run_one(make_repo_entry(path=str(tmp_path), repo="owner/repo"), make_ticket(9))`,
   and assert `get_default_branch_sha` was called with `("owner/repo", "main")`.
-- [ ] **No config still means `master`.** New test
+- [x] **No config still means `master`.** New test
   `test_claim_base_defaults_to_master_without_a_repo_config`: the same call with
   an empty `tmp_path` asserts `get_default_branch_sha` was called with
   `("owner/repo", "master")` (the `RepoConfig` default).
-- [ ] **No other hard-coded default branch in the box's path.** `grep -n
+- [x] **No other hard-coded default branch in the box's path.** `grep -n
   '"master"' src/ticket_engine/local_worker.py src/ticket_engine/box_worker.py`
   prints nothing. State the result under `## Comments`.
-- [ ] **Existing tests unchanged.** Every existing test passes with its assertions
+- [x] **Existing tests unchanged.** Every existing test passes with its assertions
   as they are. No test is deleted, skipped or weakened.
 
 ## Gate
@@ -69,3 +69,9 @@ In CI order:
 - Bootstrap's `ENGINE_CONFIG_TEMPLATE` (`.scratch/bootstrap-adopt-fixes/`).
 
 ## Comments
+
+2026-10-06:
+- In `LocalWorker.run_one` (`src/ticket_engine/local_worker.py`), replaced `_default_branch_for(entry)` with `self._default_branch(entry)`, and removed the module-level `_default_branch_for` helper function.
+- Ran `grep -n '"master"' src/ticket_engine/local_worker.py src/ticket_engine/box_worker.py` and confirmed it prints nothing.
+- Added tests `test_claim_base_uses_the_repos_configured_default_branch` and `test_claim_base_defaults_to_master_without_a_repo_config` in `tests/test_local_worker.py`. Observed `test_claim_base_uses_the_repos_configured_default_branch` fail with `AssertionError: Expected: get_default_branch_sha('owner/repo', 'main'), Actual: get_default_branch_sha('owner/repo', 'master')` before the implementation change.
+- Full gate passed locally: `ruff check .`, `python scripts/check_tests_first.py`, and `pytest -q` (648 passed, 1 skipped).

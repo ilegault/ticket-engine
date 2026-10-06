@@ -2091,3 +2091,29 @@ def test_refused_escalation_pr_in_box_mode_returns_none():
         make_repo_entry(repo="owner/repo"), make_ticket(9, effort="phase-1"), box_mode=True
     )
     assert result is None
+
+
+def test_claim_base_uses_the_repos_configured_default_branch(tmp_path):
+    (tmp_path / ".ticket-engine.toml").write_text('default_branch = "main"\n', encoding="utf-8")
+    mock_github = make_fake_github()
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}')),
+        git_runner=_make_git_runner([]),
+    )
+    worker.run_one(make_repo_entry(path=str(tmp_path), repo="owner/repo"), make_ticket(9))
+    mock_github.get_default_branch_sha.assert_called_once_with("owner/repo", "main")
+
+
+def test_claim_base_defaults_to_master_without_a_repo_config(tmp_path):
+    mock_github = make_fake_github()
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}')),
+        git_runner=_make_git_runner([]),
+    )
+    worker.run_one(make_repo_entry(path=str(tmp_path), repo="owner/repo"), make_ticket(9))
+    mock_github.get_default_branch_sha.assert_called_once_with("owner/repo", "master")
+
