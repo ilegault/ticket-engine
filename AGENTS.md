@@ -347,19 +347,45 @@ For the planner session. None of this is for a worker.
 <!-- ACTIVE-PLAN:START -->
 ## Active implementation plan
 
-_Written by the planning model on 2026-10-06 19:52. Implement this. If something in it is wrong, say so before changing course._
+_Written by the planning model on 2026-10-06 20:36. Implement this. If something in it is wrong, say so before changing course._
 
-This is a **pointer**, not the work. The work is a ticket set.
+# Active plan: add-repo — one command to add a repo; the box provisions itself
 
-- Effort: `.scratch/box-first-run-fixes/` (no spec; background is in each ticket). 45–50 are done.
-- Tickets open: **51** (two box-worker config tests pass on Windows), **52** (the box claims from the repo's own default branch).
-- Binding ADRs: 0006, 0007. Conventions: `docs/agents/issue-tracker.md`.
-- **Next:** **52** first. The box cannot claim any ticket in a target repo whose default branch is not `master` (TDS-T8 uses `main`) until it lands. 51 has no blockers and can run alongside it.
-- Graph: 51 and 52 are independent. Nothing is held; nothing is `ready-for-developer`.
-- Also waiting: `.scratch/bootstrap-adopt-fixes/spec.md` (findings for bootstrap adopt), to be broken into tickets with `/ticket-set`.
+This is a pointer, not the work. Read the spec and the tickets it names.
 
-Requirements an implementer might treat as preferences:
-- 52's tests use a real `.ticket-engine.toml` in `tmp_path`, not a faked `load_repo_config`.
+- **Spec:** `.scratch/add-repo/spec.md`
+- **Binding ADRs:** 0009 (adding a repo is one command plus a self-provisioning box; `engine-repos.toml` is the single on-switch), 0010 (per-repo environments, baseline, not ready, box pause). Also 0002, 0005, 0006, 0007 where they touch the same code.
+- **New glossary terms (CONTEXT.md):** Add-repo, Repo list, Repo environment, Baseline, Not ready, Box pause. *Bootstrap* reworded.
+- **Tickets:** `.scratch/add-repo/issues/53`–`68`, then `.scratch/phase-1/issues/15` (rewritten: RBL via add-repo). Conventions: `docs/agents/issue-tracker.md`.
+
+**Next:** 53, 54 and 57 have no blockers. Start with **53** (the repo list and token probe): 55, 58 and 63 all build on it.
+
+## Dependency graph
+
+- 53 → 55, 58, 63
+- 54 → 55, 59, 63
+- 55 → 56 → 58
+- 57 → 58
+- 58 + 60 → 61 → 62
+- 59 → 60 (52 already done)
+- 63 → 64 → 65 → 66
+- 62 + 66 → 67 → **68 (ready-for-developer)** → **phase-1 15 (ready-for-developer)**
+
+All of 53–67 are `Auto-merge: yes`. 68 and 15 are bench work for the developer; no agent claims them.
+
+## Requirements, not preferences
+
+- Decisions live in pure functions: `parse_repo_list`, `repo_readiness`, `env_fingerprint` and the command builders, `plan_add_repo`, `config_upgrade`. The adapters only gather facts and run commands, so tests never need real git, gh or virtual environments.
+- Secret values reach `gh` only on stdin. Never in an argument list, a log or printed output (ADR 0002).
+- Everything the box posts is fixed-template: reason codes and repo names only. Baseline and install output stays in the box's log (ADR 0007 rule 4).
+- `BoxLoop` with `repo_list_fn=None` keeps today's behaviour, so every existing box test passes unchanged.
+- The box never deletes a clone or an environment.
+
+## Not in this set
+
+- More than one agy session at once on the box (recorded follow-up).
+- A GitHub App replacing the two tokens; the Jules setup script via an API.
+- Workflow permissions on target repos (left at read).
 <!-- ACTIVE-PLAN:END -->
 
 ## Implementation Protocol
