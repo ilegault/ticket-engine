@@ -10,6 +10,7 @@
 
 repos = [
     "ilegault/slackbot",
+    "ilegault/tds-t8",
 ]
 
 # Roll in after adoption (ticket 13 / 15):
