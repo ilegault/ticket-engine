@@ -1,6 +1,6 @@
 # 51: Two box-worker config tests pass on Windows
 
-**Status:** in-progress
+**Status:** done
 
 **Runner:** any
 
@@ -29,18 +29,18 @@ The code under test is correct; the tests build bad input. Fix the tests only.
 Run `pytest -q tests/test_box_worker.py` on Windows and see both tests fail for the
 reason above before changing anything.
 
-- [ ] **`test_local_config_loads_box_fields_from_toml` writes valid TOML on every
+- [x] **`test_local_config_loads_box_fields_from_toml` writes valid TOML on every
   OS.** Write the `logs_dir` path as a TOML literal string (single quotes) or with
   `tmp_path.as_posix()`. Its assertions are unchanged, including
   `cfg.logs_dir == str(tmp_path / "logs")`.
-- [ ] **`test_main_once_runs_exactly_one_tick` writes valid TOML the same way.**
+- [x] **`test_main_once_runs_exactly_one_tick` writes valid TOML the same way.**
   Its assertions are unchanged.
-- [ ] **Neither test loses an assertion or changes what it asserts.** The fix is
+- [x] **Neither test loses an assertion or changes what it asserts.** The fix is
   only how the path is written into the TOML text.
-- [ ] **No other `tests/` file builds TOML by interpolating a raw path into a
+- [x] **No other `tests/` file builds TOML by interpolating a raw path into a
   double-quoted string.** Search `tests/` for it and fix any other hit the same way.
   If there is none, say so in `## Comments`.
-- [ ] **The full suite passes locally on Windows.** `pytest -q` reports no failures
+- [x] **The full suite passes locally on Windows.** `pytest -q` reports no failures
   other than any you list in `## Comments` with their cause.
 
 ## Gate
@@ -58,3 +58,5 @@ In CI order:
 - Any test unrelated to TOML path quoting.
 
 ## Comments
+
+2026-10-06: Both tests failed first on Windows with `Invalid hex value` from the backslash path, as described. Fixed in `tests/test_box_worker.py` by writing the `logs_dir` path (and `engine_repo` in the same line) as TOML single-quoted literal strings; assertions untouched. A search of `tests/` for raw paths interpolated into double-quoted TOML found no other hit. Full gate run locally on Windows: ruff, check_tests_first and `pytest -q` all green.
