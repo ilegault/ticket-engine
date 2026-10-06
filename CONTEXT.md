@@ -87,6 +87,10 @@ overflow. Fixed-template text only (ADR 0007).
 **Box silent** — the box status issue's check-in time is more than 12 hours
 old. A scheduled check then @mentions the developer.
 
+**Box pause** — the `BOX_PAUSED` variable on the engine repo. When set, the
+box finishes its current ticket, claims nothing new, and reports `Paused by
+developer`, so Jules may overflow (ADR 0010).
+
 **Box alert** — a fixed-template issue in the engine repo about the box as a
 whole, not one ticket: weekly cap reached, box silent, login expired.
 
@@ -182,9 +186,31 @@ paused, and quota standing.
 
 ## Setup
 
-**Bootstrap** — the skill that wires a repo to the engine. Two modes:
+**Bootstrap** — the engine code that wires a repo to the engine. Two modes:
 **new** (a fresh repo) and **adopt** (an existing repo; migrates legacy statuses
-and ticket skills).
+and ticket skills). Run through *Add-repo*, not by hand.
+
+**Add-repo** — the `add-repo owner/name` command, run on the developer's PC
+through his own `gh` login. Checks token access, applies the GitHub settings,
+opens the adopt PR and the *repo list* PR, waits for the adopt merge, then
+creates the ruleset. Idempotent; `--check` changes nothing; on an
+already-adopted repo it upgrades `.ticket-engine.toml` (ADR 0009).
+
+**Repo list** — `engine-repos.toml` in the engine repo: the one list of target
+repos and the one on-switch. Each `[[repos]]` entry has `repo` and `box`
+(default `true`). The morning report, the box and the dispatcher read it.
+
+**Repo environment** — the box's own Python virtual environment for one target
+repo, at `C:\Users\agent\envs\<name>`, built from the repo's
+`python_version` and `install` keys and rebuilt when its dependency files
+change (ADR 0010).
+
+**Baseline** — the target repo's `gate_commands` run by the box on the default
+branch before it claims any ticket there.
+
+**Not ready** — a listed repo the box will not work: red baseline, failed
+repo environment, or no `.ticket-engine.toml` on its default branch. Shown on
+the box status issue; Jules may overflow onto it.
 
 **Secrets file** — `secrets.env` on the developer's machine, outside every repo.
 The bootstrap reads it and writes each value into the target repo's GitHub

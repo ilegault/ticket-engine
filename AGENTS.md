@@ -347,26 +347,19 @@ For the planner session. None of this is for a worker.
 <!-- ACTIVE-PLAN:START -->
 ## Active implementation plan
 
-_Written by the planning model on 2026-10-06 17:16. Implement this. If something in it is wrong, say so before changing course._
+_Written by the planning model on 2026-10-06 19:52. Implement this. If something in it is wrong, say so before changing course._
 
 This is a **pointer**, not the work. The work is a ticket set.
 
-- Effort: `.scratch/box-first-run-fixes/` (no spec; the background is in each ticket and in tickets 45–47, all `done`)
-- Tickets: `.scratch/box-first-run-fixes/issues/` — 48, 49, 50
-- Binding ADRs: 0004 (escalation), 0006 (the box is the primary worker), 0007 (agy unrestricted in a fenced account; rules 4 and 5: logs stay on the box, nothing raw is posted)
-- Glossary: no new terms. Uses Box, Checkpoint, Escalation, Claim from `CONTEXT.md`.
-- Conventions: `docs/agents/issue-tracker.md`
-- **Next:** **48** first (the box logs agy's start and each checkpoint push, and kills an agy that outlives its timeout); it is what makes a hung run visible. **49** has no blockers and can run alongside it.
-- Graph: 48 → 50. 49 is independent. Nothing is held; nothing is `ready-for-developer`.
+- Effort: `.scratch/box-first-run-fixes/` (no spec; background is in each ticket). 45–50 are done.
+- Tickets open: **51** (two box-worker config tests pass on Windows), **52** (the box claims from the repo's own default branch).
+- Binding ADRs: 0006, 0007. Conventions: `docs/agents/issue-tracker.md`.
+- **Next:** **52** first. The box cannot claim any ticket in a target repo whose default branch is not `master` (TDS-T8 uses `main`) until it lands. 51 has no blockers and can run alongside it.
+- Graph: 51 and 52 are independent. Nothing is held; nothing is `ready-for-developer`.
+- Also waiting: `.scratch/bootstrap-adopt-fixes/spec.md` (findings for bootstrap adopt), to be broken into tickets with `/ticket-set`.
 
 Requirements an implementer might treat as preferences:
-- Never log agy's prompt or args (48). Nothing new is posted to GitHub (ADR 0007 rule 4).
-- The hard-timeout test runs a real child plus grandchild process and must kill both (48). A test that fakes the subprocess does not satisfy it.
-- `RunFn`'s `(args, cwd)` signature does not change (48): every existing agy fake depends on it.
-- Unexpected GitHub codes still log at ERROR with GitHub's body (49). Only codes a caller already handles go quiet.
-- An escalation whose PR is refused still opens its escalation issue (50).
-
-The set deliberately does not: make `load_local_config` refuse a missing config, let `dispatch --dry-run` simulate the box, touch `sonnet.py`, the Jules client, the box status issue, or `docs/box-setup.md`.
+- 52's tests use a real `.ticket-engine.toml` in `tmp_path`, not a faked `load_repo_config`.
 <!-- ACTIVE-PLAN:END -->
 
 ## Implementation Protocol
