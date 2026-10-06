@@ -1,6 +1,6 @@
 # 48: The box shows agy is running, and never waits on agy forever
 
-**Status:** in-progress
+**Status:** done
 
 **Runner:** any
 
@@ -41,7 +41,7 @@ agy with `AgyDriver(run_fn=...)` and git with `_make_git_runner` from
 `tests/test_local_worker.py`. The hard-timeout test runs a real child process
 (the current Python interpreter, `sys.executable`), never `agy`.
 
-- [ ] **`print_timeout` is parsed, and an invalid one is refused.** Add a pure
+- [x] **`print_timeout` is parsed, and an invalid one is refused.** Add a pure
   function `_duration_seconds(value: str) -> float` to `src/ticket_engine/agy.py`.
   It accepts one or more integer parts, each followed by `h`, `m` or `s`, in that
   order: `"2h"` → 7200, `"90m"` → 5400, `"1h30m"` → 5400, `"45s"` → 45. For
@@ -56,7 +56,7 @@ agy with `AgyDriver(run_fn=...)` and git with `_make_git_runner` from
   constructor and the expected args). New test
   `test_duration_seconds_accepts_units_and_rejects_bare_numbers` asserts every
   example above.
-- [ ] **The default runner gives agy no stdin, decodes UTF-8, and keeps stderr.**
+- [x] **The default runner gives agy no stdin, decodes UTF-8, and keeps stderr.**
   Rewrite `_default_run` as `_default_run(args, cwd=None, timeout=None)` using
   `subprocess.Popen(args, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
   stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
@@ -73,7 +73,7 @@ agy with `AgyDriver(run_fn=...)` and git with `_make_git_runner` from
   (caplog at WARNING): `_default_run([sys.executable, "-c", "import sys;
   print('out'); print('err-text', file=sys.stderr); sys.exit(3)"])` returns
   `(3, "out\n")` and a WARNING record contains `agy stderr: err-text`.
-- [ ] **At the hard timeout, the whole process tree is killed and the run is a
+- [x] **At the hard timeout, the whole process tree is killed and the run is a
   `timeout`.** On `subprocess.TimeoutExpired`, `_default_run` calls a new function
   `_kill_process_tree(proc)`. On Windows (`_IS_WINDOWS`) that runs
   `subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, check=False)`.
@@ -95,7 +95,7 @@ agy with `AgyDriver(run_fn=...)` and git with `_make_git_runner` from
   `ticket_engine.agy._IS_WINDOWS` to True and `ticket_engine.agy.subprocess.run` to
   a recorder. Call `_kill_process_tree` on an object whose `pid` is 4242, and
   assert the recorded args are `["taskkill", "/F", "/T", "/PID", "4242"]`.
-- [ ] **The log says when agy starts.** In `AgyDriver.start`, immediately before
+- [x] **The log says when agy starts.** In `AgyDriver.start`, immediately before
   calling `self._run`, log
   `logger.info("agy started in %s (print timeout %s)", cwd, self.print_timeout)`.
   Never log `prompt` or `args`. New test
@@ -105,7 +105,7 @@ agy with `AgyDriver(run_fn=...)` and git with `_make_git_runner` from
   is written before agy runs), then returns success JSON. Call
   `driver.start("PROMPT-MARKER-do-not-log", cwd="C:/wt/x")`, and after it
   returns, assert `"PROMPT-MARKER-do-not-log"` is not in `caplog.text`.
-- [ ] **Every successful checkpoint push logs one line.** In
+- [x] **Every successful checkpoint push logs one line.** In
   `LocalWorker._push_branch` (`src/ticket_engine/local_worker.py`), when the push
   returns 0, log `logger.info("Pushed %s: %s", ticket_branch, last)`. `last` is the
   last non-blank line of the push output, or `"ok"` when the output is blank. The
@@ -117,7 +117,7 @@ agy with `AgyDriver(run_fn=...)` and git with `_make_git_runner` from
   `(0, "To https://github.com/o/r.git\n   c33b160..9a1f2e3  HEAD -> ticket/e-09-x\n")`
   and call `_push_branch("/wt", "ticket/e-09-x", None)` directly. Assert one INFO
   record contains both `Pushed ticket/e-09-x` and `c33b160..9a1f2e3`.
-- [ ] **Existing tests unchanged.** Apart from the one in-place rewrite above, every
+- [x] **Existing tests unchanged.** Apart from the one in-place rewrite above, every
   existing test passes with its assertions as they are. No test is deleted,
   skipped or weakened.
 
@@ -138,3 +138,5 @@ In CI order:
 - `GitHubClient` logging (ticket 49) and PR refusals (ticket 50).
 
 ## Comments
+
+Landed. Tests in tests/test_agy_driver.py and tests/test_local_worker.py cover each criterion (hard-timeout tree-kill test is POSIX-only; Windows path covered by the taskkill recorder test). No bench verification needed. Two tests in tests/test_box_worker.py fail on the developer machine on master too (they read the real local config); unrelated.
