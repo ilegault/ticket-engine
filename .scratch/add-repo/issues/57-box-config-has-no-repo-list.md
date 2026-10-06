@@ -1,6 +1,6 @@
 # 57: The box's config has no repo list, and a bad config stops the box
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
