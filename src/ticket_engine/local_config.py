@@ -16,6 +16,10 @@ concurrency, poll/status intervals, the weekly-cap timeline, the engine repo
 the box posts its status and alerts to, and the local folder its ledger,
 quota-pause record and rotating logs live in. Every one of these is a home
 for a literal that used to have none (AGENTS.md §3 invariant 6).
+
+Ticket 57 (ADR 0009 rule 7; ADR 0010 rules 2–3) adds projects_dir and envs_dir
+folder settings for the box, and a strict load_box_config loader so box-worker
+refuses to start when its local config is missing, unreadable, or lists repos.
 """
 from __future__ import annotations
 
@@ -29,6 +33,10 @@ logger = logging.getLogger(__name__)
 _DEFAULT_CONFIG_PATH = pathlib.Path.home() / ".ticket-engine-local.toml"
 
 
+class BoxConfigError(ValueError):
+    """Raised when the box worker's local config is invalid or missing."""
+
+
 @dataclass(frozen=True)
 class LocalRepoEntry:
     path: str  # absolute path to local git clone
@@ -37,6 +45,14 @@ class LocalRepoEntry:
 
 def _default_logs_dir() -> str:
     return str(pathlib.Path.home() / "ticket-engine-box" / "logs")
+
+
+def _default_projects_dir() -> str:
+    return str(pathlib.Path.home() / "projects")
+
+
+def _default_envs_dir() -> str:
+    return str(pathlib.Path.home() / "envs")
 
 
 @dataclass(frozen=True)
@@ -60,6 +76,8 @@ class LocalWorkerConfig:
     weekly_cap_backoff_hours: int = 12
     engine_repo: str = "ilegault/ticket-engine"
     logs_dir: str = field(default_factory=_default_logs_dir)
+    projects_dir: str = field(default_factory=_default_projects_dir)
+    envs_dir: str = field(default_factory=_default_envs_dir)
     sonnet_enabled: bool = False
     sonnet_timeout_seconds: int = 7200
     # Upper bound on any one git subprocess. A git call waiting on a
@@ -130,7 +148,38 @@ def load_local_config(path: pathlib.Path | str | None = None) -> LocalWorkerConf
         weekly_cap_backoff_hours=int(data.get("weekly_cap_backoff_hours", 12)),
         engine_repo=str(data.get("engine_repo", "ilegault/ticket-engine")),
         logs_dir=str(data.get("logs_dir", "")) or _default_logs_dir(),
+        projects_dir=str(data.get("projects_dir", "")) or _default_projects_dir(),
+        envs_dir=str(data.get("envs_dir", "")) or _default_envs_dir(),
         sonnet_enabled=bool(data.get("sonnet_enabled", False)),
         sonnet_timeout_seconds=int(data.get("sonnet_timeout_seconds", 7200)),
         git_timeout_seconds=int(data.get("git_timeout_seconds", 300)),
     )
+
+
+def load_box_config(path: pathlib.Path | str | None = None) -> LocalWorkerConfig:
+    """Strict config loader for box-worker.
+
+    Unlike load_local_config, which silently returns defaults on missing
+    or corrupt config files, load_box_config raises BoxConfigError if:
+    - the config file does not exist,
+    - the file is not valid TOML, or
+    - the config contains a 'repos' key (repos must come from engine-repos.toml).
+    """
+    config_path = pathlib.Path(path) if path is not None else _DEFAULT_CONFIG_PATH
+
+    if not config_path.is_file():
+        raise BoxConfigError(f"Local config {config_path} not found")
+
+    try:
+        with config_path.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise BoxConfigError(f"Local config {config_path} is unreadable: {exc}") from exc
+
+    if "repos" in data:
+        raise BoxConfigError(
+            f"Local config {config_path} contains [[repos]]; "
+            "repos must come from engine-repos.toml"
+        )
+
+    return load_local_config(config_path)
