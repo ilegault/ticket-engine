@@ -1,6 +1,6 @@
 # 50: A pull request GitHub refuses never crashes the box
 
-**Status:** in-progress
+**Status:** done
 
 **Runner:** any
 
@@ -49,7 +49,7 @@ A refusal is `create_pull_request.side_effect` set to a real
 `fp.read()` returns
 `b'{"message":"Validation Failed","errors":[{"message":"No commits between master and ticket/phase-1-09-x"}]}'`.
 
-- [ ] **A refused PR after a finished run is logged, and `run_one` returns.** In
+- [x] **A refused PR after a finished run is logged, and `run_one` returns.** In
   `_maybe_open_pull_request`, wrap the `create_pull_request` call in
   `try/except urllib.error.HTTPError as exc`. On a refusal, log
   `logger.warning("GitHub refused the PR for %s (HTTP %d); the branch is pushed, the box carries on.", ticket_branch, exc.code)`
@@ -59,7 +59,7 @@ A refusal is `create_pull_request.side_effect` set to a real
   `create_pull_request` is refused. `run_one(...)` returns `True` without raising,
   and one WARNING record contains both `GitHub refused the PR for ticket/` and
   `HTTP 422`.
-- [ ] **A failed escalation commit is logged, and escalation continues.** In
+- [x] **A failed escalation commit is logged, and escalation continues.** In
   `_escalate`, capture `(rc, out)` from the `git add` call and from the
   `git commit` call. When either is non-zero, log
   `logger.warning("Escalation %s for ticket %02d failed (rc=%d): %s", step, ticket.number, rc, out.strip()[-2000:])`,
@@ -69,7 +69,7 @@ A refusal is `create_pull_request.side_effect` set to a real
   `{"commit": (1, "Author identity unknown")}`. One WARNING record contains both
   `Escalation commit for ticket 09 failed (rc=1)` and `Author identity unknown`,
   and `create_issue` is called once.
-- [ ] **An escalation whose PR is refused still opens its escalation issue.** In
+- [x] **An escalation whose PR is refused still opens its escalation issue.** In
   `_escalate`, wrap the `create_pull_request` call in
   `try/except urllib.error.HTTPError as exc`. On a refusal:
   - log `logger.warning("GitHub refused the escalation PR for %s (HTTP %d); opening the escalation issue with a branch link.", ticket_branch, exc.code)`;
@@ -84,11 +84,11 @@ A refusal is `create_pull_request.side_effect` set to a real
   returns `False` without raising, and `add_issue_labels` is not called.
   `create_issue` is called once, and its body argument (`call_args.args[2]`)
   contains `Link: https://github.com/owner/repo/tree/ticket/phase-1-09-`.
-- [ ] **A refusal in box mode does not reach the box loop.** New test
+- [x] **A refusal in box mode does not reach the box loop.** New test
   `test_refused_escalation_pr_in_box_mode_returns_none`: the same setup as the
   previous criterion, called as `run_one(..., box_mode=True)`, returns `None`
   without raising.
-- [ ] **Existing tests unchanged.** Every existing test passes with its assertions
+- [x] **Existing tests unchanged.** Every existing test passes with its assertions
   as they are. In particular `test_resumes_exhausted_escalates_with_all_five_effects`
   and `test_escalation_writes_brief_into_the_worktree_copy_of_a_loaded_ticket`
   are untouched. No test is deleted, skipped or weakened.
@@ -110,3 +110,5 @@ In CI order:
 - `GitHubClient` and its logging (ticket 49).
 
 ## Comments
+
+Ticket 50 landed: both create_pull_request calls in local_worker.py catch HTTPError and log a WARNING; _escalate logs failed git add/commit, and a refused escalation PR still opens the escalation issue with a branch link (no label call). Four new tests in tests/test_local_worker.py cover criteria 1-4; existing tests untouched. Gate: ruff clean, check_tests_first OK, pytest 644 passed (2 known local-config failures in test_box_worker.py).

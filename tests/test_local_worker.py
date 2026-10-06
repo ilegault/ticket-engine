@@ -1978,3 +1978,116 @@ def test_successful_push_logs_the_branch_and_git_summary(caplog):
         and "c33b160..9a1f2e3" in r.getMessage()
     ]
     assert len(hits) == 1
+
+
+# ---------------------------------------------------------------------------
+# Ticket 50: a pull request GitHub refuses never crashes the box
+# ---------------------------------------------------------------------------
+
+def _refusal_422():
+    import io
+    import urllib.error
+
+    fp = io.BytesIO(
+        b'{"message":"Validation Failed","errors":[{"message":"No commits between '
+        b'master and ticket/phase-1-09-x"}]}'
+    )
+    return urllib.error.HTTPError(
+        "https://api.github.com/repos/owner/repo/pulls", 422, "Unprocessable Entity", {}, fp
+    )
+
+
+def _escalating_worker(mock_github, git_calls=None, scripted=None):
+    return LocalWorker(
+        config=make_config(max_resumes_per_ticket=3),
+        github_client=mock_github,
+        agy_driver=AgyDriver(
+            run_fn=lambda a, cwd=None: (1, json.dumps({"status": "ERROR", "message": "boom"}))
+        ),
+        git_runner=_make_git_runner(git_calls if git_calls is not None else [], scripted),
+        sleep_fn=lambda s: None,
+        read_ticket_fn=lambda p: "# 09: Test\n**Status:** in-progress\n\n## Comments\n",
+        write_ticket_fn=lambda p, c: None,
+    )
+
+
+def test_refused_pr_after_success_is_logged_and_run_one_returns(caplog):
+    import logging
+
+    ticket = make_ticket(9, effort="phase-1")
+    mock_github = make_fake_github()
+    mock_github.create_pull_request.side_effect = _refusal_422()
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}')),
+        git_runner=_make_git_runner([]),
+        read_ticket_fn=lambda p: "# 09: T\n**Status:** done\n\n## Comments\n",
+    )
+    with caplog.at_level(logging.WARNING):
+        result = worker.run_one(make_repo_entry(repo="owner/repo"), ticket)
+
+    assert result is True
+    hits = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING
+        and "GitHub refused the PR for ticket/" in r.getMessage()
+        and "HTTP 422" in r.getMessage()
+    ]
+    assert len(hits) == 1
+
+
+def test_failed_escalation_commit_is_logged(caplog):
+    import logging
+
+    mock_github = make_fake_github()
+    mock_github.create_pull_request.return_value = 77
+    mock_github.find_open_issue.return_value = None
+    worker = _escalating_worker(mock_github, scripted={"commit": (1, "Author identity unknown")})
+    with caplog.at_level(logging.WARNING):
+        worker.run_one(make_repo_entry(repo="owner/repo"), make_ticket(9, effort="phase-1"))
+
+    hits = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING
+        and "Escalation commit for ticket 09 failed (rc=1)" in r.getMessage()
+        and "Author identity unknown" in r.getMessage()
+    ]
+    assert len(hits) == 1
+    mock_github.create_issue.assert_called_once()
+
+
+def test_refused_escalation_pr_still_opens_the_escalation_issue(caplog):
+    import logging
+
+    mock_github = make_fake_github()
+    mock_github.find_open_issue.return_value = None
+    mock_github.create_pull_request.side_effect = _refusal_422()
+    worker = _escalating_worker(mock_github)
+    with caplog.at_level(logging.WARNING):
+        result = worker.run_one(
+            make_repo_entry(repo="owner/repo"), make_ticket(9, effort="phase-1")
+        )
+
+    assert result is False
+    mock_github.add_issue_labels.assert_not_called()
+    mock_github.create_issue.assert_called_once()
+    assert (
+        "Link: https://github.com/owner/repo/tree/ticket/phase-1-09-"
+        in mock_github.create_issue.call_args.args[2]
+    )
+    assert any(
+        "GitHub refused the escalation PR for ticket/" in r.getMessage() and "HTTP 422" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_refused_escalation_pr_in_box_mode_returns_none():
+    mock_github = make_fake_github()
+    mock_github.find_open_issue.return_value = None
+    mock_github.create_pull_request.side_effect = _refusal_422()
+    worker = _escalating_worker(mock_github)
+    result = worker.run_one(
+        make_repo_entry(repo="owner/repo"), make_ticket(9, effort="phase-1"), box_mode=True
+    )
+    assert result is None
