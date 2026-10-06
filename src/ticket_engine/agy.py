@@ -9,13 +9,14 @@ tests can use fakes.
 In headless mode, agy soft-denies unapproved tools and still exits 0, which would
 cause tools to silently fail unless --dangerously-skip-permissions is passed (ADR 0007).
 The default agy print timeout is 5 minutes, which cuts off long-running ticket sessions,
-so --print-timeout is passed with a configurable duration (default 7200 seconds).
+so --print-timeout is passed with a configurable duration (a duration with a unit, e.g. "2h"; agy rejects a bare number of seconds).
 
 There is no documented quota-status endpoint or API for agy, so the previous pre-flight
 quota check and reserve are removed. Sessions are driven via:
   agy -p <prompt> --output-format json --dangerously-skip-permissions --print-timeout <value>
 and their outputs are classified into exact outcomes (success, quota, auth, timeout,
-waiting, failed).
+waiting, failed). This logger reaches only the box's local rotating file and the local
+work-windows console; AgyDriver never runs in Actions, so ADR 0007 rule 4 holds.
 """
 from __future__ import annotations
 
@@ -59,7 +60,7 @@ class AgyDriver:
     def __init__(
         self,
         run_fn: RunFn | None = None,
-        print_timeout: str = "7200",
+        print_timeout: str = "2h",
         quota_error_patterns: Sequence[str] | None = None,
         auth_error_patterns: Sequence[str] | None = None,
     ) -> None:
@@ -93,12 +94,22 @@ class AgyDriver:
             self.print_timeout,
         ]
         returncode, output = self._run(args, cwd)
-        return _parse_agy_output(
+        result = _parse_agy_output(
             returncode,
             output,
             quota_error_patterns=self.quota_error_patterns,
             auth_error_patterns=self.auth_error_patterns,
         )
+        if result.outcome == "success":
+            logger.info("agy finished: outcome success, exit %d", returncode)
+        else:
+            logger.warning(
+                "agy finished: outcome %s, exit %d, output: %s",
+                result.outcome,
+                returncode,
+                output.strip()[-4000:],
+            )
+        return result
 
 
 def _parse_agy_output(
@@ -137,7 +148,7 @@ def _parse_agy_output(
     success = (outcome == "success")
     quota_error = (outcome == "quota")
     reset_at = _parse_dt(raw.get("reset_at"))
-    session_id = raw.get("session_id") or raw.get("id")
+    session_id = raw.get("session_id") or raw.get("conversation_id") or raw.get("id")
 
     return AgyResult(
         outcome=outcome,

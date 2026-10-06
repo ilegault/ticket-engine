@@ -15,7 +15,7 @@ recorded real output.
 
 **Blocked by:** 45
 
-**Status:** in-progress
+**Status:** done
 
 **Runner:** any
 
@@ -26,7 +26,7 @@ recorded real output.
 Write the tests first and watch each fail before changing `src/`. Tests fake agy
 with `AgyDriver(run_fn=...)`. The parser and `load_local_config` are real.
 
-- [ ] **Default `print_timeout` is `"2h"`.** In `src/ticket_engine/local_config.py`,
+- [x] **Default `print_timeout` is `"2h"`.** In `src/ticket_engine/local_config.py`,
   change the three `"7200"` defaults for `print_timeout` to `"2h"`: the dataclass
   field, the docstring's TOML example, and the `agy.get("print_timeout", ...)`
   fallback. In `src/ticket_engine/agy.py`, change `AgyDriver.__init__`'s
@@ -36,7 +36,7 @@ with `AgyDriver(run_fn=...)`. The parser and `load_local_config` are real.
   in `tests/test_local_worker.py` **in place, same name**, so that it asserts
   `config.print_timeout == "2h"`. Leave `sonnet_timeout_seconds` alone (an
   integer, a different CLI).
-- [ ] **`docs/box-setup.md` matches.** In the `## Local config` TOML example,
+- [x] **`docs/box-setup.md` matches.** In the `## Local config` TOML example,
   change `print_timeout = "7200"` to `print_timeout = "2h"`. Directly after the
   paragraph that begins ``"`github_token` is deliberately left out"``, add this
   paragraph verbatim:
@@ -48,7 +48,7 @@ with `AgyDriver(run_fn=...)`. The parser and `load_local_config` are real.
   Check with `Get-ChildItem C:\Users\agent -Force -Filter ".ticket-engine-local*"`.
   ```
   `tests/test_box_setup_doc.py` must still pass unchanged.
-- [ ] **Recorded real output parses as success.** Add
+- [x] **Recorded real output parses as success.** Add
   `tests/fixtures/agy/success_recorded.json` containing exactly this one line, the
   developer's recorded `agy -p ... --output-format json` output:
   ```
@@ -60,7 +60,7 @@ with `AgyDriver(run_fn=...)`. The parser and `load_local_config` are real.
   `tests/test_agy_driver.py`: a `run_fn` returning `(0, <fixture text>)` gives
   `result.outcome == "success"`, `result.success is True` and
   `result.session_id == "0614ac83-77db-445a-beb6-c0221aaa2a2f"`.
-- [ ] **A non-success result is logged with agy's output; the prompt never is.**
+- [x] **A non-success result is logged with agy's output; the prompt never is.**
   In `AgyDriver.start`, after `_parse_agy_output` returns, log before returning the
   result:
   - on success: `logger.info("agy finished: outcome success, exit %d", returncode)`;
@@ -75,7 +75,7 @@ with `AgyDriver(run_fn=...)`. The parser and `load_local_config` are real.
   `"PROMPT-MARKER-do-not-log"`. Assert that one WARNING record's message contains
   `outcome failed`, `exit 1` and `invalid value "7200"`, and that
   `"PROMPT-MARKER-do-not-log"` is not in `caplog.text`.
-- [ ] **Existing tests unchanged.** Apart from the one in-place rewrite above, every
+- [x] **Existing tests unchanged.** Apart from the one in-place rewrite above, every
   existing test passes with its assertions as they are. No test is deleted, skipped
   or weakened.
 
@@ -90,3 +90,11 @@ Gates, in CI order: `ruff check .`, `python scripts/check_tests_first.py`,
 - `local_worker.py` and the box loop: ticket 45 owns the path fix.
 
 ## Comments
+
+2026-10-06: Implemented ticket 46.
+- Updated default `print_timeout` to `"2h"` in `local_config.py` (dataclass, docstring, fallback) and `agy.py` (`AgyDriver.__init__`). Updated module docstring. Rewrote `test_load_local_config_missing_file_returns_defaults` in `tests/test_local_worker.py` in-place.
+- Updated `docs/box-setup.md` config example and added clarification paragraph regarding unit requirement and config filename. Confirmed `tests/test_box_setup_doc.py` passes unchanged.
+- Added `tests/fixtures/agy/success_recorded.json` fixture and updated `_parse_agy_output` in `agy.py` to read `conversation_id`. Covered by new test `test_agy_driver_parses_recorded_real_success_output`.
+- Added logging for non-success outputs in `AgyDriver.start` (truncated to last 4000 chars) and info logging for success. Ensured prompts/args are never logged, and documented in module docstring. Covered by new test `test_agy_driver_logs_failed_output_but_never_the_prompt`.
+- All gates green; all existing tests unchanged and passing.
+

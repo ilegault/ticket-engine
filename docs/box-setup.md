@@ -94,7 +94,7 @@ sonnet_timeout_seconds = 7200
 git_timeout_seconds = 300
 
 [agy]
-print_timeout = "7200"
+print_timeout = "2h"
 quota_error_patterns = ["quota", "rate limit", "exhausted"]
 auth_error_patterns = ["auth", "login", "credential"]
 
@@ -107,6 +107,12 @@ repo = "owner/target-repo"
 token, from the previous section, into this file directly on the box.
 `repos` lists every target repo clone the box should work; add one `[[repos]]`
 block per repo.
+
+`print_timeout` is a duration with a unit (`2h`, `90m`). agy rejects a bare
+number such as `7200`, and every session then fails within seconds. Save the
+file as `.ticket-engine-local.toml` exactly. Notepad appends `.txt` and
+Explorer hides it, and a missing config makes the box run with no repos.
+Check with `Get-ChildItem C:\Users\agent -Force -Filter ".ticket-engine-local*"`.
 
 ## Start at boot
 

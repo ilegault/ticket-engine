@@ -117,7 +117,7 @@ def test_load_local_config_missing_file_returns_defaults(tmp_path):
     """load_local_config returns defaults when file does not exist."""
     config = load_local_config(tmp_path / "nonexistent.toml")
     assert config.repos == []
-    assert config.print_timeout == "7200"
+    assert config.print_timeout == "2h"
 
 
 def test_load_local_config_sonnet_keys_default(tmp_path):
