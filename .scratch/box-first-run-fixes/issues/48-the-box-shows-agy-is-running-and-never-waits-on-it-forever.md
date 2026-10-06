@@ -1,6 +1,6 @@
 # 48: The box shows agy is running, and never waits on agy forever
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
