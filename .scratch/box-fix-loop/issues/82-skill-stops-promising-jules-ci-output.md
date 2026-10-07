@@ -1,6 +1,6 @@
 # 82: The skill stops promising Jules its CI output, and the dead escalation path says it is Jules-only
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
