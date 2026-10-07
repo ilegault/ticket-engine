@@ -22,6 +22,7 @@ from ticket_engine.add_repo import (
     ActionsPermissionsOp,
     RepoFacts,
     StepKind,
+    apply_step,
     config_upgrade,
     gather_facts,
     load_secrets_file,
@@ -504,3 +505,239 @@ def test_without_check_prints_not_implemented_yet_and_returns_1(
     assert code == 1
     captured = capsys.readouterr()
     assert "not implemented yet" in captured.out
+
+
+# ===========================================================================
+# 6. Ticket 64: apply_step and settings operations
+# ===========================================================================
+
+
+def test_apply_step_set_secret() -> None:
+    recorder = FakeGhRecorder()
+    secrets = {"JULES_API_KEY": "secret-val-xyz"}
+    apply_step(SetSecretOp("JULES_API_KEY"), "owner/target", recorder, secrets)
+    assert len(recorder.calls) == 1
+    args, stdin = recorder.calls[0]
+    assert args == ["secret", "set", "JULES_API_KEY", "--repo", "owner/target"]
+    assert stdin == "secret-val-xyz"
+
+
+def test_apply_step_create_label() -> None:
+    recorder = FakeGhRecorder()
+    secrets = {}
+    op = CreateLabelOp(name="engine:hold", color="d93f0b", description="held PR")
+    apply_step(op, "owner/target", recorder, secrets)
+    assert len(recorder.calls) == 1
+    args, stdin = recorder.calls[0]
+    assert args == [
+        "label",
+        "create",
+        "engine:hold",
+        "--repo",
+        "owner/target",
+        "--color",
+        "d93f0b",
+        "--description",
+        "held PR",
+    ]
+    assert stdin is None
+
+
+def test_apply_step_enable_auto_merge() -> None:
+    recorder = FakeGhRecorder()
+    secrets = {}
+    apply_step(EnableAutoMergeOp(), "owner/target", recorder, secrets)
+    assert len(recorder.calls) == 1
+    args, stdin = recorder.calls[0]
+    assert args == ["api", "-X", "PATCH", "repos/owner/target", "-F", "allow_auto_merge=true"]
+    assert stdin is None
+
+
+def test_apply_step_enable_secret_scanning() -> None:
+    recorder = FakeGhRecorder()
+    secrets = {}
+    apply_step(EnableSecretScanningOp(), "owner/target", recorder, secrets)
+    assert len(recorder.calls) == 1
+    args, stdin = recorder.calls[0]
+    assert args == ["api", "-X", "PATCH", "repos/owner/target", "--input", "-"]
+    assert stdin == '{"security_and_analysis": {"secret_scanning": {"status": "enabled"}}}'
+
+
+def test_apply_step_enable_push_protection() -> None:
+    recorder = FakeGhRecorder()
+    secrets = {}
+    apply_step(EnablePushProtectionOp(), "owner/target", recorder, secrets)
+    assert len(recorder.calls) == 1
+    args, stdin = recorder.calls[0]
+    assert args == ["api", "-X", "PATCH", "repos/owner/target", "--input", "-"]
+    assert stdin == '{"security_and_analysis": {"secret_scanning_push_protection": {"status": "enabled"}}}'
+
+
+def test_apply_step_actions_permissions() -> None:
+    recorder = FakeGhRecorder()
+    secrets = {}
+    apply_step(ActionsPermissionsOp(), "owner/target", recorder, secrets)
+    assert len(recorder.calls) == 1
+    args, stdin = recorder.calls[0]
+    assert args == [
+        "api",
+        "-X",
+        "PUT",
+        "repos/owner/target/actions/permissions",
+        "-F",
+        "enabled=true",
+        "-f",
+        "allowed_actions=all",
+    ]
+    assert stdin is None
+
+
+def test_secret_value_only_on_stdin(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secrets_file = tmp_path / "secrets.env"
+    secret_val = "jk-value"
+    secrets_file.write_text(
+        f"PIPELINE_TOKEN=pt-val\nJULES_API_KEY={secret_val}\n",
+        encoding="utf-8",
+    )
+    repo = "owner/unwired"
+    engine_repo = "ilegault/ticket-engine"
+    responses = _default_fully_wired_responses(repo, engine_repo)
+    responses[("api", f"repos/{repo}/actions/secrets", "--paginate", "--jq", ".secrets[].name")] = (
+        0,
+        "PIPELINE_TOKEN\n",
+    )
+    gh = FakeGhRecorder(responses)
+    probe = MagicMock(spec=GitHubClient)
+    probe.can_read_variables.return_value = True
+
+    with caplog.at_level("DEBUG"):
+        code = main([repo, "--secrets-file", str(secrets_file)], gh=gh, probe=probe)
+
+    assert code == 1
+    captured = capsys.readouterr()
+
+    assert secret_val not in captured.out
+    assert secret_val not in captured.err
+    for record in caplog.records:
+        assert secret_val not in record.getMessage()
+
+    for args, _stdin in gh.calls:
+        for arg in args:
+            assert secret_val not in arg
+
+    matching_calls = [
+        (args, stdin)
+        for args, stdin in gh.calls
+        if args == ["secret", "set", "JULES_API_KEY", "--repo", repo]
+    ]
+    assert len(matching_calls) == 1
+    assert matching_calls[0][1] == secret_val
+
+
+def test_missing_secret_value_stops_before_any_write(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    secrets_file = tmp_path / "secrets.env"
+    secrets_file.write_text("PIPELINE_TOKEN=pt-val\n", encoding="utf-8")
+    repo = "owner/unwired"
+    engine_repo = "ilegault/ticket-engine"
+    responses = _default_fully_wired_responses(repo, engine_repo)
+    responses[("api", f"repos/{repo}/actions/secrets", "--paginate", "--jq", ".secrets[].name")] = (
+        0,
+        "PIPELINE_TOKEN\n",
+    )
+    gh = FakeGhRecorder(responses)
+    probe = MagicMock(spec=GitHubClient)
+    probe.can_read_variables.return_value = True
+
+    code = main([repo, "--secrets-file", str(secrets_file)], gh=gh, probe=probe)
+    assert code == 2
+    captured = capsys.readouterr()
+    assert "secrets file has no JULES_API_KEY" in captured.out
+
+    for args, _stdin in gh.calls:
+        if args[0] == "api":
+            assert "-X" not in args
+            assert "--method" not in args
+        elif args[0] == "secret":
+            assert "set" not in args
+        elif args[0] == "label":
+            assert "create" not in args
+        else:
+            assert args[:2] == ["pr", "list"]
+
+
+def test_failed_step_stops_and_names_it(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    secrets_file = tmp_path / "secrets.env"
+    secrets_file.write_text(
+        "PIPELINE_TOKEN=pt-val\nJULES_API_KEY=jk-val\n",
+        encoding="utf-8",
+    )
+    repo = "owner/unwired"
+    engine_repo = "ilegault/ticket-engine"
+    responses = _default_fully_wired_responses(repo, engine_repo)
+    responses[("api", f"repos/{repo}")] = (
+        0,
+        (
+            '{"default_branch": "master", "allow_auto_merge": false, '
+            '"security_and_analysis": {"secret_scanning": {"status": "enabled"}, '
+            '"secret_scanning_push_protection": {"status": "enabled"}}}'
+        ),
+    )
+    responses[("api", f"repos/{repo}/labels", "--paginate", "--jq", ".[].name")] = (
+        0,
+        "",
+    )
+    responses[("api", "-X", "PATCH", f"repos/{repo}", "-F", "allow_auto_merge=true")] = (
+        1,
+        "error: unable to enable auto merge\nHTTP 403: Forbidden",
+    )
+    gh = FakeGhRecorder(responses)
+    probe = MagicMock(spec=GitHubClient)
+    probe.can_read_variables.return_value = True
+
+    code = main([repo, "--secrets-file", str(secrets_file)], gh=gh, probe=probe)
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "step failed: enable_auto_merge: HTTP 403: Forbidden" in captured.out
+
+    label_calls = [args for args, _stdin in gh.calls if args[:2] == ["label", "create"]]
+    assert len(label_calls) == 0
+
+
+def test_rerun_after_success_plans_no_settings_steps(
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    secrets_file = tmp_path / "secrets.env"
+    secrets_file.write_text(
+        "PIPELINE_TOKEN=pt-val\nJULES_API_KEY=jk-val\n",
+        encoding="utf-8",
+    )
+    repo = "owner/wired"
+    engine_repo = "ilegault/ticket-engine"
+    responses = _default_fully_wired_responses(repo, engine_repo)
+    gh = FakeGhRecorder(responses)
+    probe = MagicMock(spec=GitHubClient)
+    probe.can_read_variables.return_value = True
+
+    code = main([repo, "--secrets-file", str(secrets_file)], gh=gh, probe=probe)
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "not implemented yet: dry_run, jules_script" in captured.out
+
+    for args, _stdin in gh.calls:
+        if args[0] == "api":
+            assert "-X" not in args
+            assert "--method" not in args
+        elif args[0] in ("secret", "label"):
+            pytest.fail(f"Unexpected settings write call: {args}")
+
