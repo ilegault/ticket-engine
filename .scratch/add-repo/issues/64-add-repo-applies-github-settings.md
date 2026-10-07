@@ -1,6 +1,6 @@
 # 64: `add-repo` applies the GitHub settings
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
