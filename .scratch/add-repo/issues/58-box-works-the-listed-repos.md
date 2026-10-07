@@ -1,6 +1,6 @@
 # 58: The box works the repos on the repo list, clones new ones, and honours `BOX_PAUSED`
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Runner:** any
 
@@ -28,7 +28,7 @@ loop with `make_loop`, `FakeWorker` and `make_github()` from
 list is a fake `repo_list_fn`. `projects_dir` and `logs_dir` are under `tmp_path`.
 `BoxCore` tests use real `BoxWorld`s as `tests/test_box_core.py` does.
 
-- [ ] **The loop takes its repos from the list.** `BoxLoop.__init__` gains
+- [x] **The loop takes its repos from the list.** `BoxLoop.__init__` gains
   `repo_list_fn: Callable[[], list[RepoListEntry]] | None = None`. When it is None,
   the loop uses `config.repos` exactly as now (every existing test keeps passing).
   When set, a new method `_current_entries()` is called at the start of
@@ -41,7 +41,7 @@ list is a fake `repo_list_fn`. `projects_dir` and `logs_dir` are under `tmp_path
   `test_box_works_listed_repos_in_list_order`,
   `test_box_skips_box_false_entries`,
   `test_unreadable_repo_list_reuses_the_last_one`.
-- [ ] **A listed repo with no clone is cloned.** When the entry's path is not a
+- [x] **A listed repo with no clone is cloned.** When the entry's path is not a
   directory, run `["git", "clone", f"https://github.com/{repo}.git", path]` through
   `self._git_runner` with the configured git timeout, before the pull. On success,
   add the repo to `box_repos.json` in `logs_dir` (a JSON list of repo names, the
@@ -49,7 +49,7 @@ list is a fake `repo_list_fn`. `projects_dir` and `logs_dir` are under `tmp_path
   git's output and leave that repo out of this tick's world. Tests
   `test_missing_clone_is_cloned_and_recorded` (assert the exact clone args and the
   file contents) and `test_failed_clone_leaves_the_repo_out_this_tick`.
-- [ ] **A delisted repo only finishes its work.** `BoxRepo`
+- [x] **A delisted repo only finishes its work.** `BoxRepo`
   (`src/ticket_engine/box_core.py`) gains `accepting_new: bool = True`. `BoxCore`
   rule 5 (`ClaimTicket`) skips a repo whose `accepting_new` is False; rules 3 and 4
   are unchanged. `_current_entries` also returns every repo in `box_repos.json`
@@ -58,7 +58,7 @@ list is a fake `repo_list_fn`. `projects_dir` and `logs_dir` are under `tmp_path
   `tests/test_box_core.py`: `test_repo_not_accepting_new_gets_no_claim` and
   `test_repo_not_accepting_new_still_resumes_its_box_claim`; in
   `tests/test_box_worker.py`: `test_delisted_repo_is_built_not_accepting_new`.
-- [ ] **`BOX_PAUSED` stops new claims.** `BoxWorld` gains
+- [x] **`BOX_PAUSED` stops new claims.** `BoxWorld` gains
   `developer_paused: bool = False` as its last field. `_build_world` sets it from
   `self.github_client.get_repo_variable(self.config.engine_repo, "BOX_PAUSED")`
   with the same truthiness rule as `TICKET_ENGINE_PAUSED` (move that rule into a
@@ -70,7 +70,7 @@ list is a fake `repo_list_fn`. `projects_dir` and `logs_dir` are under `tmp_path
   `test_box_paused_variable_sets_paused_by_developer_status` (box_worker, asserting
   the rendered body passed to `update_issue_body` contains
   `State: paused_by_developer`).
-- [ ] **Existing tests unchanged.** Every existing test passes with its assertions
+- [x] **Existing tests unchanged.** Every existing test passes with its assertions
   as they are. No test is deleted, skipped or weakened.
 
 ## Gate
@@ -89,3 +89,11 @@ In CI order:
 - Running more than one agy session at once.
 
 ## Comments
+
+Implemented on 2026-10-06:
+- Added `repo_list_fn` to `BoxLoop.__init__` and wired `build_loop` to `fetch_repo_list`.
+- Added `_current_entries()` resolving active `box = true` repos in `projects_dir` and delisted clones from `box_repos.json`.
+- Missing clones are cloned via `_git_runner` and recorded in `box_repos.json`; clone failures are logged and omitted from the tick.
+- Added `accepting_new: bool = True` to `BoxRepo` and `LocalRepoEntry`; Rule 5 skips repos when `accepting_new=False`.
+- Added `developer_paused: bool = False` to `BoxWorld`; Rule 5 blocked under developer pause while Rules 3/4 resume and fix CI; status issue reports `paused_by_developer`.
+- Tested in `tests/test_box_core.py` and `tests/test_box_worker.py` (all 10 new tests pass, existing 745 pass).
