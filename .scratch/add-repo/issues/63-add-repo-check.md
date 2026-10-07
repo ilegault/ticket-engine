@@ -1,6 +1,6 @@
 # 63: `add-repo --check` reads a repo's state and prints the plan
 
-**Status:** in-progress
+**Status:** done
 
 **Runner:** any
 
@@ -27,7 +27,7 @@ writing `src/ticket_engine/add_repo.py`. Tests fake `gh` with a recorder that ma
 an exact argument list to a scripted `(code, output)`; the PIPELINE_TOKEN probe is
 a `MagicMock` `GitHubClient`. The secrets file is a real file in `tmp_path`.
 
-- [ ] **The command exists.** `pyproject.toml` `[project.scripts]` gains
+- [x] **The command exists.** `pyproject.toml` `[project.scripts]` gains
   `add-repo = "ticket_engine.add_repo:main"`. `main(argv)` takes the positional
   `repo` (`owner/name`) and the flags `--check`, `--no-jules`,
   `--secrets-file PATH` (default `Path.home() / "secrets.env"`) and
@@ -36,7 +36,7 @@ a `MagicMock` `GitHubClient`. The secrets file is a real file in `tmp_path`.
   pair of surrounding quotes. A missing file, or one without `PIPELINE_TOKEN`,
   prints one line naming the path (never a value) and returns 2. Tests for both,
   and `test_load_secrets_file_parses_comments_and_quotes`.
-- [ ] **Facts come from read-only `gh` calls.** `gather_facts(repo, engine_repo, gh, probe) -> RepoFacts`
+- [x] **Facts come from read-only `gh` calls.** `gather_facts(repo, engine_repo, gh, probe) -> RepoFacts`
   where `gh: GhRunner = Callable[[list[str], str | None], tuple[int, str]]`
   (args, stdin). It calls exactly: `gh api repos/{repo}` (JSON: `default_branch`,
   `allow_auto_merge`, `security_and_analysis.secret_scanning.status`,
@@ -55,7 +55,7 @@ a `MagicMock` `GitHubClient`. The secrets file is a real file in `tmp_path`.
   `GitHubClient` built from the secrets file's `PIPELINE_TOKEN`. Test
   `test_gather_facts_makes_only_read_calls`: every recorded `gh api` call has no
   `-X`/`--method`, and every other call is `gh pr list`.
-- [ ] **The plan is pure.** In `add_repo.py`, add `@dataclass(frozen=True) class ActionsPermissionsOp`
+- [x] **The plan is pure.** In `add_repo.py`, add `@dataclass(frozen=True) class ActionsPermissionsOp`
   (no fields), `class StepKind(str, Enum)` with `adopt_pr`, `upgrade_pr`, `list_pr`,
   `wait_adopt`, `dry_run`, `jules_script`, and
   `Step = SetSecretOp | CreateLabelOp | EnableAutoMergeOp | EnableSecretScanningOp | EnablePushProtectionOp | ActionsPermissionsOp | CreateRulesetOp | StepKind`
@@ -72,13 +72,13 @@ a `MagicMock` `GitHubClient`. The secrets file is a real file in `tmp_path`.
   `CreateRulesetOp` (ruleset missing); `dry_run`; `jules_script` (unless
   `no_jules` or the config says `jules_enabled = false`). One test per rule, and
   `test_fully_wired_repo_plans_only_dry_run_and_jules_script`.
-- [ ] **Config upgrade is a pure text edit.** `config_upgrade(text: str, no_jules: bool) -> str | None`
+- [x] **Config upgrade is a pure text edit.** `config_upgrade(text: str, no_jules: bool) -> str | None`
   removes every `box_enabled = ...` line, appends any of `python_version = "3.12"`,
   `install = "pip install -e .[dev]"` and `jules_enabled = true` that are missing
   (`false` when `no_jules`, which also replaces an existing `jules_enabled = true`),
   keeps every other line and comment, and returns None when nothing changes. The
   result always parses with `tomllib`. Tests for each change and the no-change case.
-- [ ] **`--check` prints the plan and changes nothing.** `main([repo, "--check", ...])`
+- [x] **`--check` prints the plan and changes nothing.** `main([repo, "--check", ...])`
   prints one line per step (the step kind and, for settings, the label or secret
   **name**), or `Nothing to do: {repo} is fully wired.` when the only steps are
   `dry_run` and `jules_script`, or the `blocked` line; it returns 0 (1 when
@@ -101,3 +101,12 @@ In CI order:
 - The box's token: only the box can check it (ticket 61).
 
 ## Comments
+
+2026-10-06: Implemented `add-repo --check` end-to-end:
+- Added console script `add-repo` in `pyproject.toml` pointing to `ticket_engine.add_repo:main`.
+- Implemented `load_secrets_file` for parsing secrets while keeping secrets safe and validating paths.
+- Implemented `gather_facts` using only read-only `gh` calls and token-reach probe on `GitHubClient`.
+- Implemented `config_upgrade` pure function to clean and bring `.ticket-engine.toml` up to date.
+- Implemented `plan_add_repo` pure core generating `AddRepoPlan` with deterministic ordered steps.
+- Implemented CLI `--check` reporting formatted steps or fully wired confirmation, returning 0/1/2 cleanly.
+- Tests in `tests/test_add_repo.py` (27 tests) cover each criterion, privacy preservation, and all edge cases.
