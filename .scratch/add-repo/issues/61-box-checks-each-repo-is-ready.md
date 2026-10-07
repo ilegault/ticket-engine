@@ -1,6 +1,6 @@
 # 61: The box checks each repo is ready (token, config, environment) and publishes the ones that are not
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
