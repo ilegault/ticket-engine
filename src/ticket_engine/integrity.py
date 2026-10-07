@@ -22,6 +22,7 @@ Checks implemented:
   still ready-for-agent / ready-for-developer (no worker claimed it).
 - Check 7: new test functions run against base source must fail on base; any new test passing on base -> hold, listing the tests (ADR 0001 §2.7). Silent if no new tests.
 - Check 8: PR adds a ticket file absent from the base branch -> hold, naming it. Fires independently of every other check (ADR 0001 §2.8, ADR 0008).
+- Check 9: every named test in acceptance criteria exists on head and failed on base code (ADR 0013).
 - Auto-merge: no producing a merge hold regardless of other checks (ADR 0001 §3).
 - Verdict precedence: when both fail and hold reasons exist, verdict is fail (ADR 0001).
 """
@@ -38,6 +39,7 @@ from enum import Enum
 from typing import Any
 
 from ticket_engine.parser import Ticket, TicketParser
+from ticket_engine.ticket_lint import _blocks
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +107,8 @@ _ESCAPE_TAG_RE = re.compile(
     re.IGNORECASE,
 )
 _EXEMPT_LABELS = {"tests-exempt", "skip-test-gate", "no-test-needed"}
+_TEST_NAME_RE = re.compile(r"`(test_\w+)`")
+_REWRITE_WORD_RE = re.compile(r"\b(rewrite|rewrites|rewritten)\b", re.IGNORECASE)
 
 # Reason prefix for a blocked (escalated) ticket. integrity_runner matches it to
 # word the commit status "do not merge" instead of "merge by hand".
@@ -905,6 +909,7 @@ class IntegrityCore:
             )
 
         # 10. Check 7: New tests must fail on base code (ADR 0001 §2.7, Ticket 05)
+        failed_on_base: list[str] = []
         if base_test_results is not None:
             if isinstance(base_test_results, Mapping):
                 new_tests = list(base_test_results.get("new_tests", []))
@@ -940,12 +945,29 @@ class IntegrityCore:
                         f"Check 7 pass: All {len(failed_on_base or new_tests)} new test(s) failed on base code{rt_str}"
                     )
 
+        # 11. Check 9: Named tests (ADR 0013, Ticket 74)
+        if len(changed_tickets) <= 1 and bool(ticket_raw_text.strip()) and ticket_obj.is_done():
+            head_test_names = {info.func_name for info in head_tests.values()}
+            failed_on_base_names = (
+                {qname.split("::")[-1] for qname in failed_on_base}
+                if base_test_results is not None
+                else None
+            )
+            c9_problems = named_test_problems(
+                raw_ticket=ticket_raw_text,
+                head_test_names=head_test_names,
+                failed_on_base_names=failed_on_base_names,
+            )
+            if c9_problems:
+                is_failing = True
+                reasons.extend(c9_problems)
+
         if is_failing:
             return IntegrityVerdict(verdict=Verdict.FAIL, reasons=reasons)
         if is_holding:
             return IntegrityVerdict(verdict=Verdict.HOLD, reasons=reasons)
 
-        pass_reasons = ["All integrity checks passed (checks 1-7)"]
+        pass_reasons = ["All integrity checks passed (checks 1-9)"]
         for r in reasons:
             if r.startswith(("Check 7 pass", "Check 2: deleted test(s) the ticket authorises")):
                 pass_reasons.append(r)
@@ -1020,3 +1042,70 @@ class IntegrityCore:
                 reasons.append(f"Check 6 fail: Ticket acceptance criterion not ticked: '{item}'")
 
         return reasons
+
+
+def named_test_problems(
+    raw_ticket: str,
+    head_test_names: set[str],
+    failed_on_base_names: set[str] | None,
+) -> list[str]:
+    """Check that every test named in acceptance criteria exists on head and failed on base.
+
+    Returns a list of check 9 failure messages.
+    """
+    if not raw_ticket:
+        return []
+
+    lines = raw_ticket.splitlines()
+    has_ac_heading = any(
+        ln.strip().lower().startswith("## acceptance criteria") for ln in lines
+    )
+    in_scope = not has_ac_heading
+    in_scope_lines: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        lowered = stripped.lower()
+        if lowered.startswith("## acceptance criteria"):
+            in_scope = True
+            continue
+        if stripped.startswith("## "):
+            if has_ac_heading and in_scope:
+                break
+            if not has_ac_heading and lowered.startswith("## comments"):
+                break
+            continue
+
+        if in_scope:
+            in_scope_lines.append(line)
+
+    blocks = _blocks("\n".join(in_scope_lines))
+    problems: list[str] = []
+
+    for block in blocks:
+        m = _ACCEPTANCE_BOX_RE.match(block)
+        if not m:
+            continue
+        criterion_text = m.group(2).strip()
+
+        test_names: list[str] = []
+        for name in _TEST_NAME_RE.findall(criterion_text):
+            if name not in test_names:
+                test_names.append(name)
+
+        for name in test_names:
+            if name not in head_test_names:
+                problems.append(
+                    f'Check 9 fail: criterion "{criterion_text[:60]}" names `{name}`, which is not in the PR\'s tests'
+                )
+            elif (
+                failed_on_base_names is not None
+                and name not in failed_on_base_names
+                and not _REWRITE_WORD_RE.search(criterion_text)
+            ):
+                problems.append(
+                    f'Check 9 fail: `{name}` (criterion "{criterion_text[:60]}") did not fail on the base code, so it does not prove the criterion'
+                )
+
+    return problems
+
