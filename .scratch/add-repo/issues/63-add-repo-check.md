@@ -1,6 +1,6 @@
 # 63: `add-repo --check` reads a repo's state and prints the plan
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
