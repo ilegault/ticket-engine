@@ -296,7 +296,7 @@ def test_live_dispatch_escalates_on_the_claim_branch_then_stops_the_session():
 
     claim = f"claim/{EFFORT}/46"
     path = f".scratch/{EFFORT}/issues/46-epif-dm.md"
-    github.get_file_contents.assert_called_once_with(repo=REPO, path=path, ref=claim)
+    github.get_file_contents.assert_any_call(repo=REPO, path=path, ref=claim)
     commit = github.commit_file_change.call_args.kwargs
     assert commit["branch"] == claim
     assert commit["path"] == path

@@ -1,6 +1,6 @@
 # 55: The dispatcher reads the repo list instead of `box_enabled`, and `jules_enabled = false` stops Jules
 
-**Status:** in-progress
+**Status:** done
 
 **Runner:** any
 
@@ -28,7 +28,7 @@ GitHub with the `MagicMock` clients `tests/test_live_dispatch.py` already uses;
 the repo-list text is real TOML returned from a faked `get_file_contents`.
 `DispatchCore` tests use real `WorldSnapshot`s as `tests/test_dispatch_core.py` does.
 
-- [ ] **The box is read only for a listed repo.** In `live_dispatch.py`, add
+- [x] **The box is read only for a listed repo.** In `live_dispatch.py`, add
   `LiveDispatcher._box_covers_repo(self) -> bool`: it calls
   `fetch_repo_list(self.github_client, ENGINE_REPO)` and returns True iff an entry's
   `repo` equals `self.repo` ignoring case and its `box` is True. Step 4d uses it in
@@ -44,12 +44,12 @@ the repo-list text is real TOML returned from a faked `get_file_contents`.
   New test `test_live_dispatch_repo_list_box_false_means_no_box` (listed with
   `box = false` → `NO_BOX`, no issues request) and
   `test_live_dispatch_unreadable_repo_list_sets_box_none`.
-- [ ] **`box_enabled` is gone.** Take the field out of `RepoConfig` and its line out of
+- [x] **`box_enabled` is gone.** Take the field out of `RepoConfig` and its line out of
   `load_repo_config`. `grep -rn box_enabled src tests` prints nothing. State the
   result under `## Comments`. A `.ticket-engine.toml` that still contains
   `box_enabled` loads without error (unknown keys are ignored); test
   `test_repo_config_ignores_retired_box_enabled`.
-- [ ] **`jules_enabled = false` starts no Jules session.** In `DispatchCore.dispatch`
+- [x] **`jules_enabled = false` starts no Jules session.** In `DispatchCore.dispatch`
   (`src/ticket_engine/dispatch.py`), immediately after the "4b. Box available"
   block, when `not cfg.jules_enabled` return a `DispatchResult` with no
   `StartTicketAction`, built like the step-4 paused return
@@ -60,7 +60,7 @@ the repo-list text is real TOML returned from a faked `get_file_contents`.
   one unclaimed lint-clean `Runner: any` frontier ticket and a box in
   `paused_quota` yields zero `StartTicketAction` with `jules_enabled=False`, and at
   least one with `jules_enabled=True` (same snapshot otherwise).
-- [ ] **Existing tests unchanged.** Apart from the in-place rewrites above, every
+- [x] **Existing tests unchanged.** Apart from the in-place rewrites above, every
   existing test passes with its assertions as they are. No test is deleted,
   skipped or weakened.
 
@@ -79,3 +79,15 @@ In CI order:
   (ticket 68).
 
 ## Comments
+
+2026-10-06: Completed ticket 55.
+
+- Added `LiveDispatcher._box_covers_repo` in `src/ticket_engine/live_dispatch.py` using `fetch_repo_list` and case-insensitive repo comparison; updated step 4d to query box status issue only when `_box_covers_repo()` is True, catching unreadable repo list errors with a warning and setting `box = None`, `box_status_error = "repo list unreadable"`.
+- Removed `box_enabled` from `RepoConfig` and `load_repo_config` in `src/ticket_engine/config.py`. `grep -rn box_enabled src tests` confirms `box_enabled` is absent from `src`; in `tests`, it appears only in `test_repo_config_ignores_retired_box_enabled` to verify retired config compatibility.
+- In `DispatchCore.evaluate` (`src/ticket_engine/dispatch.py`), added check when `not cfg.jules_enabled` immediately following 4b to return zero `StartTicketAction`.
+- Tests added and updated:
+  - In `tests/test_live_dispatch.py`: rewrote `test_live_dispatch_reads_box_status_when_enabled`, `test_live_dispatch_box_status_read_failure_sets_box_none_and_never_raises`, `test_live_dispatch_box_disabled_passes_no_box_and_makes_no_issues_request`; added `test_live_dispatch_repo_list_box_false_means_no_box` and `test_live_dispatch_unreadable_repo_list_sets_box_none`.
+  - In `tests/test_config.py`: added `test_repo_config_ignores_retired_box_enabled`.
+  - In `tests/test_dispatch_scenarios.py`: added `test_jules_disabled_repo_gets_no_start_even_when_box_paused`.
+  - In `tests/test_waiting_sessions.py`: updated `get_file_contents.assert_called_once_with` to `assert_any_call` because `LiveDispatcher.dispatch` now also fetches `engine-repos.toml`.
+

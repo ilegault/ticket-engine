@@ -430,6 +430,29 @@ def test_dispatch_box_paused_quota_overflows_to_jules():
     assert result.skipped_windows_tickets == [t2]
 
 
+def test_jules_disabled_repo_gets_no_start_even_when_box_paused():
+    now = datetime.datetime(2026, 9, 26, 12, 0, 0, tzinfo=datetime.UTC)
+    box = BoxStatus(
+        checked_in_at=now - datetime.timedelta(hours=1),
+        state=BoxState.paused_quota,
+    )
+    t1 = make_ticket(1, runner="any")
+
+    cfg_disabled = RepoConfig(jules_enabled=False)
+    snapshot_disabled = WorldSnapshot(tickets=[t1], box=box, now=now, config=cfg_disabled)
+    result_disabled = DispatchCore().evaluate(snapshot_disabled)
+    start_disabled = [a for a in result_disabled.actions if isinstance(a, StartTicketAction)]
+    assert len(start_disabled) == 0
+    assert result_disabled.left_for_box == []
+    assert result_disabled.box_state == "paused"
+
+    cfg_enabled = RepoConfig(jules_enabled=True)
+    snapshot_enabled = WorldSnapshot(tickets=[t1], box=box, now=now, config=cfg_enabled)
+    result_enabled = DispatchCore().evaluate(snapshot_enabled)
+    start_enabled = [a for a in result_enabled.actions if isinstance(a, StartTicketAction)]
+    assert len(start_enabled) >= 1
+
+
 def test_dispatch_box_paused_weekly_cap_overflows_to_jules():
     now = datetime.datetime(2026, 9, 26, 12, 0, 0, tzinfo=datetime.UTC)
     box = BoxStatus(

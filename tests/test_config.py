@@ -45,3 +45,11 @@ def test_engine_config_template_declares_install_keys():
     assert data["python_version"] == "3.12"
     assert data["install"] == "pip install -e .[dev]"
     assert data["jules_enabled"] is True
+
+
+def test_repo_config_ignores_retired_box_enabled(tmp_path: pathlib.Path):
+    config_file = tmp_path / ".ticket-engine.toml"
+    config_file.write_text("box_enabled = true\n", encoding="utf-8")
+    cfg = load_repo_config(tmp_path)
+    assert not hasattr(cfg, "box_enabled")
+

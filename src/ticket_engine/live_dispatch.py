@@ -89,6 +89,7 @@ from ticket_engine.dispatch import (
 )
 from ticket_engine.parser import TicketParser
 from ticket_engine.prompt import assemble_prompt, extract_progress_note, load_ticket_skill
+from ticket_engine.repo_list import RepoListError, fetch_repo_list
 from ticket_engine.run_report import RunFacts
 from ticket_engine.ticket_lint import lint_tickets
 
@@ -508,6 +509,18 @@ class LiveDispatcher:
         facts.kept_done_claims.extend(kept)
         return released
 
+    def _box_covers_repo(self) -> bool:
+        """Return True iff engine-repos.toml on the engine repo's default branch lists
+        this repo with box = true (ADR 0009 rule 4/5).
+
+        Calls fetch_repo_list(self.github_client, ENGINE_REPO) with no ref.
+        Case-insensitive match on repo identifier.
+        Errors propagate to the caller.
+        """
+        entries = fetch_repo_list(self.github_client, ENGINE_REPO)
+        repo_lower = self.repo.strip().lower()
+        return any(entry.repo.strip().lower() == repo_lower and entry.box for entry in entries)
+
     def dispatch(self, tickets: list[Ticket]) -> list[Ticket]:
         """Evaluate frontier and launch Jules sessions for eligible tickets.
 
@@ -676,10 +689,18 @@ class LiveDispatcher:
                 )
             )
 
-        # 4d. Read box status issue if box is enabled (ADR 0006)
+        # 4d. Read box status issue if covered by the box in repo list (ADR 0006, ADR 0009)
         box: BoxStatus | None | NoBox = NO_BOX
         box_status_error = ""
-        if self.config.box_enabled:
+        box_covers = False
+        try:
+            box_covers = self._box_covers_repo()
+        except (RepoListError, urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+            logger.warning("Failed to fetch or parse repo list from %s: %s", ENGINE_REPO, exc)
+            box = None
+            box_status_error = "repo list unreadable"
+
+        if box_covers:
             try:
                 issues = self.github_client.list_issues(
                     repo=ENGINE_REPO,
