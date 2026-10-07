@@ -111,6 +111,7 @@ from ticket_engine.local_config import (
 from ticket_engine.local_worker import LocalWorker, _load_tickets_from_path
 from ticket_engine.parser import Ticket
 from ticket_engine.repo_env import env_paths, env_vars
+from ticket_engine.repo_list import RepoListEntry, fetch_repo_list
 from ticket_engine.sonnet import SonnetDriver
 
 logger = logging.getLogger(__name__)
