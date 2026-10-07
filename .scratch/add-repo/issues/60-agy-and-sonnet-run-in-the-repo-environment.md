@@ -1,6 +1,6 @@
 # 60: agy and Sonnet run inside the repo's environment
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
