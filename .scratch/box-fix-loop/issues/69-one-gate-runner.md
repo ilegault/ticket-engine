@@ -1,6 +1,6 @@
 # 69: One gate runner, and `engine-gate` runs a repo's gate list
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
