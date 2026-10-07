@@ -38,6 +38,18 @@ set up, before RBL is added from scratch (ticket 15).
 - [ ] **Both are ready on the box.** Within two status intervals the box status
   issue shows no `Not ready:` line, `C:\Users\agent\envs\` holds one environment
   per repo, and `box_readiness.json` records a passed baseline for each.
+- [ ] **One gate list (ADR 0011).** Only after ticket 83 is merged and `v1` moved, and
+  ticket 84 is merged. In each repo's upgrade PR: `install` is what CI installs
+  (Slackbot: `pip install -r requirements-dev.txt`), and `gate_commands` lists every
+  command its old test workflow ran, command for command, in CI order (Slackbot:
+  `ruff check .`, `python scripts/check_tests_first.py`, `python tools/type_gate.py`,
+  `pytest --tb=short -q -n auto --dist loadfile`). The old test workflow
+  (Slackbot's `tests.yml`) is deleted in the same PR, and `.github/workflows/gate.yml`
+  calls the engine's gate. (by hand)
+- [ ] **Exactly two required checks.** In each repo's branch protection, remove the
+  hand-set `Tests / lint` and `Tests / test (3.14)` (and TDS-T8's equivalents); the
+  `engine-branch-protection` ruleset requires `ticket-engine/integrity-gate` and
+  `gate / gate`. A test PR shows both checks and nothing else required. (by hand)
 - [ ] **Re-running is a no-op.** `add-repo ilegault/slackbot --check` and the
   TDS-T8 equivalent both print `Nothing to do: ... is fully wired.` Record both
   outputs under `## Comments`, plus anything the run surprised you with.

@@ -6,7 +6,7 @@
 
 **Auto-merge:** yes
 
-**Blocked by:** 58, 60
+**Blocked by:** 58, 60, 70, 80
 
 **Spec:** `.scratch/add-repo/spec.md`
 **Binding:** ADR 0010 rules 2, 4 and 5; ADR 0009 rule 6; ADR 0007 rule 4

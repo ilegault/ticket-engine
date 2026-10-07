@@ -34,8 +34,9 @@ recording fake `gh`, a fake `sleep`, and monkeypatch
   `adopt PR closed without merging` and returns 1; `KeyboardInterrupt` prints
   `Stopped. Re-run add-repo {repo} to continue.` and returns 130. Tests for each.
 - [ ] **The ruleset.** For `CreateRulesetOp`: `gh api -X POST repos/{repo}/rulesets --input -`
-  with stdin JSON `{"name": "engine-branch-protection", "target": "branch", "enforcement": "active", "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}, "rules": [{"type": "required_status_checks", "parameters": {"strict_required_status_checks_policy": false, "required_status_checks": [{"context": "ticket-engine/integrity-gate"}]}}]}`
-  (name and context from `ENGINE_RULESET_NAME` and `_INTEGRITY_CHECK_CONTEXT`). Test
+  with stdin JSON `{"name": "engine-branch-protection", "target": "branch", "enforcement": "active", "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}, "rules": [{"type": "required_status_checks", "parameters": {"strict_required_status_checks_policy": false, "required_status_checks": [{"context": "ticket-engine/integrity-gate"}, {"context": "gate / gate"}]}}]}`
+  (name from `ENGINE_RULESET_NAME`; one `{"context": ...}` per entry of the op's
+  `required_checks`, in order, so ticket 84's second context needs no change here). Test
   asserts the exact parsed JSON.
 - [ ] **The dry run.** For `StepKind.dry_run`: clone the repo into a temporary
   folder as in ticket 65 and call `run_dispatch_dry_run(str(clone))` from

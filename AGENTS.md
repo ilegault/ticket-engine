@@ -347,45 +347,52 @@ For the planner session. None of this is for a worker.
 <!-- ACTIVE-PLAN:START -->
 ## Active implementation plan
 
-_Written by the planning model on 2026-10-06 20:36. Implement this. If something in it is wrong, say so before changing course._
+_Written by the planning model on 2026-10-07 21:38. Implement this. If something in it is wrong, say so before changing course._
 
-# Active plan: add-repo — one command to add a repo; the box provisions itself
+# Active plan: box-fix-loop — the box fixes red CI or escalates, behind one gate list and named tests
 
 This is a pointer, not the work. Read the spec and the tickets it names.
 
-- **Spec:** `.scratch/add-repo/spec.md`
-- **Binding ADRs:** 0009 (adding a repo is one command plus a self-provisioning box; `engine-repos.toml` is the single on-switch), 0010 (per-repo environments, baseline, not ready, box pause). Also 0002, 0005, 0006, 0007 where they touch the same code.
-- **New glossary terms (CONTEXT.md):** Add-repo, Repo list, Repo environment, Baseline, Not ready, Box pause. *Bootstrap* reworded.
-- **Tickets:** `.scratch/add-repo/issues/53`–`68`, then `.scratch/phase-1/issues/15` (rewritten: RBL via add-repo). Conventions: `docs/agents/issue-tracker.md`.
+- **Spec:** `.scratch/box-fix-loop/spec.md`
+- **Binding ADRs:** 0011 (the box owns red CI on its own PRs; pre-push gate; one gate list; two required checks), 0012 (the box updates its own engine and rolls back), 0013 (every criterion is proved by a named failing test; check 9). Also 0001, 0005, 0006, 0007, 0010 where they touch the same code.
+- **New or changed glossary terms (CONTEXT.md):** Fix attempt (reworded: counted whether or not the run pushes), Fix prompt, Pre-push gate, Gate, Named test, Box launcher; Integrity gate, Box status issue, Ticket lint, Box alert reworded.
+- **Tickets:** `.scratch/box-fix-loop/issues/69`–`84`. Conventions: `docs/agents/issue-tracker.md`.
+- **Also changed in add-repo:** 61 now blocked by 70 and 80; 62 rewritten to use 69's gate runner and blocked by 69, 70, 80; 66's ruleset JSON lists every required check; 68 (developer) gains the move to the gate workflow and the two required checks.
 
-**Next:** 53, 54 and 57 have no blockers. Start with **53** (the repo list and token probe): 55, 58 and 63 all build on it.
+**Next:** 69, 70, 74, 79 and 82 have no blockers (75 is the developer's). Start with **70**: on its own it turns a stuck red box PR into an escalation instead of silence. Then 79 → 80 so later engine changes reach the box by themselves.
 
 ## Dependency graph
 
-- 53 → 55, 58, 63
-- 54 → 55, 59, 63
-- 55 → 56 → 58
-- 57 → 58
-- 58 + 60 → 61 → 62
-- 59 → 60 (52 already done)
-- 63 → 64 → 65 → 66
-- 62 + 66 → 67 → **68 (ready-for-developer)** → **phase-1 15 (ready-for-developer)**
+- 69 → 71, 83 (held), 62
+- 70 → 71, 77, 80, 61, 62
+- 71 → 72 → 73
+- 72 → 77 → 78
+- 77 → 80
+- 79 → 80 → 81 (developer), 61, 62
+- 75 (developer) → 76
+- 66 → 84
+- 74, 82: independent
+- **Held:** 83 (changes `.github/`), a leaf; it reaches target repos only when the developer moves `v1`.
+- **ready-for-developer:** 75 (rewrite open tickets to name tests), 81 (switch the box to the launcher), 68.
 
-All of 53–67 are `Auto-merge: yes`. 68 and 15 are bench work for the developer; no agent claims them.
+## Requirements an implementer might treat as preferences
 
-## Requirements, not preferences
+- `run_gate` runs **every** command; it never stops at the first failure.
+- A fix attempt is counted **before** the fix run starts and taken back only for `quota`; the count lives in `fix_attempts.json`, never in memory.
+- The pre-push gate runs before a PR is opened and before every push to a branch with an open PR; a red gate pushes **nothing**. Checkpoint pushes to a branch with no PR stay ungated.
+- Gate and integrity output stays in the box log and in prompts; it never reaches a GitHub request body.
+- The local integrity run uses the repo environment's Python with the engine source on `PYTHONPATH`, and `--local` writes nothing to GitHub whatever the environment holds.
+- `launcher.py` imports only the standard library.
+- `ZoneInfo` is built inside `display_time`'s functions, never at import; `tzdata` is a Windows-only dependency.
+- `parse_box_status` keeps reading the old UTC body.
+- Tests that assert old text are **rewritten in place under the same name**; no test is deleted.
 
-- Decisions live in pure functions: `parse_repo_list`, `repo_readiness`, `env_fingerprint` and the command builders, `plan_add_repo`, `config_upgrade`. The adapters only gather facts and run commands, so tests never need real git, gh or virtual environments.
-- Secret values reach `gh` only on stdin. Never in an argument list, a log or printed output (ADR 0002).
-- Everything the box posts is fixed-template: reason codes and repo names only. Baseline and install output stays in the box's log (ADR 0007 rule 4).
-- `BoxLoop` with `repo_list_fn=None` keeps today's behaviour, so every existing box test passes unchanged.
-- The box never deletes a clone or an environment.
+## What this set does not do
 
-## Not in this set
-
-- More than one agy session at once on the box (recorded follow-up).
-- A GitHub App replacing the two tokens; the Jules setup script via an API.
-- Workflow permissions on target repos (left at read).
+- Red-CI handling for Jules PRs; the dispatcher's PR-escalation path stays unwired (82 only documents it). Keep a repo off Jules with `jules_enabled = false`.
+- The engine never edits code itself (no automatic `ruff --fix`).
+- Several agy sessions at once on the box.
+- Moving the `v1` tag.
 <!-- ACTIVE-PLAN:END -->
 
 ## Implementation Protocol

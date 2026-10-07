@@ -6,7 +6,7 @@
 
 **Auto-merge:** yes
 
-**Blocked by:** 61
+**Blocked by:** 61, 69, 70, 80
 
 **Spec:** `.scratch/add-repo/spec.md`
 **Binding:** ADR 0010 rules 4 and 5; ADR 0007 rules 4 and 5
@@ -34,15 +34,16 @@ same fakes as ticket 61, plus a fake command runner for the gate commands
   `["git", "-C", path, "rev-parse", "HEAD"]` and compares `(sha, env fingerprint)`
   with the entry stored under the repo in `box_readiness.json`
   (`"baseline": {"sha": ..., "fingerprint": ..., "passed": bool}`). When they
-  differ it runs each of `repo_config.gate_commands` in order as a shell string
-  (cwd the clone, env `env_vars(...)`, stopping at the first non-zero), stores the
-  result, and passes `baseline_passed` into `RepoFacts`. When they match it reuses
+  differ it runs `run_gate(repo_config.gate_commands, path, env)` from
+  `src/ticket_engine/gate.py` (ticket 69; every command runs, none is skipped after
+  a failure), with `env` = `env_vars(...)` merged with the repo's `test_env`, stores
+  the result, and passes `baseline_passed` into `RepoFacts`. When they match it reuses
   the stored result without running anything. Tests
   `test_baseline_runs_once_per_head_and_fingerprint`,
   `test_red_baseline_makes_the_repo_not_ready`,
   `test_new_head_reruns_a_red_baseline_and_clears_it_when_green`.
 - [ ] **Its output stays in the log.** A red baseline logs
-  `logger.warning("baseline red for %s at %s: %s exited %d: %s", repo, sha[:7], command, code, output[-4000:])`.
+  `logger.warning("baseline red for %s at %s:\n%s", repo, sha[:7], format_gate_report(result)[-4000:])`.
   Nothing from the output reaches GitHub. Test
   `test_baseline_output_never_reaches_a_github_request_body` (copy the approach of
   `test_agy_failure_text_never_reaches_a_github_request_body`).

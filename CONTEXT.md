@@ -80,19 +80,25 @@ The model runs in Google's cloud; the box runs only `agy`, git and the tests.
 paused on quota or silent. Jules is not started otherwise (ADR 0006).
 
 **Box status issue** — one pinned, locked issue in the engine repo. The box
-rewrites it every 30 minutes with its last check-in time, its current ticket, and
-whether it is paused on quota and until when. The dispatcher reads it to decide
+rewrites it every 30 minutes with its last check-in time, its current ticket and
+step (implementing, pre-push gate red, fixing CI, waiting for quota), its last
+finished ticket, today's starts per repo, any not-ready repos, the engine commit
+it runs, and whether it is paused and until when. Times are in Central time. The dispatcher reads it to decide
 overflow. Fixed-template text only (ADR 0007).
 
 **Box silent** — the box status issue's check-in time is more than 12 hours
 old. A scheduled check then @mentions the developer.
+
+**Box launcher** — what the box's scheduled task runs. It starts the box worker,
+and after an engine update that keeps the box from starting it rolls the engine
+back to the last good commit and raises a box alert (ADR 0012).
 
 **Box pause** — the `BOX_PAUSED` variable on the engine repo. When set, the
 box finishes its current ticket, claims nothing new, and reports `Paused by
 developer`, so Jules may overflow (ADR 0010).
 
 **Box alert** — a fixed-template issue in the engine repo about the box as a
-whole, not one ticket: weekly cap reached, box silent, login expired.
+whole, not one ticket: weekly cap reached, box silent, login expired, engine update rolled back.
 
 **Dispatcher** — the part of the engine that looks at a target repo, computes the
 frontier, and starts workers on it. It keeps **no state of its own**: everything
@@ -129,8 +135,14 @@ session when fewer than 10 of the rolling-24-hour allowance remain. Local worker
 
 ## Outcomes
 
-**Fix attempt** — one red CI run on a ticket's PR followed by a new push. Red CI
-is normal and is not an escalation.
+**Fix prompt** — the prompt for a fix attempt. Unlike an implement run's prompt it
+says the ticket is already the worker's and `done`, and it carries the failing
+output, not just the names of the failing checks.
+
+**Fix attempt** — one worker run sent back to a ticket's PR because CI is red,
+counted whether or not the run pushes anything. Red CI is normal and is not an
+escalation; running out of fix attempts is. The box owns the fix attempts on its
+own PRs.
 
 **Escalation** — the worker gives up: three fix attempts have failed, or the
 tests cannot pass without muting or weakening them. The engine also escalates a
@@ -142,7 +154,12 @@ opened in the ticket's target repo, labelled `escalation`, @mentioning the
 developer. It is closed once the ticket leaves `blocked`. The developer is told
 through GitHub, never by email.
 
-**Integrity gate** — the fifth CI check, after the target repo's own gates. It
+**Gate** — the required CI check that runs the target repo's `gate_commands`,
+every one of them, through the engine's shared workflow. The one list of the
+repo's own checks: the same list runs as the *baseline* and the *pre-push gate*
+(ADR 0011).
+
+**Integrity gate** — the other required CI check, after the *gate*. It
 decides whether a green PR may merge on its own. Its answer is a *verdict*.
 
 **Verdict** — `pass` (auto-merge), `fail` (red check, the worker must fix), or
@@ -152,8 +169,13 @@ decides whether a green PR may merge on its own. Its answer is a *verdict*.
 functions (`<file>.py::<name>`) the worker may delete. Read only from the default
 branch's copy of the ticket (ADR 0005).
 
+**Named test** — a `test_...` function named in a ticket's acceptance criterion.
+The integrity gate requires each to exist and to have failed on the base code
+(check 9, ADR 0013).
+
 **Ticket lint** — the check that a `ready-for-agent` ticket can land through the
-integrity gate as written. A ticket with findings is not started (ADR 0005).
+integrity gate as written, including that every criterion has a *named test* or
+is tagged `(by hand)` / `(no test: <reason>)`. A ticket with findings is not started (ADR 0005).
 
 **Merge hold** — a PR whose verdict is `hold`. Its gate check is green and it is
 labelled `engine:hold`, but it is never auto-merged: the developer merges it by hand.
@@ -207,6 +229,10 @@ change (ADR 0010).
 
 **Baseline** — the target repo's `gate_commands` run by the box on the default
 branch before it claims any ticket there.
+
+**Pre-push gate** — the target repo's `gate_commands` run by the box on a
+ticket's worktree after each worker run and before anything is pushed. A red
+pre-push gate sends the worker back with the failing output instead of pushing.
 
 **Not ready** — a listed repo the box will not work: red baseline, failed
 repo environment, or no `.ticket-engine.toml` on its default branch. Shown on
