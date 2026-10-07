@@ -1,6 +1,6 @@
 # 58: The box works the repos on the repo list, clones new ones, and honours `BOX_PAUSED`
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
