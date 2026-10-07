@@ -83,6 +83,7 @@ import pathlib
 import time
 from collections.abc import Callable
 
+import ticket_engine
 from ticket_engine.agy import AgyDriver
 from ticket_engine.box_core import (
     BoxCore,
@@ -178,6 +179,7 @@ class BoxLoop:
         self._last_status_write: datetime.datetime | None = None
         self._auth_first_failure: datetime.datetime | None = None
         self._auth_retry_at: datetime.datetime | None = None
+        self._recorded_good_commit: bool = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -191,6 +193,8 @@ class BoxLoop:
         """
         try:
             self._tick()
+            if not self._recorded_good_commit:
+                self._record_good_commit()
         except Exception:
             logger.exception("tick failed")
             raise
@@ -216,6 +220,37 @@ class BoxLoop:
         """Tick forever. `main`'s `--once` flag is the only way to stop early."""
         while True:
             self.tick()
+
+    def _record_good_commit(self) -> None:
+        """Record the engine checkout commit as good and current in launcher_state.json."""
+        engine_checkout = pathlib.Path(ticket_engine.__file__).resolve().parents[2]
+        rc, out = self._git_runner(
+            ["git", "-C", str(engine_checkout), "rev-parse", "HEAD"],
+            str(engine_checkout),
+            None,
+        )
+        if rc != 0:
+            logger.debug("git rev-parse HEAD failed (exit %d): %s", rc, out.strip())
+            return
+        commit = out.strip()
+        if not commit:
+            return
+
+        state_path = pathlib.Path(self.config.logs_dir) / "launcher_state.json"
+        state_data: dict[str, object] = {}
+        if state_path.is_file():
+            try:
+                loaded = json.loads(state_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    state_data = loaded
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to read launcher_state.json %s: %s", state_path, exc)
+
+        state_data["good_commit"] = commit
+        state_data["current_commit"] = commit
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state_data, indent=2), encoding="utf-8")
+        self._recorded_good_commit = True
 
     # ------------------------------------------------------------------
     # World building

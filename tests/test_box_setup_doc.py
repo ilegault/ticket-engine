@@ -82,3 +82,11 @@ def test_commands_are_the_real_ones():
     with PYPROJECT_PATH.open("rb") as fh:
         pyproject = tomllib.load(fh)
     assert "box-worker" in pyproject["project"]["scripts"]
+
+
+def test_box_setup_doc_starts_the_launcher():
+    text = _doc_text()
+    assert "box-launcher.exe" in text
+    assert "--engine-dir" in text
+    assert "--state-dir" in text
+

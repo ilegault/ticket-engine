@@ -116,7 +116,7 @@ Check with `Get-ChildItem C:\Users\agent -Force -Filter ".ticket-engine-local*"`
 ## Start at boot
 
 Register a Windows Task Scheduler task, running as the `agent` account, that
-starts at boot and launches `box-worker`. Configure it to restart on failure,
+starts at boot and launches `box-launcher`. Configure it to restart on failure,
 so a crash or a reboot resumes the loop without the developer's attention.
 
 - Give `agent` a password first: Windows will not run a task for a
@@ -130,7 +130,8 @@ so a crash or a reboot resumes the loop without the developer's attention.
   Local Policies, User Rights Assignment.
 - General: "Run whether user is logged on or not", password stored, not
   "Run with highest privileges", Configure for Windows 10.
-- Trigger: At startup. Action: `C:\Users\agent\ticket-engine\.venv\Scripts\box-worker.exe`,
+- Trigger: At startup. Action: `C:\Users\agent\ticket-engine\.venv\Scripts\box-launcher.exe`
+  with arguments `--engine-dir C:\Users\agent\ticket-engine --state-dir <logs_dir>`,
   Start in `C:\Users\agent\ticket-engine`.
 - Settings: restart on failure every 5 minutes, and untick "Stop the task if
   it runs longer than".
