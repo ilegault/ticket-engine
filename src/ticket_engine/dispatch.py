@@ -162,6 +162,11 @@ class StartTicketAction:
 
 @dataclass(frozen=True)
 class EscalatePRAction:
+    """Escalate a PR after repeated CI failures.
+
+    Jules-only and not wired into live dispatch (ADR 0011 rule 6); the box escalates its own PRs.
+    """
+
     ticket: Ticket
     pr_number: int
     branch: str

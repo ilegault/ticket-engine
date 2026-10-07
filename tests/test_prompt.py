@@ -14,7 +14,8 @@ import logging
 
 import pytest
 
-from ticket_engine.dispatch import Handoff
+from ticket_engine.dispatch import EscalatePRAction, Handoff
+from ticket_engine.live_dispatch import LiveDispatcher
 from ticket_engine.prompt import assemble_prompt, extract_progress_note, load_ticket_skill
 
 
@@ -272,4 +273,27 @@ def test_local_worker_re_exports_extract_progress_note():
     from ticket_engine import local_worker
 
     assert local_worker._extract_progress_note is extract_progress_note
+
+
+# --- Ticket 82: Jules CI output promise and PR escalation docstring ---------
+
+
+def test_skill_does_not_promise_jules_the_ci_output():
+    skill = load_ticket_skill()
+    assert "you will receive the failing" not in skill
+
+
+def test_skill_tells_jules_to_run_every_gate_command_itself():
+    skill = load_ticket_skill()
+    assert "The engine does not yet send you CI results" in skill
+
+
+def test_dispatcher_pr_escalation_is_documented_as_jules_only():
+    assert EscalatePRAction.__doc__ is not None
+    assert "Jules-only and not wired into live dispatch" in EscalatePRAction.__doc__
+    assert LiveDispatcher.dispatch_escalations_and_stale_claims.__doc__ is not None
+    assert (
+        "Jules-only and not wired into live dispatch"
+        in LiveDispatcher.dispatch_escalations_and_stale_claims.__doc__
+    )
 

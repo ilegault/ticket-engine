@@ -184,9 +184,9 @@ This section applies when executing as a Jules cloud worker:
   the pull request automatically.
 - **CI is watched for you.** The engine dispatcher monitors the pull request and
   CI checks.
-- **Respond to red CI by fixing.** If CI fails, you will receive the failing
-  output. Diagnose the root cause, fix the implementation or test harness
-  honestly, and commit.
+- **Red CI.** The engine does not yet send you CI results. Before you
+  finish, run every gate command yourself and fix what fails; never mute or weaken
+  a test to do it.
 - **Mark the ticket done in the same PR.** As your last step, in the ticket file:
   set `Status: done`, tick every criterion you implemented and verified (`- [x]`),
   and replace the progress note under `## Comments` with a dated summary of what

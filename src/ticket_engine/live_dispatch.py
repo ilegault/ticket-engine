@@ -169,7 +169,10 @@ class LiveDispatcher:
         jules_sessions: list[dict[str, Any]] | None = None,
         now: datetime.datetime | None = None,
     ) -> list[object]:
-        """Evaluate open PRs and claims, escalating failures and releasing stale claims."""
+        """Evaluate open PRs and claims, escalating failures and releasing stale claims.
+
+        Jules-only and not wired into live dispatch (ADR 0011 rule 6); the box escalates its own PRs.
+        """
         self.check_paused_state()
 
         snapshot = WorldSnapshot(
