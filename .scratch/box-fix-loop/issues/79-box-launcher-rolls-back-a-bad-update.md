@@ -1,6 +1,6 @@
 # 79: `box-launcher` starts the box and rolls back an engine update that breaks it
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
