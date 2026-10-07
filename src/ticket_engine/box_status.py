@@ -28,6 +28,10 @@ configured `box_silent_hours`, and whether the "Box alert: box silent" issue is
 already open, and returns which action (if any) the calling script should take.
 It reads no clock and does no I/O itself; `scripts/check_box_silent.py` supplies
 `now` and carries out the action.
+
+Ticket 56 (ADR 0010 rules 4–6) adds `paused_by_developer` to `BoxState`,
+`NotReadyReason`, `NotReady`, not-ready repo reporting in `BoxStatus` /
+`render_box_status` / `parse_box_status`, and `render_repo_not_ready_alert`.
 """
 from __future__ import annotations
 
@@ -45,12 +49,15 @@ __all__ = [
     "BoxState",
     "BoxStatus",
     "EscalationReason",
+    "NotReady",
+    "NotReadyReason",
     "TicketRef",
     "parse_box_status",
     "parse_escalation_issue_title",
     "render_box_alert",
     "render_box_status",
     "render_escalation_issue",
+    "render_repo_not_ready_alert",
     "silent_check_action",
 ]
 
@@ -63,6 +70,31 @@ class BoxState(str, Enum):
     paused_quota = "paused_quota"
     paused_weekly_cap = "paused_weekly_cap"
     login_expired = "login_expired"
+    paused_by_developer = "paused_by_developer"
+
+
+class NotReadyReason(str, Enum):
+    """Categorical reasons why a target repo is not ready for the box."""
+
+    clone_failed = "clone_failed"
+    no_token_access = "no_token_access"
+    no_engine_config = "no_engine_config"
+    env_failed = "env_failed"
+    baseline_red = "baseline_red"
+
+
+@dataclass(frozen=True)
+class NotReady:
+    """A target repository that the box will not work, and the categorical reason why."""
+
+    repo: str
+    reason: NotReadyReason
+
+    def __post_init__(self) -> None:
+        if not _REPO_RE.match(self.repo):
+            raise ValueError(f"Invalid repository reference: {self.repo!r}")
+        if isinstance(self.reason, str) and not isinstance(self.reason, NotReadyReason):
+            object.__setattr__(self, "reason", NotReadyReason(self.reason))
 
 
 class AlertKind(str, Enum):
@@ -101,6 +133,7 @@ class BoxStatus:
     state: BoxState
     current: TicketRef | None = None
     paused_until: datetime.datetime | None = None
+    not_ready: tuple[NotReady, ...] = ()
 
     def __post_init__(self) -> None:
         if self.checked_in_at.tzinfo is None:
@@ -120,6 +153,9 @@ class BoxStatus:
                 self.paused_until.astimezone(datetime.UTC).replace(second=0, microsecond=0)
             )
             object.__setattr__(self, "paused_until", utc_paused)
+
+        if not isinstance(self.not_ready, tuple):
+            object.__setattr__(self, "not_ready", tuple(self.not_ready))
 
 
 def _format_iso(dt: datetime.datetime) -> str:
@@ -157,6 +193,9 @@ def render_box_status(s: BoxStatus) -> str:
         f"Current: {current_str}",
         f"Paused until: {paused_str}",
     ]
+    if s.not_ready:
+        not_ready_str = ", ".join(f"{nr.repo} ({nr.reason.value})" for nr in s.not_ready)
+        lines.append(f"Not ready: {not_ready_str}")
     return "\n".join(lines) + "\n"
 
 
@@ -213,14 +252,62 @@ def parse_box_status(text: str) -> BoxStatus | None:
             if paused_until is None:
                 return None
 
+        not_ready: tuple[NotReady, ...] = ()
+        if "Not ready" in data:
+            raw_not_ready = data["Not ready"]
+            if not raw_not_ready:
+                return None
+            entries: list[NotReady] = []
+            for item in raw_not_ready.split(","):
+                item = item.strip()
+                if not item:
+                    return None
+                m = re.match(r"^([\w.-]+/[\w.-]+)\s*\(([\w_]+)\)$", item)
+                if not m:
+                    return None
+                repo_part, reason_part = m.groups()
+                if not _REPO_RE.match(repo_part):
+                    return None
+                try:
+                    reason = NotReadyReason(reason_part)
+                except ValueError:
+                    return None
+                entries.append(NotReady(repo=repo_part, reason=reason))
+            not_ready = tuple(entries)
+
         return BoxStatus(
             checked_in_at=checked_in_at,
             state=state,
             current=current,
             paused_until=paused_until,
+            not_ready=not_ready,
         )
     except (ValueError, TypeError, KeyError, IndexError):
         return None
+
+
+def render_repo_not_ready_alert(
+    repo: str,
+    reason: NotReadyReason | str,
+    owner: str,
+    since: datetime.datetime,
+) -> tuple[str, str]:
+    """Render the issue title and body for a per-repo not-ready alert."""
+    if not _REPO_RE.match(repo):
+        raise ValueError(f"Invalid repository reference: {repo!r}")
+    if not _IDENT_RE.match(owner):
+        raise ValueError(f"Invalid owner format: {owner!r}")
+
+    try:
+        not_ready_reason = (
+            reason if isinstance(reason, NotReadyReason) else NotReadyReason(reason)
+        )
+    except ValueError:
+        raise ValueError(f"Invalid not-ready reason: {reason!r}") from None
+
+    title = f"Box alert: {repo} not ready"
+    body = f"@{owner}\nReason: {not_ready_reason.value}\nSince: {_format_iso(since)}\n"
+    return title, body
 
 
 def render_box_alert(

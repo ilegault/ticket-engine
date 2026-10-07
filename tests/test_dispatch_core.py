@@ -10,10 +10,14 @@ limits, and status handling from the outside.
 """
 from __future__ import annotations
 
+import datetime
+
+from ticket_engine.box_status import BoxState, BoxStatus, NotReady, NotReadyReason
 from ticket_engine.dispatch import (
     DispatchCore,
     StartTicketAction,
     WorldSnapshot,
+    classify_box,
 )
 from ticket_engine.parser import ParseFinding, Ticket
 
@@ -187,3 +191,58 @@ def test_concurrency_partially_filled():
     assert [t.number for t in result.frontier] == [1, 2, 3]
     assert len(result.actions) == 1
     assert result.actions[0].ticket.number == 1
+
+
+def test_classify_box_paused_by_developer_is_paused():
+    now = datetime.datetime(2026, 10, 6, 12, 0, tzinfo=datetime.UTC)
+    box = BoxStatus(
+        checked_in_at=now,
+        state=BoxState.paused_by_developer,
+        current=None,
+        paused_until=None,
+    )
+    assert classify_box(box, now, box_silent_hours=12) == "paused"
+    assert classify_box(box, now, box_silent_hours=12, repo="owner/repo") == "paused"
+
+
+def test_classify_box_not_ready_repo_is_paused_other_repo_available():
+    now = datetime.datetime(2026, 10, 6, 12, 0, tzinfo=datetime.UTC)
+    box = BoxStatus(
+        checked_in_at=now,
+        state=BoxState.working,
+        current=None,
+        paused_until=None,
+        not_ready=(NotReady("owner/repo", NotReadyReason.baseline_red),),
+    )
+    # Repo in not_ready is paused (case-insensitive)
+    assert classify_box(box, now, box_silent_hours=12, repo="owner/repo") == "paused"
+    assert classify_box(box, now, box_silent_hours=12, repo="OWNER/REPO") == "paused"
+    # Other repo is available
+    assert classify_box(box, now, box_silent_hours=12, repo="owner/other") == "available"
+    # No repo specified is available
+    assert classify_box(box, now, box_silent_hours=12, repo=None) == "available"
+
+
+def test_dispatch_starts_jules_on_a_not_ready_repo():
+    now = datetime.datetime(2026, 10, 6, 12, 0, tzinfo=datetime.UTC)
+    tickets = [make_ticket(1, status="ready-for-agent", runner="any")]
+    box = BoxStatus(
+        checked_in_at=now,
+        state=BoxState.working,
+        current=None,
+        paused_until=None,
+        not_ready=(NotReady("owner/target", NotReadyReason.baseline_red),),
+    )
+    snapshot = WorldSnapshot(
+        tickets=tickets,
+        box=box,
+        repo_name="owner/target",
+        now=now,
+        concurrency_limit=2,
+    )
+    result = DispatchCore().evaluate(snapshot)
+    assert result.box_state == "paused"
+    start_actions = [a for a in result.actions if isinstance(a, StartTicketAction)]
+    assert len(start_actions) >= 1
+    assert start_actions[0].ticket.number == 1
+

@@ -20,27 +20,31 @@ from ticket_engine.box_status import (
     BoxState,
     BoxStatus,
     EscalationReason,
+    NotReady,
+    NotReadyReason,
     TicketRef,
     parse_box_status,
     parse_escalation_issue_title,
     render_box_alert,
     render_box_status,
     render_escalation_issue,
+    render_repo_not_ready_alert,
 )
 
 PUBLIC_LINE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^## Box status$"),
     re.compile(r"^Checked in: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$"),
-    re.compile(r"^State: (working|idle|paused_quota|paused_weekly_cap|login_expired)$"),
+    re.compile(r"^State: (working|idle|paused_quota|paused_weekly_cap|login_expired|paused_by_developer)$"),
     re.compile(r"^Current: (none|[\w.-]+/[\w.-]+ #\d+)$"),
     re.compile(r"^Paused until: (none|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z)$"),
-    re.compile(r"^Box alert: (weekly cap reached|agy login expired|box silent)$"),
+    re.compile(r"^Not ready: .+$"),
+    re.compile(r"^Box alert: (weekly cap reached|agy login expired|box silent|[\w.-]+/[\w.-]+ not ready)$"),
     re.compile(r"^@[\w.-]+$"),
     re.compile(r"^Since: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$"),
     re.compile(r"^Escalation: [\w.-]+-\d+ [\w.-]+$"),
     re.compile(r"^Ticket: [\w.-]+/[\w.-]+ #\d+$"),
     re.compile(r"^Link: https://github\.com/\S+$"),
-    re.compile(r"^Reason: (ci_failed|kept_asking|resumes_exhausted)$"),
+    re.compile(r"^Reason: (ci_failed|kept_asking|resumes_exhausted|clone_failed|no_token_access|no_engine_config|env_failed|baseline_red)$"),
 )
 
 
@@ -51,9 +55,9 @@ PUBLIC_LINE_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 def test_box_state_enum_values():
     assert issubclass(BoxState, str)
-    expected = {"working", "idle", "paused_quota", "paused_weekly_cap", "login_expired"}
+    expected = {"working", "idle", "paused_quota", "paused_weekly_cap", "login_expired", "paused_by_developer"}
     assert {s.value for s in BoxState} == expected
-    assert len(BoxState) == 5
+    assert len(BoxState) == 6
     for val in expected:
         assert BoxState(val) == val
 
@@ -438,3 +442,162 @@ def test_every_public_box_line_is_on_the_allowlist():
         assert any(
             pat.fullmatch(line) for pat in PUBLIC_LINE_PATTERNS
         ), f"Line not on allowlist: {line!r}"
+
+
+def test_not_ready_dataclass_and_reason_enum():
+    assert issubclass(NotReadyReason, str)
+    expected_reasons = {
+        "clone_failed",
+        "no_token_access",
+        "no_engine_config",
+        "env_failed",
+        "baseline_red",
+    }
+    assert {r.value for r in NotReadyReason} == expected_reasons
+    assert len(NotReadyReason) == 5
+
+    nr = NotReady(repo="owner/repo", reason=NotReadyReason.baseline_red)
+    assert nr.repo == "owner/repo"
+    assert nr.reason == NotReadyReason.baseline_red
+    assert dataclasses.is_dataclass(nr)
+
+    # String coercion
+    nr_str = NotReady(repo="owner/repo", reason="env_failed")  # type: ignore[arg-type]
+    assert nr_str.reason == NotReadyReason.env_failed
+
+    # Frozen
+    with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
+        nr.repo = "other/repo"  # type: ignore
+
+    # Validation of repo
+    with pytest.raises(ValueError):
+        NotReady(repo="invalid-repo", reason=NotReadyReason.baseline_red)
+    with pytest.raises(ValueError):
+        NotReady(repo="", reason=NotReadyReason.baseline_red)
+
+    # Validation of reason
+    with pytest.raises(ValueError):
+        NotReady(repo="owner/repo", reason="invalid_reason")  # type: ignore[arg-type]
+
+
+def test_render_box_status_lists_not_ready_repos():
+    checked_in = datetime.datetime(2026, 10, 6, 12, 0, tzinfo=datetime.UTC)
+    s = BoxStatus(
+        checked_in_at=checked_in,
+        state=BoxState.working,
+        current=None,
+        paused_until=None,
+        not_ready=(
+            NotReady("owner/a", NotReadyReason.baseline_red),
+            NotReady("owner/b", NotReadyReason.env_failed),
+        ),
+    )
+    expected = (
+        "## Box status\n"
+        "Checked in: 2026-10-06T12:00Z\n"
+        "State: working\n"
+        "Current: none\n"
+        "Paused until: none\n"
+        "Not ready: owner/a (baseline_red), owner/b (env_failed)\n"
+    )
+    assert render_box_status(s) == expected
+
+
+def test_parse_box_status_round_trips_not_ready():
+    checked_in = datetime.datetime(2026, 10, 6, 12, 0, tzinfo=datetime.UTC)
+    s = BoxStatus(
+        checked_in_at=checked_in,
+        state=BoxState.working,
+        current=TicketRef("owner/repo", 5),
+        paused_until=None,
+        not_ready=(
+            NotReady("owner/a", NotReadyReason.baseline_red),
+            NotReady("owner/b", NotReadyReason.env_failed),
+        ),
+    )
+    rendered = render_box_status(s)
+    parsed = parse_box_status(rendered)
+    assert parsed == s
+
+
+def test_parse_box_status_without_not_ready_line_gives_empty_tuple():
+    text = (
+        "## Box status\n"
+        "Checked in: 2026-10-06T12:00Z\n"
+        "State: working\n"
+        "Current: none\n"
+        "Paused until: none\n"
+    )
+    parsed = parse_box_status(text)
+    assert parsed is not None
+    assert parsed.not_ready == ()
+
+
+def test_parse_box_status_malformed_not_ready_returns_none():
+    base = (
+        "## Box status\n"
+        "Checked in: 2026-10-06T12:00Z\n"
+        "State: working\n"
+        "Current: none\n"
+        "Paused until: none\n"
+    )
+    malformed_cases = [
+        base + "Not ready:\n",
+        base + "Not ready: not-a-valid-entry\n",
+        base + "Not ready: owner/a\n",
+        base + "Not ready: owner/a ()\n",
+        base + "Not ready: owner/a (invalid_reason)\n",
+        base + "Not ready: invalidrepo (baseline_red)\n",
+        base + "Not ready: owner/a (baseline_red), invalid-second\n",
+    ]
+    for case in malformed_cases:
+        assert parse_box_status(case) is None
+
+
+def test_render_repo_not_ready_alert_exact_text_and_rejects_free_text():
+    since = datetime.datetime(2026, 10, 6, 12, 0, tzinfo=datetime.UTC)
+    title, body = render_repo_not_ready_alert(
+        repo="owner/repo",
+        reason=NotReadyReason.baseline_red,
+        owner="developer",
+        since=since,
+    )
+    assert title == "Box alert: owner/repo not ready"
+    assert body == "@developer\nReason: baseline_red\nSince: 2026-10-06T12:00Z\n"
+
+    # String reason works too
+    title2, body2 = render_repo_not_ready_alert(
+        repo="owner/repo",
+        reason="baseline_red",
+        owner="developer",
+        since=since,
+    )
+    assert title2 == title
+    assert body2 == body
+
+    # Free text raises ValueError
+    with pytest.raises(ValueError):
+        render_repo_not_ready_alert(
+            repo="owner/repo",
+            reason="Traceback (most recent call last):",
+            owner="developer",
+            since=since,
+        )
+
+    # Invalid repo
+    with pytest.raises(ValueError):
+        render_repo_not_ready_alert(
+            repo="bad-repo",
+            reason=NotReadyReason.baseline_red,
+            owner="developer",
+            since=since,
+        )
+
+    # Invalid owner
+    with pytest.raises(ValueError):
+        render_repo_not_ready_alert(
+            repo="owner/repo",
+            reason=NotReadyReason.baseline_red,
+            owner="bad owner",
+            since=since,
+        )

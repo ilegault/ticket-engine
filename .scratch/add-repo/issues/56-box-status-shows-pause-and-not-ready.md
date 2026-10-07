@@ -1,6 +1,6 @@
 # 56: Box status shows a developer pause and not-ready repos; the dispatcher lets Jules cover them
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Runner:** any
 
@@ -25,14 +25,14 @@ Write the tests first in `tests/test_box_status.py` and
 `tests/test_dispatch_core.py`, and watch each fail before changing `src/`. No
 fakes are needed: everything here is pure.
 
-- [ ] **New state and reasons.** In `src/ticket_engine/box_status.py`: add
+- [x] **New state and reasons.** In `src/ticket_engine/box_status.py`: add
   `BoxState.paused_by_developer = "paused_by_developer"`; add
   `class NotReadyReason(str, Enum)` with members `clone_failed`, `no_token_access`,
   `no_engine_config`, `env_failed`, `baseline_red`; add
   `@dataclass(frozen=True) class NotReady` (`repo: str`, `reason: NotReadyReason`)
   whose `__post_init__` validates `repo` with `_REPO_RE` and coerces a string
   `reason` the way `BoxStatus` coerces `state`. Export all three in `__all__`.
-- [ ] **The status issue lists not-ready repos.** `BoxStatus` gains
+- [x] **The status issue lists not-ready repos.** `BoxStatus` gains
   `not_ready: tuple[NotReady, ...] = ()`. `render_box_status` appends one line
   `Not ready: owner/a (baseline_red), owner/b (env_failed)` after `Paused until:`,
   in the tuple's order, **only when the tuple is non-empty**, so every existing
@@ -42,14 +42,14 @@ fakes are needed: everything here is pure.
   `test_parse_box_status_round_trips_not_ready`,
   `test_parse_box_status_without_not_ready_line_gives_empty_tuple`,
   `test_parse_box_status_malformed_not_ready_returns_none`.
-- [ ] **A per-repo not-ready alert.** New
+- [x] **A per-repo not-ready alert.** New
   `render_repo_not_ready_alert(repo: str, reason: NotReadyReason | str, owner: str, since: datetime.datetime) -> tuple[str, str]`:
   title `Box alert: <repo> not ready`, body `@<owner>\nReason: <reason>\nSince: <YYYY-MM-DDTHH:MMZ>\n`.
   It validates `repo` with `_REPO_RE`, `owner` with `_IDENT_RE`, and `reason`
   against the enum, raising `ValueError` otherwise. Test
   `test_render_repo_not_ready_alert_exact_text_and_rejects_free_text` (a reason of
   `"Traceback ..."` raises).
-- [ ] **The dispatcher counts both as paused.** `classify_box` in
+- [x] **The dispatcher counts both as paused.** `classify_box` in
   `src/ticket_engine/dispatch.py` gains a keyword parameter `repo: str | None = None`.
   It returns `"paused"` for `BoxState.paused_by_developer`, and, when the box would
   otherwise be `"available"`, returns `"paused"` if `repo` matches a
@@ -62,7 +62,7 @@ fakes are needed: everything here is pure.
   `test_classify_box_not_ready_repo_is_paused_other_repo_available`,
   `test_dispatch_starts_jules_on_a_not_ready_repo` (box `working`, this repo in
   `not_ready` → at least one `StartTicketAction`).
-- [ ] **Existing tests unchanged.** Every existing test passes with its assertions
+- [x] **Existing tests unchanged.** Every existing test passes with its assertions
   as they are. No test is deleted, skipped or weakened.
 
 ## Gate
@@ -79,3 +79,12 @@ In CI order:
 - The morning report's wording for the new state; it already shows `box_state`.
 
 ## Comments
+
+Implemented on 2026-10-06:
+- Added `BoxState.paused_by_developer`, `NotReadyReason` enum, and `NotReady` dataclass with repo validation and reason string coercion in `box_status.py`.
+- Added `not_ready` tuple to `BoxStatus`, updated `render_box_status` to append the not-ready line when non-empty, and updated `parse_box_status` to parse it or return None on malformed entries.
+- Added `render_repo_not_ready_alert` for fixed-template per-repo not-ready alerts with input validation.
+- Updated `classify_box` in `dispatch.py` to support `repo: str | None = None`, returning `"paused"` on `paused_by_developer` or when `repo` matches `box.not_ready` ignoring case.
+- Passed `repo_name=self.repo` in `WorldSnapshot` step 5 of `live_dispatch.py`, and called `classify_box` with `repo=snapshot.repo_name or None` in `DispatchCore.evaluate`.
+- Added unit tests in `tests/test_box_status.py` and `tests/test_dispatch_core.py`.
+- Full gate passed (ruff, check_tests_first, pytest 718 passed).
