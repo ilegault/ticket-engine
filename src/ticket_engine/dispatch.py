@@ -71,6 +71,9 @@ dead heartbeat should result in more work getting done, not an idle repo. While 
 available (working or idle, checked in within box_silent_hours), the dispatcher starts no
 Jules sessions and leaves the frontier to the box. `classify_box` is the one definition
 of the box's state; the morning report calls it too (ticket 27), so the two never disagree.
+Ticket 56 (ADR 0010 rules 5–6): a box state of `paused_by_developer`, or a listed repo
+reported as not ready on the box status issue, is classified as `paused` for that repo,
+allowing Jules overflow.
 """
 from __future__ import annotations
 
@@ -364,6 +367,7 @@ def classify_box(
     box: BoxStatus | None | NoBox,
     now: datetime.datetime,
     box_silent_hours: int,
+    repo: str | None = None,
 ) -> str:
     """Classify the box as ``none``, ``available``, ``paused``, ``silent`` or ``unreadable``.
 
@@ -378,7 +382,11 @@ def classify_box(
     now_utc = now if now.tzinfo is not None else now.replace(tzinfo=datetime.UTC)
     if now_utc - box.checked_in_at >= datetime.timedelta(hours=box_silent_hours):
         return "silent"
+    if box.state == BoxState.paused_by_developer:
+        return "paused"
     if box.state in (BoxState.working, BoxState.idle):
+        if repo and any(nr.repo.strip().lower() == repo.strip().lower() for nr in box.not_ready):
+            return "paused"
         return "available"
     if box.state in (BoxState.paused_quota, BoxState.paused_weekly_cap, BoxState.login_expired):
         return "paused"
@@ -924,7 +932,9 @@ class DispatchCore:
             )
 
         # Determine box state (ADR 0006)
-        box_state = classify_box(snapshot.box, now, cfg.box_silent_hours)
+        box_state = classify_box(
+            snapshot.box, now, cfg.box_silent_hours, repo=snapshot.repo_name or None
+        )
 
         # 4. Check if repo is paused or circuit broken
         if snapshot.paused or circuit_broken:
@@ -1030,3 +1040,5 @@ class DispatchCore:
             left_for_box=[],
             box_state=box_state,
         )
+
+    dispatch = evaluate

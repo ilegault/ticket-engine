@@ -808,6 +808,7 @@ class LiveDispatcher:
             box=box,
             box_status_error=box_status_error,
             checkpoints=checkpoints,
+            repo_name=self.repo,
         )
         result = self.core.evaluate(snapshot)
 
