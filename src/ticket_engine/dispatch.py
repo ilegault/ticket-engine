@@ -960,6 +960,16 @@ class DispatchCore:
                 box_state=box_state,
             )
 
+        if not cfg.jules_enabled:
+            return DispatchResult(
+                frontier=frontier,
+                actions=actions,
+                skipped_windows_tickets=[t for t in frontier if t.runner == "windows"],
+                findings=all_findings,
+                left_for_box=[],
+                box_state=box_state,
+            )
+
         # 5. Check quota reserve
         remaining_quota = cfg.jules_limit - snapshot.jules_sessions_count_24h
         if remaining_quota < cfg.jules_reserve:

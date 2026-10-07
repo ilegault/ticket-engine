@@ -59,7 +59,6 @@ class RepoConfig:
     # sets). The integrity gate sets them for check 7's test runs.
     test_env: dict[str, str] = field(default_factory=dict)
     box_silent_hours: int = 12
-    box_enabled: bool = False
     python_version: str = "3.12"
     install: str = "pip install -e .[dev]"
     jules_enabled: bool = True
@@ -127,7 +126,6 @@ def load_repo_config(repo_path: pathlib.Path | str | None = None) -> RepoConfig:
         merge_method=str(config_data.get("merge_method", "merge")),
         test_env={str(k): str(v) for k, v in dict(config_data.get("test_env", {})).items()},
         box_silent_hours=int(config_data.get("box_silent_hours", 12)),
-        box_enabled=bool(config_data.get("box_enabled", False)),
         python_version=str(config_data.get("python_version", "3.12")),
         install=str(config_data.get("install", "pip install -e .[dev]")),
         jules_enabled=bool(config_data.get("jules_enabled", True)),
