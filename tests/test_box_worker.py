@@ -95,6 +95,7 @@ class FakeWorker:
     def __init__(self) -> None:
         self.run_one_calls: list[tuple] = []
         self.fix_ci_calls: list[tuple] = []
+        self.escalate_fixes_calls: list[tuple] = []
         self.claims: dict[int, str] = {}
         self.run_one_result: object = FakeRunResult("success")
         self.fix_ci_result: object = FakeRunResult("success")
@@ -106,6 +107,9 @@ class FakeWorker:
     def fix_ci(self, entry, ticket, pr_number):
         self.fix_ci_calls.append((entry, ticket, pr_number))
         return self.fix_ci_result
+
+    def escalate_fixes(self, entry, ticket, pr_number):
+        self.escalate_fixes_calls.append((entry, ticket, pr_number))
 
     def list_box_claims(self, entry, tickets):
         return dict(self.claims)
@@ -1052,3 +1056,75 @@ def test_box_paused_variable_sets_paused_by_developer_status(tmp_path: pathlib.P
     gh.update_issue_body.assert_called_once()
     _, _, body = gh.update_issue_body.call_args[0]
     assert "State: paused_by_developer" in body
+
+
+# ---------------------------------------------------------------------------
+# Ticket 70: Durable fix attempts, surviving restart, quota not counted
+# ---------------------------------------------------------------------------
+
+
+def test_fix_attempt_count_survives_a_new_loop(tmp_path: pathlib.Path) -> None:
+    ticket = make_ticket(3, status="in-progress")
+    worker1 = FakeWorker()
+    worker1.claims = {3: "box"}
+    github = make_github()
+    github.find_open_pr.return_value = 55
+    github.list_check_runs.return_value = [("pytest", "failure")]
+
+    loop1 = make_loop(tmp_path, worker1, github, tickets=[ticket])
+    loop1._last_status_write = _NOW
+
+    # Two ticks on first loop:
+    loop1.tick()
+    loop1.tick()
+    assert len(worker1.fix_ci_calls) == 2
+
+    # Second loop on the same logs_dir:
+    worker2 = FakeWorker()
+    worker2.claims = {3: "box"}
+    loop2 = make_loop(tmp_path, worker2, github, tickets=[ticket])
+    loop2._last_status_write = _NOW
+
+    # Two more ticks:
+    loop2.tick()
+    loop2.tick()
+
+    assert len(worker1.fix_ci_calls) + len(worker2.fix_ci_calls) == 3
+    assert len(worker2.escalate_fixes_calls) == 1
+    _entry, called_ticket, pr_number = worker2.escalate_fixes_calls[0]
+    assert called_ticket.number == 3
+    assert pr_number == 55
+
+
+def test_quota_fix_run_does_not_count_as_an_attempt(tmp_path: pathlib.Path) -> None:
+    ticket = make_ticket(3, status="in-progress")
+    worker = FakeWorker()
+    worker.claims = {3: "box"}
+    github = make_github()
+    github.find_open_pr.return_value = 55
+    github.list_check_runs.return_value = [("pytest", "failure")]
+
+    # First call returns quota, second returns success
+    worker.fix_ci_result = FakeRunResult("quota")
+
+    loop = make_loop(tmp_path, worker, github, tickets=[ticket])
+    loop._last_status_write = _NOW
+
+    loop.tick()
+    assert len(worker.fix_ci_calls) == 1
+
+    # Second call returns success
+    worker.fix_ci_result = FakeRunResult("success")
+    # Reset quota pause record so the next tick does not wait on quota
+    loop._write_pause_record(None, None, False)
+    loop.tick()
+    assert len(worker.fix_ci_calls) == 2
+
+    # Assert ledger attempts is 1 after two fix runs, not 2
+    ledger_path = tmp_path / "logs" / "fix_attempts.json"
+    assert ledger_path.is_file()
+    data = json.loads(ledger_path.read_text(encoding="utf-8"))
+    pr_record = data.get("owner/repo#55")
+    assert pr_record is not None
+    assert pr_record["attempts"] == 1
+
