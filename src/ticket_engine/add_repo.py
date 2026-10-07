@@ -8,6 +8,9 @@ needs no new token. It is idempotent: it applies only what is missing, and
 `--check` prints what it would do and changes nothing. `--no-jules` marks a repo
 whose suite cannot pass on Linux.
 
+ADR 0009 rule 2: Applies settings, labels, secrets from secrets.env, and permission
+to use the engine's workflows (ticket 64).
+
 ADR 0002 rule 3: Secrets live in one `secrets.env` outside every repo on the
 developer's machine. Secret values are never printed, logged, or passed in
 command arguments; they reach `gh` only on stdin.
@@ -406,6 +409,85 @@ def format_step(step: Step) -> str:
     return kind
 
 
+SETTINGS_OPS = (
+    SetSecretOp,
+    CreateLabelOp,
+    EnableAutoMergeOp,
+    EnableSecretScanningOp,
+    EnablePushProtectionOp,
+    ActionsPermissionsOp,
+)
+
+
+class StepFailedError(RuntimeError):
+    """Raised when a gh call in apply_step fails."""
+
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(f"step failed: {kind}: {message}")
+        self.kind = kind
+        self.message = message
+
+
+StepFailed = StepFailedError
+
+
+def apply_step(
+    step: Step,
+    repo: str,
+    gh: GhRunner,
+    secrets: dict[str, str],
+) -> None:
+    """Apply a settings step using an exact gh CLI call.
+
+    Raises StepFailedError if gh returns a non-zero exit code.
+    """
+    args: list[str]
+    stdin: str | None = None
+
+    if isinstance(step, SetSecretOp):
+        args = ["secret", "set", step.name, "--repo", repo]
+        stdin = secrets[step.name]
+    elif isinstance(step, CreateLabelOp):
+        args = [
+            "label",
+            "create",
+            step.name,
+            "--repo",
+            repo,
+            "--color",
+            step.color,
+            "--description",
+            step.description,
+        ]
+    elif isinstance(step, EnableAutoMergeOp):
+        args = ["api", "-X", "PATCH", f"repos/{repo}", "-F", "allow_auto_merge=true"]
+    elif isinstance(step, EnableSecretScanningOp):
+        args = ["api", "-X", "PATCH", f"repos/{repo}", "--input", "-"]
+        stdin = '{"security_and_analysis": {"secret_scanning": {"status": "enabled"}}}'
+    elif isinstance(step, EnablePushProtectionOp):
+        args = ["api", "-X", "PATCH", f"repos/{repo}", "--input", "-"]
+        stdin = '{"security_and_analysis": {"secret_scanning_push_protection": {"status": "enabled"}}}'
+    elif isinstance(step, ActionsPermissionsOp):
+        args = [
+            "api",
+            "-X",
+            "PUT",
+            f"repos/{repo}/actions/permissions",
+            "-F",
+            "enabled=true",
+            "-f",
+            "allowed_actions=all",
+        ]
+    else:
+        raise TypeError(f"apply_step called with non-settings step: {step}")
+
+    code, out = gh(args, stdin=stdin)
+    if code != 0:
+        lines = [line.strip() for line in out.strip().splitlines() if line.strip()]
+        last_line = lines[-1] if lines else ""
+        raise StepFailedError(step_kind(step), last_line)
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -463,15 +545,33 @@ def main(
             print(format_step(s))
         return 0
 
-    # Without --check: print plan and not implemented yet (tickets 64-66)
     if plan.blocked is not None:
         print(plan.blocked)
         return 1
 
-    for s in plan.steps:
-        print(format_step(s))
-    print("not implemented yet")
-    return 1
+    # Check that all secret values exist before making any write calls
+    for step in plan.steps:
+        if isinstance(step, SetSecretOp) and step.name not in secrets:
+            print(f"secrets file has no {step.name}")
+            return 2
+
+    # Carry out settings steps
+    for step in plan.steps:
+        if isinstance(step, SETTINGS_OPS):
+            try:
+                apply_step(step, args.repo, runner, secrets)
+            except StepFailedError as exc:
+                print(f"step failed: {exc.kind}: {exc.message}")
+                return 1
+
+    # Remaining steps not yet implemented (tickets 65-66)
+    remaining_steps = [s for s in plan.steps if not isinstance(s, SETTINGS_OPS)]
+    if remaining_steps:
+        kinds = ", ".join(step_kind(s) for s in remaining_steps)
+        print(f"not implemented yet: {kinds}")
+        return 1
+
+    return 0
 
 
 if __name__ == "__main__":
