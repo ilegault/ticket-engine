@@ -1,6 +1,6 @@
 # 65: `add-repo` opens the adopt (or upgrade) PR and the repo-list PR
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
