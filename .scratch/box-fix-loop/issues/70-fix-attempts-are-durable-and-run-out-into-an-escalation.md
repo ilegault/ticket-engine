@@ -1,6 +1,6 @@
 # 70: Fix attempts are counted durably, and running out escalates the ticket
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
