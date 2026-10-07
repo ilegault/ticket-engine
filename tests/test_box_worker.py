@@ -32,6 +32,7 @@ from ticket_engine.local_config import (
     load_box_config,
 )
 from ticket_engine.parser import Ticket, TicketParser
+from ticket_engine.repo_list import RepoListEntry
 from ticket_engine.sonnet import SonnetDriver
 
 _NOW = datetime.datetime(2026, 9, 26, 12, 0, tzinfo=datetime.UTC)
@@ -126,6 +127,8 @@ def make_loop(
     github: MagicMock,
     tickets: list[Ticket] | None = None,
     now: datetime.datetime = _NOW,
+    repo_list_fn: object | None = None,
+    git_runner: object | None = None,
     **config_kwargs,
 ) -> box_worker.BoxLoop:
     config = make_config(tmp_path, **config_kwargs)
@@ -134,10 +137,11 @@ def make_loop(
         config=config,
         worker=worker,
         github_client=github,
-        git_runner=lambda args, cwd, env: (0, ""),
+        git_runner=git_runner if git_runner is not None else (lambda args, cwd, env: (0, "")),
         sleep_fn=lambda s: None,
         now_fn=lambda: clock["now"],
         ticket_loader=lambda entry: list(tickets or []),
+        repo_list_fn=repo_list_fn,
     )
     loop._clock = clock  # test-only handle to advance time between ticks
     return loop
@@ -865,3 +869,172 @@ def test_a_claim_that_worked_does_not_add_a_wait(tmp_path):
 
     assert len(worker.run_one_calls) == 1
     assert sleeps == []
+
+
+# ---------------------------------------------------------------------------
+# Ticket 58: Box works listed repos, clones missing, honours BOX_PAUSED
+# ---------------------------------------------------------------------------
+
+def test_box_works_listed_repos_in_list_order(tmp_path: pathlib.Path) -> None:
+    projects_dir = tmp_path / "projects"
+    (projects_dir / "repo-a").mkdir(parents=True)
+    (projects_dir / "repo-b").mkdir(parents=True)
+
+    repo_list = [
+        RepoListEntry(repo="org/repo-a", box=True),
+        RepoListEntry(repo="org/repo-b", box=True),
+    ]
+    loop = make_loop(
+        tmp_path,
+        FakeWorker(),
+        make_github(),
+        repo_list_fn=lambda: repo_list,
+        projects_dir=str(projects_dir),
+    )
+    world = loop._build_world()
+    assert [r.repo for r in world.repos] == ["org/repo-a", "org/repo-b"]
+    assert world.repos[0].repo == "org/repo-a"
+    assert world.repos[1].repo == "org/repo-b"
+    entry_a = loop._entry_for("org/repo-a")
+    assert entry_a.repo == "org/repo-a"
+    assert entry_a.path == str(projects_dir / "repo-a")
+
+
+def test_box_skips_box_false_entries(tmp_path: pathlib.Path) -> None:
+    projects_dir = tmp_path / "projects"
+    (projects_dir / "repo-a").mkdir(parents=True)
+    (projects_dir / "repo-b").mkdir(parents=True)
+
+    repo_list = [
+        RepoListEntry(repo="org/repo-a", box=True),
+        RepoListEntry(repo="org/repo-b", box=False),
+    ]
+    loop = make_loop(
+        tmp_path,
+        FakeWorker(),
+        make_github(),
+        repo_list_fn=lambda: repo_list,
+        projects_dir=str(projects_dir),
+    )
+    world = loop._build_world()
+    assert [r.repo for r in world.repos] == ["org/repo-a"]
+
+
+def test_unreadable_repo_list_reuses_the_last_one(tmp_path: pathlib.Path) -> None:
+    projects_dir = tmp_path / "projects"
+    (projects_dir / "repo-a").mkdir(parents=True)
+
+    state = {"fail": False}
+
+    def failing_or_success_repo_list():
+        if state["fail"]:
+            raise RuntimeError("API unavailable")
+        return [RepoListEntry(repo="org/repo-a", box=True)]
+
+    loop = make_loop(
+        tmp_path,
+        FakeWorker(),
+        make_github(),
+        repo_list_fn=failing_or_success_repo_list,
+        projects_dir=str(projects_dir),
+    )
+    world1 = loop._build_world()
+    assert [r.repo for r in world1.repos] == ["org/repo-a"]
+
+    state["fail"] = True
+    world2 = loop._build_world()
+    assert [r.repo for r in world2.repos] == ["org/repo-a"]
+
+
+def test_missing_clone_is_cloned_and_recorded(tmp_path: pathlib.Path) -> None:
+    projects_dir = tmp_path / "projects"
+    logs_dir = tmp_path / "logs"
+    git_calls: list[list[str]] = []
+
+    def recording_git_runner(args, cwd, env):
+        git_calls.append(args)
+        return (0, "")
+
+    repo_list = [RepoListEntry(repo="org/new-repo", box=True)]
+    loop = make_loop(
+        tmp_path,
+        FakeWorker(),
+        make_github(),
+        repo_list_fn=lambda: repo_list,
+        git_runner=recording_git_runner,
+        projects_dir=str(projects_dir),
+        logs_dir=str(logs_dir),
+    )
+    world = loop._build_world()
+    assert [r.repo for r in world.repos] == ["org/new-repo"]
+
+    expected_clone_args = [
+        "git",
+        "clone",
+        "https://github.com/org/new-repo.git",
+        str(projects_dir / "new-repo"),
+    ]
+    assert any(call == expected_clone_args for call in git_calls)
+
+    box_repos_file = logs_dir / "box_repos.json"
+    assert box_repos_file.is_file()
+    assert json.loads(box_repos_file.read_text(encoding="utf-8")) == ["org/new-repo"]
+
+
+def test_failed_clone_leaves_the_repo_out_this_tick(tmp_path: pathlib.Path) -> None:
+    projects_dir = tmp_path / "projects"
+    logs_dir = tmp_path / "logs"
+
+    def failing_git_runner(args, cwd, env):
+        if "clone" in args:
+            return (1, "fatal: repository not found")
+        return (0, "")
+
+    repo_list = [RepoListEntry(repo="org/failing-repo", box=True)]
+    loop = make_loop(
+        tmp_path,
+        FakeWorker(),
+        make_github(),
+        repo_list_fn=lambda: repo_list,
+        git_runner=failing_git_runner,
+        projects_dir=str(projects_dir),
+        logs_dir=str(logs_dir),
+    )
+    world = loop._build_world()
+    assert [r.repo for r in world.repos] == []
+    box_repos_file = logs_dir / "box_repos.json"
+    if box_repos_file.is_file():
+        assert "org/failing-repo" not in json.loads(box_repos_file.read_text(encoding="utf-8"))
+
+
+def test_delisted_repo_is_built_not_accepting_new(tmp_path: pathlib.Path) -> None:
+    projects_dir = tmp_path / "projects"
+    logs_dir = tmp_path / "logs"
+    (projects_dir / "delisted-repo").mkdir(parents=True)
+    logs_dir.mkdir(parents=True)
+    (logs_dir / "box_repos.json").write_text(json.dumps(["org/delisted-repo"]), encoding="utf-8")
+
+    loop = make_loop(
+        tmp_path,
+        FakeWorker(),
+        make_github(),
+        repo_list_fn=list,
+        projects_dir=str(projects_dir),
+        logs_dir=str(logs_dir),
+    )
+    world = loop._build_world()
+    assert len(world.repos) == 1
+    assert world.repos[0].repo == "org/delisted-repo"
+    assert world.repos[0].accepting_new is False
+
+
+def test_box_paused_variable_sets_paused_by_developer_status(tmp_path: pathlib.Path) -> None:
+    gh = make_github()
+    gh.get_repo_variable.side_effect = lambda repo, name: "true" if name == "BOX_PAUSED" else None
+
+    loop = make_loop(tmp_path, FakeWorker(), gh)
+    loop.tick()
+
+    gh.update_issue_body.assert_called_once()
+    _, _, body = gh.update_issue_body.call_args[0]
+    assert "State: paused_by_developer" in body

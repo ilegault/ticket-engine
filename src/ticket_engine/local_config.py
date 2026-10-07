@@ -41,6 +41,7 @@ class BoxConfigError(ValueError):
 class LocalRepoEntry:
     path: str  # absolute path to local git clone
     repo: str  # "owner/repo" on GitHub
+    accepting_new: bool = True
 
 
 def _default_logs_dir() -> str:

@@ -9,6 +9,11 @@ about what action to take next are pure functions over a snapshot (BoxWorld).
 Keeping BoxCore pure ensures every scheduling precedence rule, daily cap,
 concurrency limit, and quota retry backoff is completely snapshot-testable
 without clock reads, network I/O, or subprocess spawning.
+
+Ticket 58 (ADR 0009 rule 4; ADR 0010 rules 3, 6, 7): delisted repos retain
+their unfinished work (rules 3, 4) but receive no new claims (rule 5 skips
+`accepting_new=False`), and `developer_paused` pauses new claims while
+permitting in-flight work to resume.
 """
 from __future__ import annotations
 
@@ -57,6 +62,7 @@ class BoxRepo:
     paused: bool
     claims: dict[int, str]
     open_prs: list[BoxPR]
+    accepting_new: bool = True
 
 
 @dataclass(frozen=True)
@@ -75,6 +81,7 @@ class BoxWorld:
     weekly_cap_after_hours: int
     weekly_cap_backoff_hours: int
     now: datetime.datetime
+    developer_paused: bool = False
 
 
 @dataclass(frozen=True)
@@ -199,9 +206,9 @@ class BoxCore:
                     if t is None or not t.is_done():
                         unfinished_box_claims += 1
 
-        if unfinished_box_claims < world.concurrency:
+        if not world.developer_paused and unfinished_box_claims < world.concurrency:
             for repo in world.repos:
-                if repo.paused:
+                if repo.paused or not repo.accepting_new:
                     continue
                 if world.starts_24h.get(repo.repo, 0) >= repo.config.daily_cap:
                     continue

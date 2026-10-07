@@ -68,6 +68,7 @@ def make_world(
     poll_interval_minutes: int = 10,
     weekly_cap_after_hours: int = 5,
     weekly_cap_backoff_hours: int = 12,
+    developer_paused: bool = False,
 ) -> BoxWorld:
     return BoxWorld(
         repos=repos if repos is not None else [],
@@ -82,6 +83,7 @@ def make_world(
         weekly_cap_after_hours=weekly_cap_after_hours,
         weekly_cap_backoff_hours=weekly_cap_backoff_hours,
         now=now,
+        developer_paused=developer_paused,
     )
 
 
@@ -597,6 +599,97 @@ def test_quota_timeline_at_0h_1h_5h01m_17h01m() -> None:
     assert first_s2 is None
     assert retry_s2 is None
     assert alerts_s2 == []
+
+
+# ---------------------------------------------------------------------------
+# Ticket 58: accepting_new and developer_paused
+# ---------------------------------------------------------------------------
+
+
+def test_repo_not_accepting_new_gets_no_claim() -> None:
+    now = datetime.datetime(2026, 9, 26, 12, 0, tzinfo=datetime.UTC)
+    t = ticket(1, "ready-for-agent")
+    repo = BoxRepo(
+        repo="org/repo-a",
+        tickets=[t],
+        config=RepoConfig(),
+        paused=False,
+        claims={},
+        open_prs=[],
+        accepting_new=False,
+    )
+    world = make_world(now=now, repos=[repo], last_status_write=now)
+    core = BoxCore()
+    step = core.next_step(world)
+    assert isinstance(step, Wait)
+    assert step.until == now + datetime.timedelta(minutes=world.poll_interval_minutes)
+
+
+def test_repo_not_accepting_new_still_resumes_its_box_claim() -> None:
+    now = datetime.datetime(2026, 9, 26, 12, 0, tzinfo=datetime.UTC)
+    t = ticket(1, "in-progress")
+    repo = BoxRepo(
+        repo="org/repo-a",
+        tickets=[t],
+        config=RepoConfig(),
+        paused=False,
+        claims={1: "box"},
+        open_prs=[],
+        accepting_new=False,
+    )
+    world = make_world(now=now, repos=[repo], last_status_write=now)
+    core = BoxCore()
+    step = core.next_step(world)
+    assert isinstance(step, ResumeClaim)
+    assert step.repo == "org/repo-a"
+    assert step.ticket_number == 1
+
+
+def test_developer_pause_blocks_claims_but_not_resume() -> None:
+    now = datetime.datetime(2026, 9, 26, 12, 0, tzinfo=datetime.UTC)
+    t1 = ticket(1, "in-progress")
+    t2 = ticket(2, "ready-for-agent")
+    # 1. With an unfinished box claim, developer_paused still resumes it
+    repo_with_claim = BoxRepo(
+        repo="org/repo-a",
+        tickets=[t1, t2],
+        config=RepoConfig(),
+        paused=False,
+        claims={1: "box"},
+        open_prs=[],
+        accepting_new=True,
+    )
+    world_with_claim = make_world(
+        now=now,
+        repos=[repo_with_claim],
+        last_status_write=now,
+        developer_paused=True,
+    )
+    core = BoxCore()
+    step = core.next_step(world_with_claim)
+    assert isinstance(step, ResumeClaim)
+    assert step.repo == "org/repo-a"
+    assert step.ticket_number == 1
+
+    # 2. With no claims to resume, developer_paused blocks claiming frontier ticket
+    repo_frontier_only = BoxRepo(
+        repo="org/repo-a",
+        tickets=[t2],
+        config=RepoConfig(),
+        paused=False,
+        claims={},
+        open_prs=[],
+        accepting_new=True,
+    )
+    world_frontier_only = make_world(
+        now=now,
+        repos=[repo_frontier_only],
+        last_status_write=now,
+        developer_paused=True,
+    )
+    step2 = core.next_step(world_frontier_only)
+    assert isinstance(step2, Wait)
+    assert step2.until == now + datetime.timedelta(minutes=world_frontier_only.poll_interval_minutes)
 
 
 # ---------------------------------------------------------------------------

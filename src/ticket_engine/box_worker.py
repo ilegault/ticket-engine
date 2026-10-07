@@ -60,7 +60,11 @@ can be seen:
   reliably reach a scheduled task, so the config file is the primary home;
 - Ticket 57 (ADR 0009 rule 7): the box's config must not list repos, and a
   missing, unreadable or repos-containing config makes box-worker refuse to
-  start immediately with exit code 2.
+  start immediately with exit code 2;
+- Ticket 58 (ADR 0009 rule 4; ADR 0010 rules 3, 6, 7): the box reads the repo
+  list from engine-repos.toml on the engine repo, clones missing listed
+  repos, keeps delisted repos until in-flight work finishes, and honours
+  BOX_PAUSED on the engine repo.
 """
 from __future__ import annotations
 
@@ -108,16 +112,25 @@ from ticket_engine.local_config import (
 )
 from ticket_engine.local_worker import LocalWorker, _load_tickets_from_path
 from ticket_engine.parser import Ticket
+from ticket_engine.repo_list import RepoListEntry, fetch_repo_list
 from ticket_engine.sonnet import SonnetDriver
 
 logger = logging.getLogger(__name__)
 
 _LEDGER_FILENAME = "box_ledger.json"
 _PAUSE_FILENAME = "box_pause.json"
+_BOX_REPOS_FILENAME = "box_repos.json"
 _LEDGER_WINDOW_HOURS = 24
 _AUTH_RETRY_HOURS = 1
 
 GitRunner = Callable[[list[str], str | None, dict[str, str] | None], tuple[int, str]]
+
+
+def _is_truthy(value: str | None) -> bool:
+    """Return True if value represents a truthy string (not '0', 'false', 'no', '')."""
+    if not value:
+        return False
+    return value.strip().lower() not in ("0", "false", "no", "")
 
 
 class BoxLoop:
@@ -133,11 +146,14 @@ class BoxLoop:
         sleep_fn: Callable[[float], None] | None = None,
         now_fn: Callable[[], datetime.datetime] | None = None,
         ticket_loader: Callable[[LocalRepoEntry], list[Ticket]] | None = None,
+        repo_list_fn: Callable[[], list[RepoListEntry]] | None = None,
     ) -> None:
         self.config = config
         self.worker = worker
         self.github_client = github_client
         self.box_core = box_core if box_core is not None else BoxCore()
+        self._repo_list_fn = repo_list_fn
+        self._last_repo_list: list[RepoListEntry] = []
         # The default runner looks `_default_git_runner` up at call time and
         # always passes the configured timeout.
         self._git_runner: GitRunner = (
@@ -199,10 +215,87 @@ class BoxLoop:
     # World building
     # ------------------------------------------------------------------
 
+    def _box_repos_path(self) -> pathlib.Path:
+        return pathlib.Path(self.config.logs_dir) / _BOX_REPOS_FILENAME
+
+    def _read_box_repos(self) -> list[str]:
+        path = self._box_repos_path()
+        if not path.is_file():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return [str(item) for item in data]
+            return []
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Failed to read box repos %s: %s", path, exc)
+            return []
+
+    def _record_cloned_repo(self, repo: str) -> None:
+        repos = self._read_box_repos()
+        if repo not in repos:
+            repos.append(repo)
+        path = self._box_repos_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(repos), encoding="utf-8")
+
+    def _current_entries(self) -> list[LocalRepoEntry]:
+        if self._repo_list_fn is None:
+            return list(self.config.repos)
+
+        try:
+            raw_entries = self._repo_list_fn()
+            self._last_repo_list = raw_entries
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("repo list unreadable: %s", exc)
+            raw_entries = self._last_repo_list
+
+        entries: list[LocalRepoEntry] = []
+        active_box_repos: set[str] = set()
+
+        for entry in raw_entries:
+            if entry.box:
+                active_box_repos.add(entry.repo)
+                name = entry.repo.partition("/")[2] if "/" in entry.repo else entry.repo
+                path = str(pathlib.Path(self.config.projects_dir) / name)
+                entries.append(
+                    LocalRepoEntry(path=path, repo=entry.repo, accepting_new=True)
+                )
+
+        box_repos = self._read_box_repos()
+        seen = set(active_box_repos)
+        for repo_name in box_repos:
+            if repo_name not in seen:
+                seen.add(repo_name)
+                name = repo_name.partition("/")[2] if "/" in repo_name else repo_name
+                path = str(pathlib.Path(self.config.projects_dir) / name)
+                if pathlib.Path(path).is_dir():
+                    entries.append(
+                        LocalRepoEntry(path=path, repo=repo_name, accepting_new=False)
+                    )
+
+        return entries
+
     def _build_world(self) -> BoxWorld:
         now = self._now()
         repos: list[BoxRepo] = []
-        for entry in self.config.repos:
+        for entry in self._current_entries():
+            if self._repo_list_fn is not None and not pathlib.Path(entry.path).is_dir():
+                rc, out = self._git_runner(
+                    ["git", "clone", f"https://github.com/{entry.repo}.git", entry.path],
+                    None,
+                    None,
+                )
+                if rc != 0:
+                    logger.warning(
+                        "git clone failed for %s (exit %d): %s",
+                        entry.repo,
+                        rc,
+                        out.strip(),
+                    )
+                    continue
+                self._record_cloned_repo(entry.repo)
+
             rc, out = self._git_runner(
                 ["git", "-C", entry.path, "pull", "--ff-only"], entry.path, None
             )
@@ -215,9 +308,7 @@ class BoxLoop:
             repo_config = load_repo_config(repo_path) if repo_path.is_dir() else RepoConfig()
 
             paused_var = self.github_client.get_repo_variable(entry.repo, "TICKET_ENGINE_PAUSED")
-            paused = bool(paused_var) and paused_var.strip().lower() not in (
-                "0", "false", "no", "",
-            )
+            paused = _is_truthy(paused_var)
 
             claims = self.worker.list_box_claims(entry, tickets)
             open_prs = self._collect_open_prs(entry, tickets, claims)
@@ -230,8 +321,14 @@ class BoxLoop:
                     paused=paused,
                     claims=claims,
                     open_prs=open_prs,
+                    accepting_new=entry.accepting_new,
                 )
             )
+
+        developer_paused_var = self.github_client.get_repo_variable(
+            self.config.engine_repo, "BOX_PAUSED"
+        )
+        developer_paused = _is_truthy(developer_paused_var)
 
         ledger = self._read_ledger()
         starts_24h = _starts_in_last_24h(ledger, now)
@@ -250,6 +347,7 @@ class BoxLoop:
             weekly_cap_after_hours=self.config.weekly_cap_after_hours,
             weekly_cap_backoff_hours=self.config.weekly_cap_backoff_hours,
             now=now,
+            developer_paused=developer_paused,
         )
 
     def _collect_open_prs(
@@ -311,7 +409,7 @@ class BoxLoop:
             raise TypeError(msg)
 
     def _entry_for(self, repo: str) -> LocalRepoEntry:
-        for entry in self.config.repos:
+        for entry in self._current_entries():
             if entry.repo == repo:
                 return entry
         msg = f"No configured local repo entry for {repo!r}"
@@ -439,6 +537,13 @@ class BoxLoop:
 
         if self._auth_first_failure is not None:
             return BoxStatus(checked_in_at=world.now, state=BoxState.login_expired)
+
+        if world.developer_paused:
+            return BoxStatus(
+                checked_in_at=world.now,
+                state=BoxState.paused_by_developer,
+                current=current,
+            )
 
         if world.quota_retry_at is not None and world.now < world.quota_retry_at:
             state = (
@@ -677,7 +782,12 @@ def build_loop(config: LocalWorkerConfig) -> BoxLoop:
         agy_driver=agy_driver,
         sonnet_driver=sonnet_driver,
     )
-    return BoxLoop(config=config, worker=worker, github_client=github_client)
+    return BoxLoop(
+        config=config,
+        worker=worker,
+        github_client=github_client,
+        repo_list_fn=lambda: fetch_repo_list(github_client, config.engine_repo),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
