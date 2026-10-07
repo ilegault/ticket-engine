@@ -1,6 +1,6 @@
 # 59: Repo environments: one Python environment per repo, rebuilt when its dependencies change
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Runner:** any
 
@@ -30,7 +30,7 @@ writing `src/ticket_engine/repo_env.py`. Tests use real files in `tmp_path` and 
 fake command runner that records `(args, cwd, env, shell)` and returns scripted
 `(code, output)`. No test creates a real virtual environment.
 
-- [ ] **Fingerprint.** `env_fingerprint(repo_path: Path, python_version: str, install: str) -> str`
+- [x] **Fingerprint.** `env_fingerprint(repo_path: Path, python_version: str, install: str) -> str`
   returns a SHA-256 hex digest over `python_version`, `install`, and the name and
   contents of each of `pyproject.toml`, `setup.py`, `setup.cfg` and every
   `requirements*.txt` present at the repo root (sorted by name), with `\r\n`
@@ -38,7 +38,7 @@ fake command runner that records `(args, cwd, env, shell)` and returns scripted
   `requirements.txt` changes it; changing `install` changes it; the same file with
   CRLF and LF line endings gives the same digest; editing a file not in that set
   (`README.md`) does not change it.
-- [ ] **Paths and commands.** `@dataclass(frozen=True) class EnvPaths` (`root`,
+- [x] **Paths and commands.** `@dataclass(frozen=True) class EnvPaths` (`root`,
   `bin_dir`, `python`, all `Path`). `env_paths(envs_dir: str, repo: str, is_windows: bool) -> EnvPaths`:
   `root = Path(envs_dir) / <name after "/">`; `bin_dir = root / "Scripts"` and
   `python = bin_dir / "python.exe"` on Windows, else `root / "bin"` and
@@ -48,7 +48,7 @@ fake command runner that records `(args, cwd, env, shell)` and returns scripted
   otherwise. `env_vars(paths: EnvPaths, base_path: str) -> dict[str, str]` returns
   `{"PATH": f"{paths.bin_dir}{os.pathsep}{base_path}", "VIRTUAL_ENV": str(paths.root)}`.
   One exact-value test each, for both platforms.
-- [ ] **Build only when needed.** `ensure_repo_env(repo: str, repo_path: Path, config: RepoConfig, envs_dir: str, run: CommandRunner, is_windows: bool) -> EnvResult`
+- [x] **Build only when needed.** `ensure_repo_env(repo: str, repo_path: Path, config: RepoConfig, envs_dir: str, run: CommandRunner, is_windows: bool) -> EnvResult`
   where `CommandRunner = Callable[[list[str] | str, str, dict[str, str] | None, bool], tuple[int, str]]`
   and `@dataclass(frozen=True) class EnvResult` (`ok: bool`, `rebuilt: bool`,
   `paths: EnvPaths`, `fingerprint: str`). If `root / ".engine-fingerprint"` holds
@@ -61,13 +61,13 @@ fake command runner that records `(args, cwd, env, shell)` and returns scripted
   `test_changed_fingerprint_creates_then_installs_in_order` (assert both recorded
   calls exactly), `test_install_runs_inside_the_environment` (the install call's
   env `PATH` starts with `bin_dir`).
-- [ ] **A failure leaves no fingerprint and logs, never raises.** If either command
+- [x] **A failure leaves no fingerprint and logs, never raises.** If either command
   returns non-zero, `ensure_repo_env` logs
   `logger.warning("repo environment for %s failed at %s (exit %d): %s", repo, step, code, output[-4000:])`
   (`step` is `"venv"` or `"install"`), does not write the fingerprint file, and
   returns `ok=False`. Tests for each step, asserting the file is absent and the
   next call runs the commands again.
-- [ ] **The real runner.** `default_command_runner(args, cwd, env, shell)` runs
+- [x] **The real runner.** `default_command_runner(args, cwd, env, shell)` runs
   `subprocess.run(args, cwd=cwd, env={**os.environ, **env} if env else None, shell=shell, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False, timeout=1800)`
   and returns `(returncode, stdout + stderr)`; a `TimeoutExpired` returns
   `(124, "timed out after 1800s")`. Test it with `[sys.executable, "-c", "import os; print(os.environ['VIRTUAL_ENV'])"]`
@@ -88,3 +88,13 @@ In CI order:
   `env_failed` repo in ticket 61.
 
 ## Comments
+
+Implemented on 2026-10-06:
+- Added `src/ticket_engine/repo_env.py` implementing `env_fingerprint`, `env_paths`, `venv_create_command`, `env_vars`, `ensure_repo_env`, and `default_command_runner`.
+- Added `tests/test_repo_env.py` covering all acceptance criteria with 21 tests:
+  - Fingerprint determinism, dependency file sorting, CRLF/LF normalization, and non-dependency file invariance.
+  - Paths and venv creation command generation for Windows and POSIX.
+  - `ensure_repo_env` caching via `.engine-fingerprint` and rebuild execution order.
+  - Warning logging and absent fingerprint file on venv or install failure.
+  - `default_command_runner` execution with env passing and timeout handling.
+- All CI gates pass (ruff, check_tests_first, pytest).
