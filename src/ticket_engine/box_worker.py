@@ -61,10 +61,8 @@ can be seen:
 - Ticket 57 (ADR 0009 rule 7): the box's config must not list repos, and a
   missing, unreadable or repos-containing config makes box-worker refuse to
   start immediately with exit code 2;
-- Ticket 58 (ADR 0009 rule 4; ADR 0010 rules 3, 6, 7): the box reads the repo
-  list from engine-repos.toml on the engine repo, clones missing listed
-  repos, keeps delisted repos until in-flight work finishes, and honours
-  BOX_PAUSED on the engine repo.
+- Ticket 60 (ADR 0010 rule 2): `build_loop` wires `LocalWorker`'s `env_for` to
+  each repo's virtual environment under `config.envs_dir`.
 """
 from __future__ import annotations
 
@@ -112,6 +110,7 @@ from ticket_engine.local_config import (
 )
 from ticket_engine.local_worker import LocalWorker, _load_tickets_from_path
 from ticket_engine.parser import Ticket
+from ticket_engine.repo_env import env_paths, env_vars
 from ticket_engine.repo_list import RepoListEntry, fetch_repo_list
 from ticket_engine.sonnet import SonnetDriver
 
@@ -781,6 +780,10 @@ def build_loop(config: LocalWorkerConfig) -> BoxLoop:
         github_client=github_client,
         agy_driver=agy_driver,
         sonnet_driver=sonnet_driver,
+        env_for=lambda entry: env_vars(
+            env_paths(config.envs_dir, entry.repo, os.name == "nt"),
+            os.environ.get("PATH", ""),
+        ),
     )
     return BoxLoop(
         config=config,

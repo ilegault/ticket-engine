@@ -17,6 +17,10 @@ quota check and reserve are removed. Sessions are driven via:
 and their outputs are classified into exact outcomes (success, quota, auth, timeout,
 waiting, failed). This logger reaches only the box's local rotating file and the local
 work-windows console; AgyDriver never runs in Actions, so ADR 0007 rule 4 holds.
+
+Ticket 60 (ADR 0010 rule 2): AgyDriver.start accepts an optional `env` mapping
+so agy runs inside the target repo's virtual environment rather than the box's
+default PATH.
 """
 from __future__ import annotations
 
@@ -33,7 +37,7 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
-RunFn = Callable[[list[str], str | None], tuple[int, str]]
+RunFn = Callable[..., tuple[int, str]]
 
 _DEFAULT_QUOTA_ERROR_PATTERNS = ["quota", "rate limit", "exhausted"]
 _DEFAULT_AUTH_ERROR_PATTERNS = ["auth", "login", "credential"]
@@ -83,8 +87,12 @@ def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
 
 
 def _default_run(
-    args: list[str], cwd: str | None = None, timeout: float | None = None
+    args: list[str],
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    timeout: float | None = None,
 ) -> tuple[int, str]:
+    merged_env = {**os.environ, **env} if env is not None else None
     proc = subprocess.Popen(
         args,
         cwd=cwd,
@@ -95,6 +103,7 @@ def _default_run(
         encoding="utf-8",
         errors="replace",
         start_new_session=not _IS_WINDOWS,
+        env=merged_env,
     )
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
@@ -151,7 +160,12 @@ class AgyDriver:
             else list(_DEFAULT_AUTH_ERROR_PATTERNS)
         )
 
-    def start(self, prompt: str, cwd: str | None = None) -> AgyResult:
+    def start(
+        self,
+        prompt: str,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> AgyResult:
         """Invoke: agy -p <prompt> --output-format json --dangerously-skip-permissions --print-timeout <value>
 
         Returns an AgyResult classifying the outcome.
@@ -168,7 +182,10 @@ class AgyDriver:
             self.print_timeout,
         ]
         logger.info("agy started in %s (print timeout %s)", cwd, self.print_timeout)
-        returncode, output = self._run(args, cwd)
+        if env is None:
+            returncode, output = self._run(args, cwd)
+        else:
+            returncode, output = self._run(args, cwd, env)
         result = _parse_agy_output(
             returncode,
             output,

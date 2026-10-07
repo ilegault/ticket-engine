@@ -2117,3 +2117,53 @@ def test_claim_base_defaults_to_master_without_a_repo_config(tmp_path):
     worker.run_one(make_repo_entry(path=str(tmp_path), repo="owner/repo"), make_ticket(9))
     mock_github.get_default_branch_sha.assert_called_once_with("owner/repo", "master")
 
+
+def test_run_one_runs_agy_with_the_repos_env():
+    """run_one passes the repo's environment from env_for to agy."""
+    recorded_envs: list[dict[str, str] | None] = []
+
+    def fake_run(args, cwd=None, env=None):
+        recorded_envs.append(env)
+        return 0, '{"status": "SUCCESS"}'
+
+    ticket = make_ticket(9, effort="phase-1")
+    entry = make_repo_entry(repo="owner/repo")
+    mock_github = make_fake_github()
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=fake_run),
+        git_runner=_make_git_runner([]),
+        read_ticket_fn=lambda p: "# 09: T\n**Status:** done\n\n## Comments\n",
+        env_for=lambda e: {"VIRTUAL_ENV": "/envs/repo"},
+    )
+    result = worker.run_one(entry, ticket)
+
+    assert result is True
+    assert recorded_envs == [{"VIRTUAL_ENV": "/envs/repo"}]
+
+
+def test_fix_ci_runs_agy_with_the_repos_env():
+    """fix_ci passes the repo's environment from env_for to agy."""
+    recorded_envs: list[dict[str, str] | None] = []
+
+    def fake_run(args, cwd=None, env=None):
+        recorded_envs.append(env)
+        return 0, '{"status": "SUCCESS"}'
+
+    mock_github = make_fake_github()
+    mock_github.list_check_runs.return_value = [("pytest", "failure")]
+    ticket = make_ticket(9, effort="phase-1")
+    entry = make_repo_entry(repo="owner/repo")
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=fake_run),
+        git_runner=_make_git_runner([]),
+        env_for=lambda e: {"VIRTUAL_ENV": "/envs/repo"},
+    )
+    worker.fix_ci(entry, ticket, pr_number=12)
+
+    assert recorded_envs == [{"VIRTUAL_ENV": "/envs/repo"}]
+
+

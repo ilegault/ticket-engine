@@ -19,12 +19,17 @@ Classification reads Claude Code's own documented `stream-json` events — the
 final `result` message and any `system`/`api_retry` event's `error`
 category — rather than a guessed text pattern, since `--output-format
 stream-json` emits one JSON object per line for exactly this purpose.
+
+Ticket 60 (ADR 0010 rule 2): `SonnetDriver.start` accepts an optional `env` mapping
+so the Sonnet fallback runs inside the target repo's virtual environment rather than
+the box's default PATH.
 """
 from __future__ import annotations
 
 import datetime
 import json
 import logging
+import os
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -32,7 +37,7 @@ from functools import partial
 
 logger = logging.getLogger(__name__)
 
-RunFn = Callable[[list[str], str | None], tuple[int, str]]
+RunFn = Callable[..., tuple[int, str]]
 
 _QUOTA_RETRY_ERRORS = frozenset(
     ["rate_limit", "overloaded", "billing_error", "account_on_hold"]
@@ -67,10 +72,14 @@ def classify_retry_error(error: str) -> str | None:
 
 
 def _default_run(
-    args: list[str], cwd: str | None = None, timeout: int = 7200
+    args: list[str],
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    timeout: int = 7200,
 ) -> tuple[int, str]:
+    merged_env = {**os.environ, **env} if env is not None else None
     result = subprocess.run(
-        args, capture_output=True, text=True, cwd=cwd, timeout=timeout, check=False
+        args, capture_output=True, text=True, cwd=cwd, env=merged_env, timeout=timeout, check=False
     )
     return result.returncode, result.stdout or result.stderr
 
@@ -92,7 +101,12 @@ class SonnetDriver:
             run_fn if run_fn is not None else partial(_default_run, timeout=timeout_seconds)
         )
 
-    def start(self, prompt: str, cwd: str | None = None) -> SonnetResult:
+    def start(
+        self,
+        prompt: str,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> SonnetResult:
         """Invoke: claude -p <prompt> --output-format stream-json --permission-mode bypassPermissions --permission-prompts none
 
         Returns a SonnetResult classifying the outcome. The cwd is the
@@ -110,7 +124,10 @@ class SonnetDriver:
             "none",
         ]
         try:
-            returncode, output = self._run(args, cwd)
+            if env is None:
+                returncode, output = self._run(args, cwd)
+            else:
+                returncode, output = self._run(args, cwd, env)
         except subprocess.TimeoutExpired:
             return SonnetResult(outcome="timeout")
         return _parse_sonnet_output(returncode, output)
