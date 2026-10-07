@@ -1,6 +1,6 @@
 # 56: Box status shows a developer pause and not-ready repos; the dispatcher lets Jules cover them
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
