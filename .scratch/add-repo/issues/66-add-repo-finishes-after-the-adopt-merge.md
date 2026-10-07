@@ -1,6 +1,6 @@
 # 66: `add-repo` waits for the adopt merge, then creates the ruleset, runs the dry run and prints the Jules script
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
