@@ -254,3 +254,50 @@ def test_agy_driver_logs_start_with_cwd_but_never_the_prompt(caplog):
     driver = AgyDriver(run_fn=fake_run, print_timeout="2h")
     driver.start("PROMPT-MARKER-do-not-log", cwd="C:/wt/x")
     assert "PROMPT-MARKER-do-not-log" not in caplog.text
+
+
+def test_agy_start_passes_env_to_run_fn():
+    """AgyDriver.start passes env to run_fn when env is provided."""
+    seen_calls: list[tuple[list[str], str | None, dict[str, str] | None]] = []
+
+    def fake_run(args: list[str], cwd: str | None = None, env: dict[str, str] | None = None) -> tuple[int, str]:
+        seen_calls.append((list(args), cwd, env))
+        return 0, '{"status": "SUCCESS"}'
+
+    driver = AgyDriver(run_fn=fake_run)
+    custom_env = {"VIRTUAL_ENV": "/path/to/env", "CUSTOM_VAR": "1"}
+    result = driver.start("some prompt", cwd="/worktree/path", env=custom_env)
+
+    assert result.outcome == "success"
+    assert len(seen_calls) == 1
+    _args, cwd, env = seen_calls[0]
+    assert cwd == "/worktree/path"
+    assert env == custom_env
+
+
+def test_agy_start_without_env_calls_two_argument_run_fn():
+    """AgyDriver.start calls run_fn with (args, cwd) when env is None."""
+    seen_calls: list[tuple[list[str], str | None]] = []
+
+    def fake_run(args: list[str], cwd: str | None = None) -> tuple[int, str]:
+        seen_calls.append((list(args), cwd))
+        return 0, '{"status": "SUCCESS"}'
+
+    driver = AgyDriver(run_fn=fake_run)
+    result = driver.start("some prompt", cwd="/worktree/path")
+
+    assert result.outcome == "success"
+    assert len(seen_calls) == 1
+    assert seen_calls[0][1] == "/worktree/path"
+
+
+def test_default_run_passes_env_to_child():
+    """_default_run passes env={**os.environ, **env} to Popen when env is set."""
+    rc, out = _default_run(
+        [sys.executable, "-c", "import os; print(os.environ.get('TEST_VAR_XYZ', ''))"],
+        env={"TEST_VAR_XYZ": "hello-from-env"},
+    )
+    assert rc == 0
+    assert out.strip() == "hello-from-env"
+
+

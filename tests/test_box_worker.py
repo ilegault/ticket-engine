@@ -699,6 +699,20 @@ def test_build_loop_falls_back_to_pipeline_token_for_api_and_pushes(monkeypatch)
     assert loop.worker.config.github_token == "tok-from-env"
 
 
+def test_build_loop_wires_env_for_to_the_repo_environment(tmp_path):
+    envs_dir = str(tmp_path / "envs")
+    config = LocalWorkerConfig(
+        repos=[LocalRepoEntry(path="/fake", repo="owner/repo")],
+        envs_dir=envs_dir,
+    )
+    loop = box_worker.build_loop(config)
+    env = loop.worker._env_for(make_entry(repo="o/r"))
+    assert env is not None
+    assert env["VIRTUAL_ENV"] == str(pathlib.Path(envs_dir) / "r")
+    assert env["VIRTUAL_ENV"].endswith("r")
+
+
+
 def test_every_tick_logs_the_step_it_took(tmp_path, caplog):
     loop = make_loop(tmp_path, FakeWorker(), make_github(), tickets=[])
 

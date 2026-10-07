@@ -19,10 +19,11 @@ from __future__ import annotations
 
 import pathlib
 import subprocess
+import sys
 
 import pytest
 
-from ticket_engine.sonnet import SonnetDriver, classify_retry_error
+from ticket_engine.sonnet import SonnetDriver, _default_run, classify_retry_error
 
 FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures" / "sonnet"
 
@@ -142,3 +143,50 @@ def test_sonnet_outcome_success_with_nonzero_exit_gives_failed():
 
     assert result.outcome == "failed"
     assert result.success is False
+
+
+def test_sonnet_start_passes_env_to_run_fn():
+    """SonnetDriver.start passes env to run_fn when env is provided."""
+    seen_calls: list[tuple[list[str], str | None, dict[str, str] | None]] = []
+
+    def fake_run(args: list[str], cwd: str | None = None, env: dict[str, str] | None = None) -> tuple[int, str]:
+        seen_calls.append((list(args), cwd, env))
+        return 0, (FIXTURES_DIR / "success.jsonl").read_text(encoding="utf-8")
+
+    driver = SonnetDriver(run_fn=fake_run)
+    custom_env = {"VIRTUAL_ENV": "/path/to/env", "CUSTOM_VAR": "1"}
+    result = driver.start("some prompt", cwd="/worktree/path", env=custom_env)
+
+    assert result.outcome == "success"
+    assert len(seen_calls) == 1
+    _args, cwd, env = seen_calls[0]
+    assert cwd == "/worktree/path"
+    assert env == custom_env
+
+
+def test_sonnet_start_without_env_calls_two_argument_run_fn():
+    """SonnetDriver.start calls run_fn with (args, cwd) when env is None."""
+    seen_calls: list[tuple[list[str], str | None]] = []
+
+    def fake_run(args: list[str], cwd: str | None = None) -> tuple[int, str]:
+        seen_calls.append((list(args), cwd))
+        return 0, (FIXTURES_DIR / "success.jsonl").read_text(encoding="utf-8")
+
+    driver = SonnetDriver(run_fn=fake_run)
+    result = driver.start("some prompt", cwd="/worktree/path")
+
+    assert result.outcome == "success"
+    assert len(seen_calls) == 1
+    assert seen_calls[0][1] == "/worktree/path"
+
+
+def test_default_run_passes_env_to_child():
+    """_default_run passes env={**os.environ, **env} to subprocess.run when env is set."""
+    rc, out = _default_run(
+        [sys.executable, "-c", "import os; print(os.environ.get('TEST_VAR_ABC', ''))"],
+        env={"TEST_VAR_ABC": "hello-from-sonnet-env"},
+    )
+    assert rc == 0
+    assert out.strip() == "hello-from-sonnet-env"
+
+

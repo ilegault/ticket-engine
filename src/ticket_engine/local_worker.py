@@ -63,6 +63,10 @@ a quota pause or a restart leaves behind.
   reset to the claim head rather than making git refuse.
 - If git still cannot create the worktree, `run_one` logs git's message and
   returns `False`. agy is never started in a folder that does not exist.
+
+Ticket 60 (ADR 0010 rule 2): `LocalWorker` gains `env_for` to query each repo's
+environment and pass it to both `agy_driver` and `sonnet_driver` via
+`_start_with_fallback`.
 """
 from __future__ import annotations
 
@@ -160,11 +164,15 @@ class LocalWorker:
         read_ticket_fn: Callable[[str | pathlib.Path], str] | None = None,
         write_ticket_fn: Callable[[str | pathlib.Path, str], None] | None = None,
         sonnet_driver: SonnetDriver | None = None,
+        env_for: Callable[[LocalRepoEntry], dict[str, str] | None] | None = None,
     ) -> None:
         self.config = config
         self.github_client = github_client
         self.agy_driver = agy_driver
         self.sonnet_driver = sonnet_driver
+        self._env_for: Callable[[LocalRepoEntry], dict[str, str] | None] = (
+            env_for if env_for is not None else (lambda entry: None)
+        )
         # The default runner looks `_default_git_runner` up at call time and
         # always passes the configured timeout (box setup follow-up).
         self._git_runner: GitRunner = (
@@ -186,7 +194,9 @@ class LocalWorker:
             write_ticket_fn if write_ticket_fn is not None else _default_write_ticket
         )
 
-    def _start_with_fallback(self, prompt: str, cwd: str) -> object:
+    def _start_with_fallback(
+        self, prompt: str, cwd: str, env: dict[str, str] | None = None
+    ) -> object:
         """Try agy first; fall back to Sonnet only on an agy quota error.
 
         Ticket 40 (spec §LocalWorker changes): every agy call site goes
@@ -195,10 +205,11 @@ class LocalWorker:
         box_mode's return-to-caller pause behaviour only ever see the
         combined result, whichever driver produced it.
         """
-        result = self.agy_driver.start(prompt, cwd=cwd)
+        extra = {"env": env} if env is not None else {}
+        result = self.agy_driver.start(prompt, cwd=cwd, **extra)
         if result.quota_error and self.sonnet_driver is not None:
             logger.info("agy out of quota; falling back to Sonnet for this attempt.")
-            return self.sonnet_driver.start(prompt, cwd=cwd)
+            return self.sonnet_driver.start(prompt, cwd=cwd, **extra)
         return result
 
     @property
@@ -318,7 +329,9 @@ class LocalWorker:
 
         try:
             prompt = assemble_prompt(self.skill_text, entry.repo, ticket_path)
-            result = self._start_with_fallback(prompt, cwd=worktree_path)
+            result = self._start_with_fallback(
+                prompt, cwd=worktree_path, env=self._env_for(entry)
+            )
         finally:
             stop_event.set()
             pusher_thread.join(timeout=5)
@@ -395,7 +408,9 @@ class LocalWorker:
         fix_section = "\n\n## CI FAILED — FIX IT\n" + "\n".join(
             f"- {name}" for name in failing
         )
-        result = self._start_with_fallback(base_prompt + fix_section, cwd=worktree_path)
+        result = self._start_with_fallback(
+            base_prompt + fix_section, cwd=worktree_path, env=self._env_for(entry)
+        )
 
         push_env = _make_push_env(self.config.github_token) if self.config.github_token else None
         self._push_if_claimed(
@@ -533,7 +548,9 @@ class LocalWorker:
         checkpoint_prompt = _assemble_checkpoint_prompt(
             self.skill_text, entry.repo, ticket_path, progress_note
         )
-        return self._start_with_fallback(checkpoint_prompt, cwd=worktree_path)
+        return self._start_with_fallback(
+            checkpoint_prompt, cwd=worktree_path, env=self._env_for(entry)
+        )
 
     def _send_auto_reply(
         self, entry: LocalRepoEntry, ticket_path: str, worktree_path: str
@@ -541,7 +558,9 @@ class LocalWorker:
         """Start a fresh agy session whose prompt ends with `dispatch.AUTO_REPLY_TEXT`
         (ADR 0004: answer a waiting worker exactly as the engine answers Jules)."""
         prompt = assemble_prompt(self.skill_text, entry.repo, ticket_path)
-        return self._start_with_fallback(f"{prompt}\n\n{AUTO_REPLY_TEXT}", cwd=worktree_path)
+        return self._start_with_fallback(
+            f"{prompt}\n\n{AUTO_REPLY_TEXT}", cwd=worktree_path, env=self._env_for(entry)
+        )
 
     def _escalate(
         self,
