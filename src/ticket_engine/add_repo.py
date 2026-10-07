@@ -11,6 +11,9 @@ whose suite cannot pass on Linux.
 ADR 0009 rule 2: Applies settings, labels, secrets from secrets.env, and permission
 to use the engine's workflows (ticket 64).
 
+ADR 0009 rules 2–4: Opens the adopt PR (or upgrade PR) and the repo-list PR (ticket 65).
+Merging the repo-list PR turns the repo on.
+
 ADR 0002 rule 3: Secrets live in one `secrets.env` outside every repo on the
 developer's machine. Secret values are never printed, logged, or passed in
 command arguments; they reach `gh` only on stdin.
@@ -25,8 +28,10 @@ import json
 import logging
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -43,13 +48,15 @@ from ticket_engine.bootstrap import (
     GitHubSetupInput,
     SetSecretOp,
     github_setup,
+    run_adopt,
 )
 from ticket_engine.github import GitHubClient
-from ticket_engine.repo_list import parse_repo_list
+from ticket_engine.repo_list import RepoListError, parse_repo_list
 
 logger = logging.getLogger(__name__)
 
 GhRunner = Callable[[list[str], str | None], tuple[int, str]]
+GitRunner = Callable[[list[str], str | pathlib.Path], tuple[int, str]]
 
 
 def default_gh_runner(args: list[str], stdin: str | None = None) -> tuple[int, str]:
@@ -57,6 +64,19 @@ def default_gh_runner(args: list[str], stdin: str | None = None) -> tuple[int, s
     res = subprocess.run(
         ["gh", *args],
         input=stdin,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = res.stdout if res.returncode == 0 else (res.stderr or res.stdout)
+    return res.returncode, output
+
+
+def default_git_runner(args: list[str], cwd: str | pathlib.Path) -> tuple[int, str]:
+    """Execute a git CLI command and return (returncode, output)."""
+    res = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
         capture_output=True,
         text=True,
         check=False,
@@ -488,11 +508,219 @@ def apply_step(
         raise StepFailedError(step_kind(step), last_line)
 
 
+def _last_line(out: str) -> str:
+    lines = [line.strip() for line in out.strip().splitlines() if line.strip()]
+    return lines[-1] if lines else ""
+
+
+def apply_adopt_pr(
+    repo: str,
+    default_branch: str,
+    gh: GhRunner,
+    git: GitRunner,
+    no_jules: bool,
+) -> int:
+    """Clone target repo, create engine/add-repo branch, run adopt, and open PR."""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        name = repo.split("/")[-1]
+        clone = pathlib.Path(tmp_dir) / name
+
+        code, out = gh(["repo", "clone", repo, str(clone)])
+        if code != 0:
+            raise StepFailedError(StepKind.adopt_pr.value, _last_line(out))
+
+        code, out = git(["checkout", "-b", "engine/add-repo"], clone)
+        if code != 0:
+            raise StepFailedError(StepKind.adopt_pr.value, _last_line(out))
+
+        adopt_res = run_adopt(clone, engine_version="v1")
+
+        cfg_file = clone / ".ticket-engine.toml"
+        if cfg_file.is_file():
+            old_cfg = cfg_file.read_text(encoding="utf-8")
+            upgraded_cfg = config_upgrade(old_cfg, no_jules)
+            if upgraded_cfg is not None:
+                cfg_file.write_text(upgraded_cfg, encoding="utf-8")
+
+        if adopt_res.pii_findings:
+            for finding in adopt_res.pii_findings:
+                print(finding.path)
+            return 1
+
+        code, out = git(["add", "-A"], clone)
+        if code != 0:
+            raise StepFailedError(StepKind.adopt_pr.value, _last_line(out))
+
+        code, out = git(["commit", "-m", f"Wire {repo} to ticket-engine (add-repo)"], clone)
+        if code != 0:
+            raise StepFailedError(StepKind.adopt_pr.value, _last_line(out))
+
+        code, out = git(["push", "-u", "origin", "engine/add-repo"], clone)
+        if code != 0:
+            raise StepFailedError(StepKind.adopt_pr.value, _last_line(out))
+
+        code, out = gh([
+            "pr",
+            "create",
+            "--repo",
+            repo,
+            "--base",
+            default_branch,
+            "--head",
+            "engine/add-repo",
+            "--title",
+            "Wire to ticket-engine",
+            "--body",
+            "Opened by add-repo (ADR 0009). Merge by hand.",
+        ])
+        if code != 0:
+            raise StepFailedError(StepKind.adopt_pr.value, _last_line(out))
+
+        return 0
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def apply_upgrade_pr(
+    repo: str,
+    default_branch: str,
+    gh: GhRunner,
+    git: GitRunner,
+    no_jules: bool,
+) -> int:
+    """Clone target repo, create engine/add-repo branch, upgrade config, and open PR."""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        name = repo.split("/")[-1]
+        clone = pathlib.Path(tmp_dir) / name
+
+        code, out = gh(["repo", "clone", repo, str(clone)])
+        if code != 0:
+            raise StepFailedError(StepKind.upgrade_pr.value, _last_line(out))
+
+        code, out = git(["checkout", "-b", "engine/add-repo"], clone)
+        if code != 0:
+            raise StepFailedError(StepKind.upgrade_pr.value, _last_line(out))
+
+        cfg_file = clone / ".ticket-engine.toml"
+        if cfg_file.is_file():
+            old_cfg = cfg_file.read_text(encoding="utf-8")
+            upgraded_cfg = config_upgrade(old_cfg, no_jules)
+            if upgraded_cfg is not None:
+                cfg_file.write_text(upgraded_cfg, encoding="utf-8")
+
+        code, out = git(["add", ".ticket-engine.toml"], clone)
+        if code != 0:
+            raise StepFailedError(StepKind.upgrade_pr.value, _last_line(out))
+
+        code, out = git(["commit", "-m", "Upgrade .ticket-engine.toml for add-repo (ADR 0009/0010)"], clone)
+        if code != 0:
+            raise StepFailedError(StepKind.upgrade_pr.value, _last_line(out))
+
+        code, out = git(["push", "-u", "origin", "engine/add-repo"], clone)
+        if code != 0:
+            raise StepFailedError(StepKind.upgrade_pr.value, _last_line(out))
+
+        code, out = gh([
+            "pr",
+            "create",
+            "--repo",
+            repo,
+            "--base",
+            default_branch,
+            "--head",
+            "engine/add-repo",
+            "--title",
+            "Upgrade ticket-engine config",
+            "--body",
+            "Opened by add-repo (ADR 0009). Merge by hand.",
+        ])
+        if code != 0:
+            raise StepFailedError(StepKind.upgrade_pr.value, _last_line(out))
+
+        return 0
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def apply_list_pr(
+    repo: str,
+    engine_repo: str,
+    gh: GhRunner,
+    git: GitRunner,
+    no_box: bool,
+) -> int:
+    """Clone engine repo, create engine/add-{name} branch, append entry to engine-repos.toml, and open PR."""
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        name = repo.split("/")[-1]
+        engine_name = engine_repo.split("/")[-1]
+        clone = pathlib.Path(tmp_dir) / engine_name
+
+        code, out = gh(["repo", "clone", engine_repo, str(clone)])
+        if code != 0:
+            raise StepFailedError(StepKind.list_pr.value, _last_line(out))
+
+        code, out = git(["checkout", "-b", f"engine/add-{name}"], clone)
+        if code != 0:
+            raise StepFailedError(StepKind.list_pr.value, _last_line(out))
+
+        list_file = clone / "engine-repos.toml"
+        existing_text = list_file.read_text(encoding="utf-8") if list_file.is_file() else ""
+        if no_box:
+            entry = f'\n[[repos]]\nrepo = "{repo}"\nbox = false\n'
+        else:
+            entry = f'\n[[repos]]\nrepo = "{repo}"\n'
+
+        new_text = existing_text + entry
+        try:
+            parse_repo_list(new_text)
+        except RepoListError as exc:
+            raise StepFailedError(StepKind.list_pr.value, str(exc)) from exc
+
+        list_file.write_text(new_text, encoding="utf-8")
+
+        code, out = git(["add", "engine-repos.toml"], clone)
+        if code != 0:
+            raise StepFailedError(StepKind.list_pr.value, _last_line(out))
+
+        code, out = git(["commit", "-m", f"Add {repo} to the repo list"], clone)
+        if code != 0:
+            raise StepFailedError(StepKind.list_pr.value, _last_line(out))
+
+        code, out = git(["push", "-u", "origin", f"engine/add-{name}"], clone)
+        if code != 0:
+            raise StepFailedError(StepKind.list_pr.value, _last_line(out))
+
+        code, out = gh([
+            "pr",
+            "create",
+            "--repo",
+            engine_repo,
+            "--base",
+            "master",
+            "--head",
+            f"engine/add-{name}",
+            "--title",
+            f"Add {repo} to the repo list",
+            "--body",
+            "Opened by add-repo (ADR 0009). Merging this turns the repo on.",
+        ])
+        if code != 0:
+            raise StepFailedError(StepKind.list_pr.value, _last_line(out))
+
+        return 0
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def main(
     argv: list[str] | None = None,
     *,
     gh: GhRunner | None = None,
     probe: GitHubClient | None = None,
+    git: GitRunner | None = None,
 ) -> int:
     """CLI entry point for add-repo."""
     parser = argparse.ArgumentParser(
@@ -502,6 +730,7 @@ def main(
     parser.add_argument("repo", help="Target repo (owner/name)")
     parser.add_argument("--check", action="store_true", help="Print the plan and change nothing")
     parser.add_argument("--no-jules", action="store_true", help="Mark repo as not supported on Jules Linux")
+    parser.add_argument("--no-box", action="store_true", help="Do not enable the box for this repo in engine-repos.toml")
     parser.add_argument(
         "--secrets-file",
         default=str(pathlib.Path.home() / "secrets.env"),
@@ -527,6 +756,7 @@ def main(
         return 2
 
     runner = gh if gh is not None else default_gh_runner
+    git_runner = git if git is not None else default_git_runner
     client_probe = probe if probe is not None else GitHubClient(token=secrets["PIPELINE_TOKEN"])
 
     facts = gather_facts(args.repo, args.engine_repo, runner, client_probe)
@@ -555,21 +785,60 @@ def main(
             print(f"secrets file has no {step.name}")
             return 2
 
-    # Carry out settings steps
-    for step in plan.steps:
+    for i, step in enumerate(plan.steps):
         if isinstance(step, SETTINGS_OPS):
             try:
                 apply_step(step, args.repo, runner, secrets)
             except StepFailedError as exc:
                 print(f"step failed: {exc.kind}: {exc.message}")
                 return 1
-
-    # Remaining steps not yet implemented (tickets 65-66)
-    remaining_steps = [s for s in plan.steps if not isinstance(s, SETTINGS_OPS)]
-    if remaining_steps:
-        kinds = ", ".join(step_kind(s) for s in remaining_steps)
-        print(f"not implemented yet: {kinds}")
-        return 1
+        elif step == StepKind.adopt_pr:
+            try:
+                code = apply_adopt_pr(
+                    repo=args.repo,
+                    default_branch=facts.default_branch,
+                    gh=runner,
+                    git=git_runner,
+                    no_jules=args.no_jules,
+                )
+                if code != 0:
+                    return code
+            except StepFailedError as exc:
+                print(f"step failed: {exc.kind}: {exc.message}")
+                return 1
+        elif step == StepKind.upgrade_pr:
+            try:
+                code = apply_upgrade_pr(
+                    repo=args.repo,
+                    default_branch=facts.default_branch,
+                    gh=runner,
+                    git=git_runner,
+                    no_jules=args.no_jules,
+                )
+                if code != 0:
+                    return code
+            except StepFailedError as exc:
+                print(f"step failed: {exc.kind}: {exc.message}")
+                return 1
+        elif step == StepKind.list_pr:
+            try:
+                code = apply_list_pr(
+                    repo=args.repo,
+                    engine_repo=args.engine_repo,
+                    gh=runner,
+                    git=git_runner,
+                    no_box=args.no_box,
+                )
+                if code != 0:
+                    return code
+            except StepFailedError as exc:
+                print(f"step failed: {exc.kind}: {exc.message}")
+                return 1
+        else:
+            remaining_steps = plan.steps[i:]
+            kinds = ", ".join(step_kind(s) for s in remaining_steps)
+            print(f"not implemented yet: {kinds}")
+            return 1
 
     return 0
 
