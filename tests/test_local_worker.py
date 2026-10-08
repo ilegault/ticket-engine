@@ -2499,7 +2499,11 @@ def test_green_gate_pushes_and_opens_the_pr(tmp_path):
     )
     assert worker.run_one(entry, ticket) is True
     assert len(prompts) == 1
-    assert [c for _, c in gate_calls] == ["ruff check .", "python scripts/check_tests_first.py", "pytest"]
+    commands = [c for _, c in gate_calls]
+    # The repo's own commands, then (ticket 73) the local integrity run last.
+    assert commands[:3] == ["ruff check .", "python scripts/check_tests_first.py", "pytest"]
+    assert len(commands) == 4
+    assert commands[3][1:3] == ["-m", "ticket_engine.integrity_runner"]
     assert len(pushes) == 1
     github.create_pull_request.assert_called_once()
 
@@ -2512,3 +2516,102 @@ def test_gate_output_never_reaches_a_github_request_body(tmp_path):
     assert github.mock_calls
     for call in github.mock_calls:
         assert _GATE_MARKER not in repr(call)
+
+
+# ---------------------------------------------------------------------------
+# Ticket 73: the pre-push gate ends with the integrity gate, run locally
+# ---------------------------------------------------------------------------
+
+_INTEGRITY_FAIL_TEXT = "## Integrity Gate Verdict: FAIL\n- Check 1 fail: Test 'test_x' is newly skipped"
+_INTEGRITY_HOLD_TEXT = "## Integrity Gate Verdict: HOLD\n- Check 4 hold: touches AGENTS.md"
+
+
+def _is_integrity(cmd) -> bool:
+    return isinstance(cmd, list) and "ticket_engine.integrity_runner" in cmd
+
+
+def _with_integrity(integrity):
+    """Gate script: every repo command passes; the integrity run answers `integrity(call)`."""
+
+    def script(call, cmd):
+        if _is_integrity(cmd):
+            return integrity(call)
+        return 0, "ok"
+
+    return script
+
+
+def test_local_integrity_runs_with_the_repo_env_python_and_engine_on_pythonpath(tmp_path):
+    import os
+    import pathlib
+
+    import ticket_engine
+    from ticket_engine.repo_env import env_paths
+
+    seen = {}
+
+    worker, entry, ticket, _, _, _, _, git_log = _gate_setup(
+        tmp_path, _with_integrity(lambda call: (0, "## Integrity Gate Verdict: PASS"))
+    )
+    original = worker._command_runner
+
+    def spy(cmd, cwd, env, shell):
+        if _is_integrity(cmd):
+            seen.update(cmd=cmd, cwd=cwd, env=env, shell=shell)
+        return original(cmd, cwd, env, shell)
+
+    worker._command_runner = spy
+    assert worker.run_one(entry, ticket) is True
+
+    worktree = str(tmp_path / "wt" / "ticket-phase-1-09-ticket-9")
+    python = str(env_paths(worker.config.envs_dir, entry.repo, os.name == "nt").python)
+    assert seen["cmd"] == [
+        python, "-m", "ticket_engine.integrity_runner",
+        "--local", "--repo-path", worktree, "--base-ref", "origin/master",
+    ]
+    assert seen["shell"] is False
+    assert seen["env"]["PYTHONPATH"] == str(pathlib.Path(ticket_engine.__file__).resolve().parents[1])
+    fetches = [c for c in git_log if "fetch" in c and "origin" in c and "master" in c]
+    assert fetches and fetches[0][:3] == ["git", "-C", worktree]
+
+
+def test_local_integrity_fail_blocks_the_push_and_reaches_the_prompt(tmp_path):
+    seen = {}
+
+    def on_agy_run(n, github, pushes):
+        if n == 2:
+            seen["prs"] = github.create_pull_request.call_count
+            seen["pushes"] = len(pushes)
+
+    worker, entry, ticket, _, prompts, _, _, _ = _gate_setup(
+        tmp_path,
+        _with_integrity(lambda call: (1, _INTEGRITY_FAIL_TEXT) if call < 4 else (0, "ok")),
+        on_agy_run=on_agy_run,
+        max_resumes_per_ticket=3,
+    )
+    worker.run_one(entry, ticket)
+    assert seen == {"prs": 0, "pushes": 0}
+    assert len(prompts) == 2
+    assert "integrity gate (local)" in prompts[1]
+    assert "Check 1 fail: Test 'test_x' is newly skipped" in prompts[1]
+
+
+def test_local_integrity_hold_still_pushes(tmp_path):
+    worker, entry, ticket, github, prompts, _, pushes, _ = _gate_setup(
+        tmp_path, _with_integrity(lambda call: (0, _INTEGRITY_HOLD_TEXT))
+    )
+    assert worker.run_one(entry, ticket) is True
+    assert len(prompts) == 1
+    assert len(pushes) == 1
+    github.create_pull_request.assert_called_once()
+
+
+def test_local_integrity_skipped_when_a_gate_command_failed(tmp_path):
+    worker, entry, ticket, _, _, gate_calls, _, _ = _gate_setup(
+        tmp_path,
+        lambda call, cmd: (1, "E501") if cmd == "ruff check ." else (0, "ok"),
+        max_resumes_per_ticket=1,
+    )
+    worker.run_one(entry, ticket)
+    assert gate_calls
+    assert not [c for _, c in gate_calls if _is_integrity(c)]

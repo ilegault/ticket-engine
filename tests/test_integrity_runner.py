@@ -13,7 +13,7 @@ import pathlib
 from unittest.mock import MagicMock, patch
 
 from ticket_engine.integrity import IntegrityVerdict, Verdict
-from ticket_engine.integrity_runner import format_verdict_comment, run_integrity_gate
+from ticket_engine.integrity_runner import format_verdict_comment, main, run_integrity_gate
 
 # A passing ticket PR changes its tests; the gate holds one that doesn't (check 6).
 _TEST_TOUCH_DIFF = (
@@ -479,3 +479,41 @@ def test_run_integrity_gate_escalated_ticket_is_green_and_says_do_not_merge(tmp_
         assert status_call["state"] == "success"
         assert status_call["description"].startswith("ESCALATED, do not merge: ")
         assert "merge by hand" not in status_call["description"]
+
+
+# ---------------------------------------------------------------------------
+# Ticket 73: --local runs the gate for the box's pre-push gate (ADR 0011 rule 3)
+# ---------------------------------------------------------------------------
+
+_LOCAL_TICKET = "# 01: T\n**Status:** in-progress\n## Acceptance criteria\n- [x] Done\n"
+
+
+def _run_local(tmp_path: pathlib.Path, monkeypatch, capsys) -> tuple[int, str, MagicMock]:
+    """`main(["--local", ...])` with a token and repo in the environment, fakes for git."""
+    monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+    monkeypatch.setenv("PIPELINE_TOKEN", "fake-pipeline-token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("GITHUB_SHA", "1234567890abcdef")
+    recorder = MagicMock()
+    with patch("ticket_engine.integrity_runner.GitHubClient", recorder), \
+         patch("ticket_engine.integrity_runner.resolve_base_ref", side_effect=lambda _p, ref: ref), \
+         patch("ticket_engine.integrity_runner.get_base_tree_from_git", return_value={"tests/test_a.py": "def test_a(): assert True\n"}), \
+         patch("ticket_engine.integrity_runner.get_pr_diff_from_git", return_value=""), \
+         patch("ticket_engine.integrity_runner.find_ticket_content_from_git", return_value=_LOCAL_TICKET):
+        code = main(["--local", "--repo-path", str(tmp_path), "--base-ref", "origin/master"])
+    return code, capsys.readouterr().out, recorder
+
+
+def test_local_flag_makes_no_github_calls_even_with_a_token_in_the_environment(
+    tmp_path: pathlib.Path, monkeypatch, capsys
+):
+    _, _, recorder = _run_local(tmp_path, monkeypatch, capsys)
+    recorder.assert_not_called()
+
+
+def test_local_flag_prints_the_verdict_comment(tmp_path: pathlib.Path, monkeypatch, capsys):
+    code, out, _ = _run_local(tmp_path, monkeypatch, capsys)
+    # The ticket is in-progress, so check 6 fails; the printed text is the PR comment body.
+    assert code == 1
+    assert "## Integrity Gate Verdict: FAIL" in out
+    assert "`fail`" in out
