@@ -72,6 +72,16 @@ Ticket 70 (spec §Problem Statement, ADR 0011 rule 1): `escalate_fixes` escalate
 a PR whose fix attempts are exhausted, creating/reusing the worktree and calling
 `_escalate` with `EscalationReason.ci_failed` and commit message
 `Escalate <NN>: fix attempts exhausted`.
+
+Ticket 72 (ADR 0011 rule 3, ADR 0007 rules 4 and 5, ADR 0010 rule 2): the
+pre-push gate. agy's own local gate is trusted by nobody, so `_publish` runs the
+repo's `gate_commands` (every one) in the worktree, inside the repo environment,
+before the box opens a PR and before every push to a branch that already has an
+open PR. Red means no PR and no push; the run is treated like a failed run (one
+resume against `max_resumes_per_ticket`) and the next prompt carries the full
+failure report. Pushes to a branch with no PR (the checkpoint timer, an unfinished
+ticket) stay ungated, since nothing can merge them. Gate output goes to the box
+log only, never to a GitHub request body.
 """
 from __future__ import annotations
 
@@ -97,7 +107,7 @@ from ticket_engine.dispatch import (
     assemble_escalation_brief,
     insert_claimed_by,
 )
-from ticket_engine.gate import run_gate
+from ticket_engine.gate import GateResult, format_gate_report, run_gate
 from ticket_engine.github import GitHubClient
 from ticket_engine.local_config import LocalRepoEntry, LocalWorkerConfig
 from ticket_engine.parser import Ticket, TicketParser
@@ -327,6 +337,10 @@ class LocalWorker:
         stop_event = threading.Event()
 
         def do_push() -> None:
+            # The timer never pushes to a branch with an open PR: that push
+            # would skip the pre-push gate (ticket 72).
+            if self.github_client.find_open_pr(entry.repo, ticket_branch) is not None:
+                return
             self._push_if_claimed(
                 entry.repo, claim_branch, ticket_path, worktree_path, ticket_branch, push_env
             )
@@ -346,10 +360,12 @@ class LocalWorker:
         finally:
             stop_event.set()
             pusher_thread.join(timeout=5)
-            do_push()  # Always push after every run, whatever the outcome.
 
-        self._maybe_open_pull_request(
-            entry, ticket, ticket_path, worktree_path, ticket_branch, effort
+        # Always publish after every run, whatever the outcome (gated when the
+        # ticket is done or a PR is open).
+        gate_result = self._publish(
+            entry, ticket, effort, ticket_path, ticket_branch, claim_branch,
+            worktree_path, push_env,
         )
 
         result = self._resolve_outcome(
@@ -363,6 +379,7 @@ class LocalWorker:
             push_env=push_env,
             result=result,
             box_mode=box_mode,
+            gate_result=gate_result,
         )
 
         if result is None:
@@ -422,14 +439,11 @@ class LocalWorker:
 
         repo_path = pathlib.Path(entry.path)
         cfg = load_repo_config(repo_path) if repo_path.is_dir() else RepoConfig()
-        gate_env = self._env_for(entry)
-        if cfg.test_env:
-            gate_env = {
-                **(gate_env if gate_env is not None else os.environ),
-                **cfg.test_env,
-            }
         gate = run_gate(
-            list(cfg.gate_commands), worktree_path, gate_env, self._command_runner
+            list(cfg.gate_commands),
+            worktree_path,
+            self._gate_env(entry, cfg),
+            self._command_runner,
         )
         for command_result in gate.results:
             if not command_result.passed:
@@ -443,8 +457,9 @@ class LocalWorker:
         )
 
         push_env = _make_push_env(self.config.github_token) if self.config.github_token else None
-        self._push_if_claimed(
-            entry.repo, claim_branch, ticket_path, worktree_path, ticket_branch, push_env
+        gate_result = self._publish(
+            entry, ticket, effort, ticket_path, ticket_branch, claim_branch,
+            worktree_path, push_env,
         )
         # A fix run is resumed, answered, paused or escalated like any other run
         # (ticket 71); before this a failed or timed-out fix run was dropped.
@@ -460,6 +475,7 @@ class LocalWorker:
             result=result,
             box_mode=True,
             resume_prompt=fix_prompt,
+            gate_result=gate_result,
         )
 
     def escalate_fixes(
@@ -515,6 +531,7 @@ class LocalWorker:
         result: object,
         box_mode: bool = False,
         resume_prompt: str | None = None,
+        gate_result: GateResult | None = None,
     ) -> object | None:
         """Classify each agy outcome and decide whether to resume, answer, or escalate.
 
@@ -533,6 +550,10 @@ class LocalWorker:
         docstring). The claim and worktree are left exactly as they are —
         the box-worker loop resumes them on a later tick via `ResumeClaim`.
 
+        Ticket 72: a success whose pre-push gate (`gate_result`) is red is treated
+        like a `failed` run: one resume against `max_resumes_per_ticket`, and the
+        next prompt is the previous prompt plus the gate report.
+
         Returns the final `AgyResult` (success or exhausted-but-not-escalated),
         or `None` once escalation or a lost claim has already settled the run.
         """
@@ -543,7 +564,7 @@ class LocalWorker:
         resumes = 0
         auto_replies = 0
 
-        while not result.success:
+        while not result.success or (gate_result is not None and not gate_result.passed):
             if result.quota_error:
                 if box_mode:
                     return result
@@ -564,12 +585,12 @@ class LocalWorker:
                     wait_secs,
                 )
                 self._sleep(wait_secs)
-                result = self._resume_from_checkpoint(entry, ticket_path, worktree_path)
-                self._push_if_claimed(
-                    entry.repo, claim_branch, ticket_path, worktree_path, ticket_branch, push_env
+                result = self._resume_from_checkpoint(
+                    entry, ticket_path, worktree_path, resume_prompt, _gate_suffix(gate_result)
                 )
-                self._maybe_open_pull_request(
-                    entry, ticket, ticket_path, worktree_path, ticket_branch, effort
+                gate_result = self._publish(
+                    entry, ticket, effort, ticket_path, ticket_branch, claim_branch,
+                    worktree_path, push_env,
                 )
                 continue
 
@@ -582,11 +603,9 @@ class LocalWorker:
                     result = self._send_auto_reply(
                         entry, ticket_path, worktree_path, resume_prompt
                     )
-                    self._push_if_claimed(
-                        entry.repo, claim_branch, ticket_path, worktree_path, ticket_branch, push_env
-                    )
-                    self._maybe_open_pull_request(
-                        entry, ticket, ticket_path, worktree_path, ticket_branch, effort
+                    gate_result = self._publish(
+                        entry, ticket, effort, ticket_path, ticket_branch, claim_branch,
+                        worktree_path, push_env,
                     )
                     continue
 
@@ -618,13 +637,11 @@ class LocalWorker:
                 return None
 
             result = self._resume_from_checkpoint(
-                entry, ticket_path, worktree_path, resume_prompt
+                entry, ticket_path, worktree_path, resume_prompt, _gate_suffix(gate_result)
             )
-            self._push_if_claimed(
-                entry.repo, claim_branch, ticket_path, worktree_path, ticket_branch, push_env
-            )
-            self._maybe_open_pull_request(
-                entry, ticket, ticket_path, worktree_path, ticket_branch, effort
+            gate_result = self._publish(
+                entry, ticket, effort, ticket_path, ticket_branch, claim_branch,
+                worktree_path, push_env,
             )
 
         return result
@@ -635,22 +652,24 @@ class LocalWorker:
         ticket_path: str,
         worktree_path: str,
         resume_prompt: str | None = None,
+        suffix: str = "",
     ) -> object:
         """Start a fresh agy session that includes the ticket's checkpoint progress note.
 
         With `resume_prompt` (a fix run, ticket 71) that prompt is used as is: a
         fix run resumes with the fix prompt, never the implement-from-scratch one.
+        `suffix` (ticket 72) is the pre-push gate report, appended to either prompt.
         """
         if resume_prompt is not None:
             return self._start_with_fallback(
-                resume_prompt, cwd=worktree_path, env=self._env_for(entry)
+                resume_prompt + suffix, cwd=worktree_path, env=self._env_for(entry)
             )
         progress_note = self._read_progress_note(worktree_path, ticket_path)
         checkpoint_prompt = _assemble_checkpoint_prompt(
             self.skill_text, entry.repo, ticket_path, progress_note
         )
         return self._start_with_fallback(
-            checkpoint_prompt, cwd=worktree_path, env=self._env_for(entry)
+            checkpoint_prompt + suffix, cwd=worktree_path, env=self._env_for(entry)
         )
 
     def _send_auto_reply(
@@ -1013,6 +1032,71 @@ class LocalWorker:
             return
         self._push_branch(worktree_path, ticket_branch, push_env)
 
+    def _gate_env(self, entry: LocalRepoEntry, cfg: RepoConfig) -> dict[str, str] | None:
+        """The repo environment plus the repo's `test_env`, for gate commands."""
+        gate_env = self._env_for(entry)
+        if cfg.test_env:
+            gate_env = {
+                **(gate_env if gate_env is not None else os.environ),
+                **cfg.test_env,
+            }
+        return gate_env
+
+    def _publish(
+        self,
+        entry: LocalRepoEntry,
+        ticket: Ticket,
+        effort: str,
+        ticket_path: str,
+        ticket_branch: str,
+        claim_branch: str,
+        worktree_path: str,
+        push_env: dict[str, str] | None,
+    ) -> GateResult | None:
+        """Push (and open the PR) behind the pre-push gate (ticket 72, ADR 0011 rule 3).
+
+        A ticket that is not `done` on a branch with no open PR cannot be merged,
+        so it is pushed ungated and `None` is returned. Otherwise the repo's
+        `gate_commands` run in the worktree; red pushes and opens nothing and the
+        result is returned, green pushes, opens the PR if none exists, and returns
+        the result.
+        """
+        done = False
+        try:
+            content = self._read_ticket(pathlib.Path(worktree_path) / ticket_path)
+            done = TicketParser().parse_text(content).status == "done"
+        except OSError:
+            pass
+        if not done and self.github_client.find_open_pr(entry.repo, ticket_branch) is None:
+            self._push_if_claimed(
+                entry.repo, claim_branch, ticket_path, worktree_path, ticket_branch, push_env
+            )
+            return None
+
+        repo_path = pathlib.Path(entry.path)
+        cfg = load_repo_config(repo_path) if repo_path.is_dir() else RepoConfig()
+        gate = run_gate(
+            list(cfg.gate_commands),
+            worktree_path,
+            self._gate_env(entry, cfg),
+            self._command_runner,
+        )
+        if not gate.passed:
+            logger.warning(
+                "pre-push gate red for %s #%02d\n%s",
+                entry.repo,
+                ticket.number,
+                format_gate_report(gate)[-4000:],
+            )
+            return gate
+        self._push_if_claimed(
+            entry.repo, claim_branch, ticket_path, worktree_path, ticket_branch, push_env
+        )
+        self._maybe_open_pull_request(
+            entry, ticket, ticket_path, worktree_path, ticket_branch, effort
+        )
+        return gate
+
     def _default_branch(self, entry: LocalRepoEntry) -> str:
         """The repo's configured default branch, for a PR's base."""
         repo_path = pathlib.Path(entry.path)
@@ -1179,6 +1263,13 @@ def _default_read_ticket(path: str | pathlib.Path) -> str:
 
 def _default_write_ticket(path: str | pathlib.Path, content: str) -> None:
     pathlib.Path(path).write_text(content, encoding="utf-8")
+
+
+def _gate_suffix(gate_result: GateResult | None) -> str:
+    """The prompt addition for a red pre-push gate; empty when green or not run."""
+    if gate_result is None or gate_result.passed:
+        return ""
+    return "\n\n## PRE-PUSH GATE FAILED \u2014 FIX IT\n" + format_gate_report(gate_result)
 
 
 def _ticket_path_str(ticket: Ticket, effort: str) -> str:

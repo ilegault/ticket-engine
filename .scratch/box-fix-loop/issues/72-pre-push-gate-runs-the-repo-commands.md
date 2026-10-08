@@ -1,6 +1,6 @@
 # 72: Pre-push gate: the box runs the repo's gate commands before opening or updating a PR
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Runner:** any
 
@@ -52,11 +52,11 @@ fakes in `tests/test_local_worker.py`, the fake command runner added in ticket 7
 and a real ticket file in the worktree under `tmp_path` whose `Status:` the fake
 agy run sets to `done`.
 
-- [ ] **Red gate, no PR.** Test `test_red_gate_opens_no_pull_request`: agy succeeds and marks the ticket done; `ruff check .` fails; asserts `create_pull_request` was never called and no `git push` ran after the run.
-- [ ] **Red gate, no push to an open PR.** Test `test_red_gate_does_not_push_to_a_branch_with_an_open_pr`: `find_open_pr` returns 125 and the gate is red; asserts no `git push`. Test `test_checkpoint_push_without_pr_is_ungated`: no open PR, ticket not done; asserts the push runs and the command runner was never called.
-- [ ] **agy goes back with every failure, and it counts.** Test `test_red_gate_sends_agy_back_with_every_failure_and_counts_a_resume`: two gate commands fail on the first run and pass on the second; asserts the second agy prompt contains `## PRE-PUSH GATE FAILED — FIX IT` and both commands' failing output, and the PR opens after the second run. Test `test_red_gate_every_run_escalates_when_resumes_run_out`: the gate stays red; asserts the resumes-exhausted escalation's five effects after `max_resumes_per_ticket` runs.
-- [ ] **Green gate changes nothing.** Test `test_green_gate_pushes_and_opens_the_pr`: asserts the push and `create_pull_request` happen exactly as before this ticket.
-- [ ] **Gate output stays local.** Test `test_gate_output_never_reaches_a_github_request_body`, copying `test_agy_failure_text_never_reaches_a_github_request_body` in `tests/test_box_worker.py`: a failing command's output carries a marker string; asserts no recorded GitHub call argument contains it.
+- [x] **Red gate, no PR.** Test `test_red_gate_opens_no_pull_request`: agy succeeds and marks the ticket done; `ruff check .` fails; asserts `create_pull_request` was never called and no `git push` ran after the run.
+- [x] **Red gate, no push to an open PR.** Test `test_red_gate_does_not_push_to_a_branch_with_an_open_pr`: `find_open_pr` returns 125 and the gate is red; asserts no `git push`. Test `test_checkpoint_push_without_pr_is_ungated`: no open PR, ticket not done; asserts the push runs and the command runner was never called.
+- [x] **agy goes back with every failure, and it counts.** Test `test_red_gate_sends_agy_back_with_every_failure_and_counts_a_resume`: two gate commands fail on the first run and pass on the second; asserts the second agy prompt contains `## PRE-PUSH GATE FAILED — FIX IT` and both commands' failing output, and the PR opens after the second run. Test `test_red_gate_every_run_escalates_when_resumes_run_out`: the gate stays red; asserts the resumes-exhausted escalation's five effects after `max_resumes_per_ticket` runs.
+- [x] **Green gate changes nothing.** Test `test_green_gate_pushes_and_opens_the_pr`: asserts the push and `create_pull_request` happen exactly as before this ticket.
+- [x] **Gate output stays local.** Test `test_gate_output_never_reaches_a_github_request_body`, copying `test_agy_failure_text_never_reaches_a_github_request_body` in `tests/test_box_worker.py`: a failing command's output carries a marker string; asserts no recorded GitHub call argument contains it.
 
 ## Gate
 
@@ -67,3 +67,5 @@ In CI order (`.github/workflows/ci.yml`):
     pytest -q
 
 ## Comments
+
+2026-10-07: Added `LocalWorker._publish` (and `_gate_env`, `_gate_suffix`) in `local_worker.py`. `run_one`, `fix_ci` and every resume/quota/auto-reply branch of `_resolve_outcome` now publish through it; the checkpoint timer skips branches with an open PR. A success with a red gate is handled as a failed run (counts a resume, prompt gets `## PRE-PUSH GATE FAILED — FIX IT` plus the gate report). Tests in `tests/test_local_worker.py` (ticket 72 section) cover each criterion by the named test. Seven older tests that reach a done ticket now pass a green fake `command_runner` (setup only, no assertion changed), since the gate otherwise runs the real commands.
