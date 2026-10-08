@@ -22,6 +22,8 @@ and CI from GitHub on the very next tick:
   next retry time, and whether the weekly-cap alert is already open. This is
   `BoxCore`'s own timeline (`after_quota_error`/`after_success`); the loop
   only persists it across restarts.
+- a fix-attempt ledger (`fix_attempts.json`), which counts fix attempts per
+  PR and records whether the PR was escalated (Ticket 70, ADR 0011).
 
 `BoxCore` was built (ticket 22) before login state existed anywhere in the
 spec's seams, so it has no rule for an `auth` outcome. Rather than reopen a
@@ -62,7 +64,11 @@ can be seen:
   missing, unreadable or repos-containing config makes box-worker refuse to
   start immediately with exit code 2;
 - Ticket 60 (ADR 0010 rule 2): `build_loop` wires `LocalWorker`'s `env_for` to
-  each repo's virtual environment under `config.envs_dir`.
+  each repo's virtual environment under `config.envs_dir`;
+- Ticket 70 (ADR 0011 rule 1): fix attempts are counted in `fix_attempts.json`;
+  `_do_fix_ci` increments before running `fix_ci` and decrements if quota;
+  `EscalateFixes` calls `LocalWorker.escalate_fixes` and marks the PR
+  `escalated`.
 """
 from __future__ import annotations
 
@@ -85,6 +91,7 @@ from ticket_engine.box_core import (
     BoxWorld,
     ClaimTicket,
     CloseAlert,
+    EscalateFixes,
     FixCI,
     RaiseAlert,
     ResumeClaim,
@@ -119,6 +126,7 @@ logger = logging.getLogger(__name__)
 _LEDGER_FILENAME = "box_ledger.json"
 _PAUSE_FILENAME = "box_pause.json"
 _BOX_REPOS_FILENAME = "box_repos.json"
+_FIX_ATTEMPTS_FILENAME = "fix_attempts.json"
 _LEDGER_WINDOW_HOURS = 24
 _AUTH_RETRY_HOURS = 1
 
@@ -168,7 +176,6 @@ class BoxLoop:
             ticket_loader if ticket_loader is not None else self._default_ticket_loader
         )
         self._last_status_write: datetime.datetime | None = None
-        self._fix_attempts: dict[tuple[str, int], int] = {}
         self._auth_first_failure: datetime.datetime | None = None
         self._auth_retry_at: datetime.datetime | None = None
 
@@ -357,6 +364,7 @@ class BoxLoop:
     ) -> list[BoxPR]:
         prs: list[BoxPR] = []
         tickets_by_number = {t.number: t for t in tickets}
+        fix_attempts_ledger = self._read_fix_attempts()
         for number, claimant in claims.items():
             if claimant != "box":
                 continue
@@ -370,13 +378,17 @@ class BoxLoop:
                 continue
             checks = self.github_client.list_check_runs(entry.repo, ticket_branch)
             ci_failed = any(conclusion == "failure" for _, conclusion in checks)
-            fix_attempts = self._fix_attempts.get((entry.repo, number), 0)
+            key = f"{entry.repo}#{pr_number}"
+            entry_data = fix_attempts_ledger.get(key, {})
+            fix_attempts = int(entry_data.get("attempts", 0))
+            escalated = bool(entry_data.get("escalated", False))
             prs.append(
                 BoxPR(
                     ticket_number=number,
                     pr_number=pr_number,
                     ci_failed=ci_failed,
                     fix_attempts=fix_attempts,
+                    escalated=escalated,
                 )
             )
         return prs
@@ -395,6 +407,8 @@ class BoxLoop:
             self._sleep(max((step.until - world.now).total_seconds(), 0.0))
         elif isinstance(step, FixCI):
             self._do_fix_ci(world, step)
+        elif isinstance(step, EscalateFixes):
+            self._do_escalate_fixes(world, step)
         elif isinstance(step, ResumeClaim):
             self._do_resume(world, step)
         elif isinstance(step, ClaimTicket):
@@ -456,10 +470,17 @@ class BoxLoop:
     def _do_fix_ci(self, world: BoxWorld, step: FixCI) -> None:
         entry = self._entry_for(step.repo)
         ticket = self._ticket_for(world, step.repo, step.ticket_number)
-        key = (step.repo, step.ticket_number)
-        self._fix_attempts[key] = self._fix_attempts.get(key, 0) + 1
+        self._record_fix_attempt(step.repo, step.pr_number, delta=1)
         result = self.worker.fix_ci(entry, ticket, step.pr_number)
+        if getattr(result, "outcome", None) == "quota":
+            self._record_fix_attempt(step.repo, step.pr_number, delta=-1)
         self._handle_run_result(result, world)
+
+    def _do_escalate_fixes(self, world: BoxWorld, step: EscalateFixes) -> None:
+        entry = self._entry_for(step.repo)
+        ticket = self._ticket_for(world, step.repo, step.ticket_number)
+        self.worker.escalate_fixes(entry, ticket, step.pr_number)
+        self._mark_pr_escalated(step.repo, step.pr_number)
 
     def _handle_run_result(self, result: object, world: BoxWorld) -> None:
         """React to the outcome of a `run_one`/`fix_ci` call.
@@ -663,6 +684,44 @@ class BoxLoop:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data), encoding="utf-8")
 
+    def _fix_attempts_path(self) -> pathlib.Path:
+        return pathlib.Path(self.config.logs_dir) / _FIX_ATTEMPTS_FILENAME
+
+    def _read_fix_attempts(self) -> dict[str, dict[str, object]]:
+        path = self._fix_attempts_path()
+        if not path.is_file():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+            return {}
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Failed to read fix attempts ledger %s: %s", path, exc)
+            return {}
+
+    def _write_fix_attempts(self, data: dict[str, dict[str, object]]) -> None:
+        path = self._fix_attempts_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+    def _record_fix_attempt(self, repo: str, pr_number: int, delta: int = 1) -> None:
+        data = self._read_fix_attempts()
+        key = f"{repo}#{pr_number}"
+        current = data.get(key, {})
+        attempts = max(0, int(current.get("attempts", 0)) + delta)
+        escalated = bool(current.get("escalated", False))
+        data[key] = {"attempts": attempts, "escalated": escalated}
+        self._write_fix_attempts(data)
+
+    def _mark_pr_escalated(self, repo: str, pr_number: int) -> None:
+        data = self._read_fix_attempts()
+        key = f"{repo}#{pr_number}"
+        current = data.get(key, {})
+        attempts = int(current.get("attempts", 0))
+        data[key] = {"attempts": attempts, "escalated": True}
+        self._write_fix_attempts(data)
+
 
 # ------------------------------------------------------------------
 # Module-level helpers
@@ -732,6 +791,8 @@ def _describe_step(step: object) -> str:
         return f"resume {step.repo} #{step.ticket_number:02d}"
     if isinstance(step, FixCI):
         return f"fix CI {step.repo} #{step.ticket_number:02d} (PR {step.pr_number})"
+    if isinstance(step, EscalateFixes):
+        return f"escalate fixes {step.repo} #{step.ticket_number:02d} (PR {step.pr_number})"
     if isinstance(step, RaiseAlert):
         return f"raise alert {step.kind.value}"
     if isinstance(step, CloseAlert):

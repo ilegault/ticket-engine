@@ -21,6 +21,7 @@ from ticket_engine.box_core import (
     BoxWorld,
     ClaimTicket,
     CloseAlert,
+    EscalateFixes,
     FixCI,
     RaiseAlert,
     ResumeClaim,
@@ -721,3 +722,78 @@ def test_purity() -> None:
                 # check as word/token in import line
                 parts = line_clean.replace(",", " ").split()
                 assert bad not in parts, f"Forbidden import '{bad}' found in: {line_clean}"
+
+
+# ---------------------------------------------------------------------------
+# Ticket 70: Fix attempts run out into escalation; escalated PR is left alone
+# ---------------------------------------------------------------------------
+
+
+def test_fix_attempts_at_budget_escalate_instead_of_fixing() -> None:
+    now = datetime.datetime(2026, 9, 26, 12, 10, tzinfo=datetime.UTC)
+    t = ticket(1, "ready-for-agent")
+    pr = BoxPR(ticket_number=1, pr_number=101, ci_failed=True, fix_attempts=3)
+    cfg = RepoConfig(max_fix_attempts=3)
+    repo = BoxRepo(
+        repo="org/repo-a",
+        tickets=[t],
+        config=cfg,
+        paused=False,
+        claims={1: "box"},
+        open_prs=[pr],
+    )
+    world = make_world(
+        now=now,
+        last_status_write=now - datetime.timedelta(minutes=10),
+        repos=[repo],
+    )
+    step = BoxCore.next_step(world)
+    assert step == EscalateFixes(repo="org/repo-a", ticket_number=1, pr_number=101)
+
+
+def test_escalate_fixes_beats_claiming_a_new_ticket() -> None:
+    now = datetime.datetime(2026, 9, 26, 12, 10, tzinfo=datetime.UTC)
+    t1 = ticket(1, "in-progress")
+    t2 = ticket(2, "ready-for-agent")
+    pr = BoxPR(ticket_number=1, pr_number=101, ci_failed=True, fix_attempts=3)
+    cfg = RepoConfig(max_fix_attempts=3, daily_cap=5)
+    repo = BoxRepo(
+        repo="org/repo-a",
+        tickets=[t1, t2],
+        config=cfg,
+        paused=False,
+        claims={1: "box"},
+        open_prs=[pr],
+    )
+    world = make_world(
+        now=now,
+        last_status_write=now - datetime.timedelta(minutes=10),
+        repos=[repo],
+        starts_24h={"org/repo-a": 0},
+        concurrency=1,
+    )
+    step = BoxCore.next_step(world)
+    assert step == EscalateFixes(repo="org/repo-a", ticket_number=1, pr_number=101)
+
+
+def test_escalated_pr_gets_neither_fix_nor_escalation() -> None:
+    now = datetime.datetime(2026, 9, 26, 12, 10, tzinfo=datetime.UTC)
+    t = ticket(1, "done")
+    pr = BoxPR(ticket_number=1, pr_number=101, ci_failed=True, fix_attempts=3, escalated=True)
+    cfg = RepoConfig(max_fix_attempts=3)
+    repo = BoxRepo(
+        repo="org/repo-a",
+        tickets=[t],
+        config=cfg,
+        paused=False,
+        claims={1: "box"},
+        open_prs=[pr],
+    )
+    world = make_world(
+        now=now,
+        last_status_write=now - datetime.timedelta(minutes=10),
+        repos=[repo],
+    )
+    step = BoxCore.next_step(world)
+    assert not isinstance(step, (FixCI, EscalateFixes))
+    assert step == Wait(until=now + datetime.timedelta(minutes=world.poll_interval_minutes))

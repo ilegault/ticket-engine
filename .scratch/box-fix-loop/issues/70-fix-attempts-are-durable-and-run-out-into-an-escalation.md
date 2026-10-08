@@ -1,6 +1,6 @@
 # 70: Fix attempts are counted durably, and running out escalates the ticket
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Runner:** any
 
@@ -53,11 +53,11 @@ are pure (`make_world` and `ticket` in `tests/test_box_core.py`). Box loop tests
 worker tests use the fakes of `tests/test_local_worker.py`. The ledger file is real,
 under `tmp_path`.
 
-- [ ] **Out of attempts escalates.** Tests `test_fix_attempts_at_budget_escalate_instead_of_fixing` (a `BoxPR` with `ci_failed=True, fix_attempts=3`, `max_fix_attempts=3` → `EscalateFixes` for that repo, ticket and PR) and `test_escalate_fixes_beats_claiming_a_new_ticket` (same world plus a claimable frontier ticket → still `EscalateFixes`).
-- [ ] **An escalated PR is left alone.** Test `test_escalated_pr_gets_neither_fix_nor_escalation`: `BoxPR(ci_failed=True, fix_attempts=3, escalated=True)` → the step is whatever rules 4–6 give, never `FixCI` or `EscalateFixes`.
-- [ ] **The count survives a restart.** Test `test_fix_attempt_count_survives_a_new_loop`: a red box PR; two ticks on one `make_loop`, then a second `make_loop` on the same `logs_dir` ticks twice more. Asserts `fix_ci` was called exactly 3 times in total and the fourth tick called `escalate_fixes` once.
-- [ ] **Quota does not count.** Test `test_quota_fix_run_does_not_count_as_an_attempt`: `FakeWorker.fix_ci_result` has `outcome="quota"` on the first call and `"success"` after; asserts the ledger's `attempts` for that PR is 1 after two fix runs, not 2.
-- [ ] **The escalation has all five effects.** Test `test_escalate_fixes_has_all_five_effects_and_says_fix_attempts_exhausted`, copied from `test_resumes_exhausted_escalates_with_all_five_effects`: brief written into the worktree ticket, commit message `Escalate 07: fix attempts exhausted`, push, `convert_pr_to_draft` on the open PR, label `engine:escalated`, and one escalation issue whose body carries reason `ci_failed`.
+- [x] **Out of attempts escalates.** Tests `test_fix_attempts_at_budget_escalate_instead_of_fixing` (a `BoxPR` with `ci_failed=True, fix_attempts=3`, `max_fix_attempts=3` → `EscalateFixes` for that repo, ticket and PR) and `test_escalate_fixes_beats_claiming_a_new_ticket` (same world plus a claimable frontier ticket → still `EscalateFixes`).
+- [x] **An escalated PR is left alone.** Test `test_escalated_pr_gets_neither_fix_nor_escalation`: `BoxPR(ci_failed=True, fix_attempts=3, escalated=True)` → the step is whatever rules 4–6 give, never `FixCI` or `EscalateFixes`.
+- [x] **The count survives a restart.** Test `test_fix_attempt_count_survives_a_new_loop`: a red box PR; two ticks on one `make_loop`, then a second `make_loop` on the same `logs_dir` ticks twice more. Asserts `fix_ci` was called exactly 3 times in total and the fourth tick called `escalate_fixes` once.
+- [x] **Quota does not count.** Test `test_quota_fix_run_does_not_count_as_an_attempt`: `FakeWorker.fix_ci_result` has `outcome="quota"` on the first call and `"success"` after; asserts the ledger's `attempts` for that PR is 1 after two fix runs, not 2.
+- [x] **The escalation has all five effects.** Test `test_escalate_fixes_has_all_five_effects_and_says_fix_attempts_exhausted`, copied from `test_resumes_exhausted_escalates_with_all_five_effects`: brief written into the worktree ticket, commit message `Escalate 07: fix attempts exhausted`, push, `convert_pr_to_draft` on the open PR, label `engine:escalated`, and one escalation issue whose body carries reason `ci_failed`.
 
 ## Gate
 
@@ -68,3 +68,13 @@ In CI order (`.github/workflows/ci.yml`):
     pytest -q
 
 ## Comments
+
+### 2026-10-07
+Implemented ticket 70:
+- `BoxPR` gains `escalated: bool = False`; `EscalateFixes` box step added to `box_core.py`.
+- `BoxCore._next_step` rule 3 now chooses `FixCI` while `fix_attempts < max_fix_attempts`, else `EscalateFixes` for un-escalated box-claimed red PRs. Escalated PRs get neither.
+- Replaced in-memory `_fix_attempts` with durable `fix_attempts.json` in `logs_dir`, keyed `"<owner/repo>#<pr_number>"`.
+- `BoxLoop._do_fix_ci` increments attempts before run and reverts if outcome is quota.
+- Added `LocalWorker.escalate_fixes(entry, ticket, pr_number)` which creates/reuses worktree, calls `_escalate` with `EscalationReason.ci_failed` (commit message `Escalate <NN>: fix attempts exhausted`).
+- `BoxLoop._do_escalate_fixes` executes `escalate_fixes` and marks PR `escalated` in ledger.
+- All criteria verified by named tests in `tests/test_box_core.py`, `tests/test_box_worker.py`, and `tests/test_local_worker.py`. Suite passes 100%.

@@ -1327,6 +1327,51 @@ def test_resumes_exhausted_converts_existing_open_pr_to_draft():
     )
 
 
+def test_escalate_fixes_has_all_five_effects_and_says_fix_attempts_exhausted():
+    """LocalWorker.escalate_fixes has all five effects: brief written, commit
+    saying fix attempts exhausted, push, draft conversion on open PR, label, and
+    one escalation issue carrying reason ci_failed (ticket 70)."""
+    git_calls = []
+    written: dict[str, str] = {}
+
+    ticket = make_ticket(7, effort="phase-1")
+    mock_github = make_fake_github()
+    mock_github.find_open_pr.return_value = 77
+    mock_github.find_open_issue.return_value = None
+
+    worker = LocalWorker(
+        config=make_config(),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}')),
+        git_runner=_make_git_runner(git_calls),
+        sleep_fn=lambda s: None,
+        read_ticket_fn=lambda p: "# 07: Test\n**Status:** in-progress\n\n## Comments\n",
+        write_ticket_fn=lambda p, c: written.__setitem__("content", c),
+    )
+    worker.escalate_fixes(make_repo_entry(repo="owner/repo"), ticket, pr_number=77)
+
+    assert "**Status:** blocked" in written["content"]
+    assert "## Escalation —" in written["content"]
+
+    commit_calls = [c for c in git_calls if "commit" in c and "-m" in c]
+    assert commit_calls, "escalation commit must happen"
+    msg_idx = commit_calls[0].index("-m")
+    assert commit_calls[0][msg_idx + 1] == "Escalate 07: fix attempts exhausted"
+
+    push_calls = [c for c in git_calls if "push" in c]
+    assert push_calls, "escalation branch must be pushed"
+
+    mock_github.convert_pr_to_draft.assert_called_once_with("owner/repo", 77)
+
+    mock_github.add_issue_labels.assert_called_once_with(
+        "owner/repo", 77, ["engine:escalated"]
+    )
+    mock_github.create_issue.assert_called_once()
+    assert mock_github.create_issue.call_args.args[0] == "owner/repo"
+    assert "ci_failed" in mock_github.create_issue.call_args.args[2]
+
+
+
 # ---------------------------------------------------------------------------
 # Ticket 30 AC4: one escalation issue per ticket
 # ---------------------------------------------------------------------------

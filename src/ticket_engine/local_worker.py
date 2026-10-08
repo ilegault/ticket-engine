@@ -67,6 +67,11 @@ a quota pause or a restart leaves behind.
 Ticket 60 (ADR 0010 rule 2): `LocalWorker` gains `env_for` to query each repo's
 environment and pass it to both `agy_driver` and `sonnet_driver` via
 `_start_with_fallback`.
+
+Ticket 70 (spec §Problem Statement, ADR 0011 rule 1): `escalate_fixes` escalates
+a PR whose fix attempts are exhausted, creating/reusing the worktree and calling
+`_escalate` with `EscalationReason.ci_failed` and commit message
+`Escalate <NN>: fix attempts exhausted`.
 """
 from __future__ import annotations
 
@@ -418,6 +423,46 @@ class LocalWorker:
         )
         return result
 
+    def escalate_fixes(
+        self, entry: LocalRepoEntry, ticket: Ticket, pr_number: int
+    ) -> None:
+        """Escalate a ticket whose fix attempts on an open PR have run out.
+
+        Makes (or reuses) the worktree for the ticket branch, then delegates to
+        `_escalate` with EscalationReason.ci_failed (Ticket 70, ADR 0011).
+        """
+        effort = ticket.effort or "phase-1"
+        ticket_branch = f"ticket/{effort}-{ticket.number:02d}-{ticket.slug}"
+        ticket_path = _ticket_path_str(ticket, effort)
+        worktree_path = self._worktree_path(entry, ticket)
+        claim_branch = f"claim/{effort}/{ticket.number:02d}"
+
+        logger.info(
+            "Escalating fixes for ticket %02d PR #%s", ticket.number, pr_number
+        )
+        try:
+            self._create_worktree(entry.path, worktree_path, ticket_branch, claim_branch)
+        except WorktreeError as exc:
+            logger.error(
+                "Escalate fixes for ticket %02d not started: could not create worktree %s: %s",
+                ticket.number,
+                worktree_path,
+                exc,
+            )
+            return
+
+        push_env = _make_push_env(self.config.github_token) if self.config.github_token else None
+        self._escalate(
+            entry=entry,
+            ticket=ticket,
+            effort=effort,
+            ticket_path=ticket_path,
+            ticket_branch=ticket_branch,
+            worktree_path=worktree_path,
+            push_env=push_env,
+            reason=EscalationReason.ci_failed,
+        )
+
     def _resolve_outcome(
         self,
         entry: LocalRepoEntry,
@@ -590,7 +635,12 @@ class LocalWorker:
         updated = apply_escalation_to_ticket_text(content, brief)
         self._write_ticket(full_path, updated)
 
-        reason_text = "resumes exhausted" if reason == EscalationReason.resumes_exhausted else "kept asking"
+        if reason == EscalationReason.resumes_exhausted:
+            reason_text = "resumes exhausted"
+        elif reason == EscalationReason.ci_failed:
+            reason_text = "fix attempts exhausted"
+        else:
+            reason_text = "kept asking"
         commit_message = f"Escalate {ticket.number:02d}: {reason_text}"
         for step, git_args in (
             ("add", ["git", "-C", worktree_path, "add", ticket_path]),

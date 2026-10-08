@@ -14,6 +14,10 @@ Ticket 58 (ADR 0009 rule 4; ADR 0010 rules 3, 6, 7): delisted repos retain
 their unfinished work (rules 3, 4) but receive no new claims (rule 5 skips
 `accepting_new=False`), and `developer_paused` pauses new claims while
 permitting in-flight work to resume.
+
+Ticket 70 (spec §Problem Statement, ADR 0011 rule 1): fix attempts are counted
+durably in `fix_attempts.json`, and running out escalates the ticket via
+`EscalateFixes` rather than stalling.
 """
 from __future__ import annotations
 
@@ -34,6 +38,7 @@ __all__ = [
     "BoxWorld",
     "ClaimTicket",
     "CloseAlert",
+    "EscalateFixes",
     "FixCI",
     "RaiseAlert",
     "ResumeClaim",
@@ -50,6 +55,7 @@ class BoxPR:
     pr_number: int
     ci_failed: bool
     fix_attempts: int
+    escalated: bool = False
 
 
 @dataclass(frozen=True)
@@ -106,6 +112,15 @@ class FixCI:
 
 
 @dataclass(frozen=True)
+class EscalateFixes:
+    """Action to escalate a box PR whose fix attempts are exhausted."""
+
+    repo: str
+    ticket_number: int
+    pr_number: int
+
+
+@dataclass(frozen=True)
 class ResumeClaim:
     """Action to resume working on an unfinished claimed ticket."""
 
@@ -139,6 +154,7 @@ type BoxStep = (
     WriteStatus
     | Wait
     | FixCI
+    | EscalateFixes
     | ResumeClaim
     | ClaimTicket
     | RaiseAlert
@@ -165,15 +181,22 @@ class BoxCore:
         if world.quota_retry_at is not None and world.now < world.quota_retry_at:
             return Wait(until=world.quota_retry_at)
 
-        # Rule 3: FixCI for a box-claimed ticket whose open PR has ci_failed and fix_attempts < config.max_fix_attempts
+        # Rule 3: For a box-claimed ticket whose open PR has ci_failed and is not escalated,
+        # return FixCI while fix_attempts < config.max_fix_attempts, otherwise EscalateFixes.
         for repo in world.repos:
             for pr in sorted(repo.open_prs, key=lambda p: p.ticket_number):
                 if (
                     repo.claims.get(pr.ticket_number) == "box"
                     and pr.ci_failed
-                    and pr.fix_attempts < repo.config.max_fix_attempts
+                    and not pr.escalated
                 ):
-                    return FixCI(
+                    if pr.fix_attempts < repo.config.max_fix_attempts:
+                        return FixCI(
+                            repo=repo.repo,
+                            ticket_number=pr.ticket_number,
+                            pr_number=pr.pr_number,
+                        )
+                    return EscalateFixes(
                         repo=repo.repo,
                         ticket_number=pr.ticket_number,
                         pr_number=pr.pr_number,
