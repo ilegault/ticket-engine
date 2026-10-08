@@ -1,6 +1,6 @@
 # 71: A fix run gets the fix prompt with the real failing output, and goes through outcome handling
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
