@@ -91,11 +91,20 @@ Python runs the gate; the engine has no dependencies, so its source folder goes 
 `PYTHONPATH` rather than being installed into every repo environment. A `fail` blocks
 the push like a red command; a `hold` exits 0 and still pushes. It writes nothing
 to GitHub.
+
+Ticket 77 (ADR 0007 rule 4, ADR 0010 rule 5): the status issue shows what the box is
+doing while agy runs, not only between ticks. `LocalWorker.status_hook` is called with
+`implementing` before every implement or resume run, `pre-push gate red (resume n/m)`
+when the gate sends agy back, and `fixing CI (n/m)` at the start of `fix_ci` (n is the
+count in the fix-attempt ledger, which the box loop bumps before the run). The hook
+carries a fixed step word only, never output. Opening a PR also records it in
+`box_last_pr.json` in the logs folder, for the status issue's `Last PR` line.
 """
 from __future__ import annotations
 
 import base64
 import datetime
+import json
 import logging
 import os
 import pathlib
@@ -137,6 +146,10 @@ logger = logging.getLogger(__name__)
 
 class WorktreeError(RuntimeError):
     """`git worktree add` failed; the message carries git's output (ticket 47)."""
+
+# Local files in `LocalWorkerConfig.logs_dir` shared with the box loop (ticket 77).
+FIX_ATTEMPTS_FILENAME = "fix_attempts.json"
+LAST_PR_FILENAME = "box_last_pr.json"
 
 # Buffer added to the reset time before resuming (seconds).
 _QUOTA_RESET_BUFFER_SECS = 60
@@ -195,10 +208,14 @@ class LocalWorker:
         sonnet_driver: SonnetDriver | None = None,
         env_for: Callable[[LocalRepoEntry], dict[str, str] | None] | None = None,
         command_runner: CommandRunner = default_command_runner,
+        status_hook: Callable[[str], None] | None = None,
+        now_fn: Callable[[], datetime.datetime] | None = None,
     ) -> None:
         self.config = config
         self.github_client = github_client
         self.agy_driver = agy_driver
+        self.status_hook = status_hook
+        self._now = now_fn if now_fn is not None else _utcnow
         self.sonnet_driver = sonnet_driver
         self._command_runner = command_runner
         self._env_for: Callable[[LocalRepoEntry], dict[str, str] | None] = (
@@ -242,6 +259,37 @@ class LocalWorker:
             logger.info("agy out of quota; falling back to Sonnet for this attempt.")
             return self.sonnet_driver.start(prompt, cwd=cwd, **extra)
         return result
+
+    def _report_step(self, step: str) -> None:
+        """Tell the status hook what the box is doing now (ticket 77)."""
+        if self.status_hook is not None:
+            self.status_hook(step)
+
+    def _fix_attempt_count(self, repo: str, pr_number: int) -> int:
+        """Attempts recorded for this PR in the box loop's fix-attempt ledger."""
+        path = pathlib.Path(self.config.logs_dir) / FIX_ATTEMPTS_FILENAME
+        if not path.is_file():
+            return 0
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return int(data.get(f"{repo}#{pr_number}", {}).get("attempts", 0))
+        except (OSError, ValueError, AttributeError, TypeError) as exc:
+            logger.warning("Failed to read fix attempts ledger %s: %s", path, exc)
+            return 0
+
+    def _record_last_pr(self, repo: str, ticket_number: int, pr_number: int) -> None:
+        path = pathlib.Path(self.config.logs_dir) / LAST_PR_FILENAME
+        record = {
+            "repo": repo,
+            "ticket": ticket_number,
+            "pr_number": int(pr_number),
+            "opened_at": self._now().astimezone(datetime.UTC).isoformat(),
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(record), encoding="utf-8")
+        except OSError as exc:
+            logger.warning("Failed to record the last PR in %s: %s", path, exc)
 
     @property
     def skill_text(self) -> str:
@@ -363,6 +411,7 @@ class LocalWorker:
         pusher_thread.start()
 
         try:
+            self._report_step("implementing")
             prompt = assemble_prompt(self.skill_text, entry.repo, ticket_path)
             result = self._start_with_fallback(
                 prompt, cwd=worktree_path, env=self._env_for(entry)
@@ -429,6 +478,12 @@ class LocalWorker:
         claim_branch = f"claim/{effort}/{ticket.number:02d}"
 
         logger.info("Fixing CI for ticket %02d PR #%s", ticket.number, pr_number)
+        repo_path = pathlib.Path(entry.path)
+        cfg = load_repo_config(repo_path) if repo_path.is_dir() else RepoConfig()
+        self._report_step(
+            f"fixing CI ({self._fix_attempt_count(entry.repo, pr_number)}"
+            f"/{cfg.max_fix_attempts})"
+        )
         # A finished run removed its worktree, so make (or reuse) it before
         # agy runs in it (ticket 47).
         try:
@@ -447,8 +502,6 @@ class LocalWorker:
         ):
             failures.append((name, self.github_client.get_job_log_tail(entry.repo, job_id)))
 
-        repo_path = pathlib.Path(entry.path)
-        cfg = load_repo_config(repo_path) if repo_path.is_dir() else RepoConfig()
         gate = run_gate(
             list(cfg.gate_commands),
             worktree_path,
@@ -595,6 +648,7 @@ class LocalWorker:
                     wait_secs,
                 )
                 self._sleep(wait_secs)
+                self._report_resume_step(resume_prompt, gate_result)
                 result = self._resume_from_checkpoint(
                     entry, ticket_path, worktree_path, resume_prompt, _gate_suffix(gate_result)
                 )
@@ -610,6 +664,7 @@ class LocalWorker:
             if result.outcome == "waiting":
                 if auto_replies < cfg.max_auto_replies:
                     auto_replies += 1
+                    self._report_resume_step(resume_prompt, gate_result)
                     result = self._send_auto_reply(
                         entry, ticket_path, worktree_path, resume_prompt
                     )
@@ -646,6 +701,12 @@ class LocalWorker:
                 )
                 return None
 
+            if gate_result is not None and not gate_result.passed:
+                self._report_step(
+                    f"pre-push gate red (resume {resumes}/{self.config.max_resumes_per_ticket})"
+                )
+            else:
+                self._report_resume_step(resume_prompt, gate_result)
             result = self._resume_from_checkpoint(
                 entry, ticket_path, worktree_path, resume_prompt, _gate_suffix(gate_result)
             )
@@ -655,6 +716,17 @@ class LocalWorker:
             )
 
         return result
+
+    def _report_resume_step(
+        self, resume_prompt: str | None, gate_result: GateResult | None
+    ) -> None:
+        """Report `implementing` before a resume of an implement run.
+
+        A fix run (`resume_prompt` set) keeps its `fixing CI` step; a run sent back
+        by a red gate reports the gate step instead (ticket 77).
+        """
+        if resume_prompt is None and (gate_result is None or gate_result.passed):
+            self._report_step("implementing")
 
     def _resume_from_checkpoint(
         self,
@@ -1203,13 +1275,14 @@ class LocalWorker:
             f"Ticket file: {ticket_path}\nBranch: {ticket_branch}"
         )
         try:
-            self.github_client.create_pull_request(
+            pr_number = self.github_client.create_pull_request(
                 repo=entry.repo,
                 head=ticket_branch,
                 base=self._default_branch(entry),
                 title=title,
                 body=body,
             )
+            self._record_last_pr(entry.repo, ticket.number, pr_number)
         except urllib.error.HTTPError as exc:
             logger.warning(
                 "GitHub refused the PR for %s (HTTP %d); the branch is pushed, the box carries on.",
@@ -1358,6 +1431,10 @@ def _make_push_env(token: str) -> dict[str, str]:
         "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
         "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {auth}",
     }
+
+
+def _utcnow() -> datetime.datetime:
+    return datetime.datetime.now(datetime.UTC)
 
 
 def _seconds_until_reset(reset_at: datetime.datetime | None) -> float:

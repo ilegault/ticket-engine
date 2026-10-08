@@ -103,6 +103,7 @@ from ticket_engine.box_status import (
     AlertKind,
     BoxState,
     BoxStatus,
+    LastPR,
     TicketRef,
     render_box_alert,
     render_box_status,
@@ -116,7 +117,12 @@ from ticket_engine.local_config import (
     _default_logs_dir,
     load_box_config,
 )
-from ticket_engine.local_worker import LocalWorker, _load_tickets_from_path
+from ticket_engine.local_worker import (
+    FIX_ATTEMPTS_FILENAME,
+    LAST_PR_FILENAME,
+    LocalWorker,
+    _load_tickets_from_path,
+)
 from ticket_engine.parser import Ticket
 from ticket_engine.repo_env import env_paths, env_vars
 from ticket_engine.repo_list import RepoListEntry, fetch_repo_list
@@ -127,7 +133,7 @@ logger = logging.getLogger(__name__)
 _LEDGER_FILENAME = "box_ledger.json"
 _PAUSE_FILENAME = "box_pause.json"
 _BOX_REPOS_FILENAME = "box_repos.json"
-_FIX_ATTEMPTS_FILENAME = "fix_attempts.json"
+_FIX_ATTEMPTS_FILENAME = FIX_ATTEMPTS_FILENAME
 _LEDGER_WINDOW_HOURS = 24
 _AUTH_RETRY_HOURS = 1
 
@@ -180,6 +186,12 @@ class BoxLoop:
         self._auth_first_failure: datetime.datetime | None = None
         self._auth_retry_at: datetime.datetime | None = None
         self._recorded_good_commit: bool = False
+        # Ticket 77: what the worker reports it is doing, shown as the status
+        # issue's `Step` line. The worker calls the hook while agy runs, so the
+        # issue is rewritten then, not only between ticks.
+        self._step: str = "none"
+        self._last_world: BoxWorld | None = None
+        self.worker.status_hook = self._on_step
 
     # ------------------------------------------------------------------
     # Public API
@@ -198,9 +210,12 @@ class BoxLoop:
         except Exception:
             logger.exception("tick failed")
             raise
+        finally:
+            self._step = "none"
 
     def _tick(self) -> None:
         world = self._build_world()
+        self._last_world = world
 
         if self._auth_retry_at is not None and world.now < self._auth_retry_at:
             step = self.box_core.next_step(world)
@@ -575,7 +590,48 @@ class BoxLoop:
         self.github_client.update_issue_body(repo, issue_number, render_box_status(status))
         self._last_status_write = world.now
 
+    def _on_step(self, step: str) -> None:
+        """The worker's status hook: remember the step and rewrite the issue now.
+
+        A failed write is logged and the run goes on; a status line is never worth
+        stopping a ticket for.
+        """
+        self._step = step
+        world = self._last_world
+        if world is None:
+            return
+        try:
+            self._write_status(dataclasses.replace(world, now=self._now()))
+        except Exception:
+            logger.exception("Could not write the box status for step %r", step)
+
+    def _read_last_pr(self) -> LastPR | None:
+        path = pathlib.Path(self.config.logs_dir) / LAST_PR_FILENAME
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            opened_at = _parse_iso(data["opened_at"])
+            if opened_at is None:
+                return None
+            return LastPR(
+                ref=TicketRef(repo=str(data["repo"]), number=int(data["ticket"])),
+                pr_number=int(data["pr_number"]),
+                opened_at=opened_at,
+            )
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            logger.warning("Failed to read last PR record %s: %s", path, exc)
+            return None
+
     def _current_box_status(self, world: BoxWorld) -> BoxStatus:
+        extras = {
+            "step": self._step,
+            "last_pr": self._read_last_pr(),
+            "starts": tuple(
+                (repo.repo, world.starts_24h.get(repo.repo, 0), repo.config.daily_cap)
+                for repo in world.repos
+            ),
+        }
         current: TicketRef | None = None
         for repo in world.repos:
             tickets_by_number = {t.number: t for t in repo.tickets}
@@ -591,13 +647,14 @@ class BoxLoop:
                 break
 
         if self._auth_first_failure is not None:
-            return BoxStatus(checked_in_at=world.now, state=BoxState.login_expired)
+            return BoxStatus(checked_in_at=world.now, state=BoxState.login_expired, **extras)
 
         if world.developer_paused:
             return BoxStatus(
                 checked_in_at=world.now,
                 state=BoxState.paused_by_developer,
                 current=current,
+                **extras,
             )
 
         if world.quota_retry_at is not None and world.now < world.quota_retry_at:
@@ -606,15 +663,17 @@ class BoxLoop:
                 if world.weekly_cap_alert_open
                 else BoxState.paused_quota
             )
+            extras["step"] = "waiting for quota"
             return BoxStatus(
                 checked_in_at=world.now,
                 state=state,
                 current=current,
                 paused_until=world.quota_retry_at,
+                **extras,
             )
 
         state = BoxState.working if current is not None else BoxState.idle
-        return BoxStatus(checked_in_at=world.now, state=state, current=current)
+        return BoxStatus(checked_in_at=world.now, state=state, current=current, **extras)
 
     # ------------------------------------------------------------------
     # Alerts
