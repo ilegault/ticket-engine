@@ -16,7 +16,7 @@ import pathlib
 import urllib.error
 from unittest.mock import MagicMock
 
-from ticket_engine.box_status import BoxState, BoxStatus, render_box_status
+from ticket_engine.box_status import BoxState, BoxStatus, parse_box_status, render_box_status
 from ticket_engine.config import RepoConfig
 from ticket_engine.dispatch import (
     DispatchCore,
@@ -481,6 +481,24 @@ def test_render_morning_report_box_silent():
     expected = "**Box:** silent — last check-in 2026-09-26 00:00 UTC"
     assert _line_under_title(report) == expected
     assert _box_lines(report) == [expected]
+
+
+def test_morning_report_reads_the_new_status_body():
+    body = (
+        "## Box status\n"
+        "Checked in: 2026-09-25 10:12 PM CDT\n"
+        "State: working\n"
+        "Current: owner/repo #03\n"
+        "Step: fixing CI (2/3)\n"
+        "Last PR: owner/repo #02, PR #124, 2026-09-25 9:00 PM CDT\n"
+        "Started (24h): owner/repo 2/10\n"
+        "Paused until: none\n"
+        "Not ready: none\n"
+    )
+    box = parse_box_status(body)
+    assert box is not None
+    report = _box_report(box)
+    assert _box_lines(report) == ["**Box:** available — last check-in 2026-09-26 03:12 UTC"]
 
 
 def test_render_morning_report_box_unreadable():

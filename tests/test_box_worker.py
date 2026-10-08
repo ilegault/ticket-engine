@@ -1151,3 +1151,127 @@ def test_worker_records_its_commit_as_good_after_a_tick(tmp_path: pathlib.Path) 
     state_data = json.loads(state_path.read_text(encoding="utf-8"))
     assert state_data["good_commit"] == "abc1234"
 
+
+
+# ---------------------------------------------------------------------------
+# Ticket 77: the live step, last PR and starts on the status issue
+# ---------------------------------------------------------------------------
+
+
+class _StepWorker(FakeWorker):
+    """A fix_ci that reports its step through the hook the loop installs,
+    the way `LocalWorker.fix_ci` does (n comes from the real ledger file)."""
+
+    def __init__(self, logs_dir: pathlib.Path) -> None:
+        super().__init__()
+        self.status_hook = None
+        self._logs_dir = logs_dir
+
+    def fix_ci(self, entry, ticket, pr_number):
+        ledger = json.loads((self._logs_dir / box_worker._FIX_ATTEMPTS_FILENAME).read_text())
+        attempts = ledger[f"{entry.repo}#{pr_number}"]["attempts"]
+        assert self.status_hook is not None, "BoxLoop must install a status hook"
+        self.status_hook(f"fixing CI ({attempts}/3)")
+        return super().fix_ci(entry, ticket, pr_number)
+
+
+def _bodies(github: MagicMock) -> list[str]:
+    return [call.args[2] for call in github.update_issue_body.call_args_list]
+
+
+def _red_pr_with_one_attempt(tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / box_worker._FIX_ATTEMPTS_FILENAME).write_text(
+        json.dumps({"owner/repo#55": {"attempts": 1, "escalated": False}})
+    )
+    ticket = make_ticket(3, status="in-progress")
+    worker = _StepWorker(logs)
+    worker.claims = {3: "box"}
+    github = make_github()
+    github.find_open_issue.return_value = 101
+    github.find_open_pr.return_value = 55
+    github.list_check_runs.return_value = [("pytest", "failure")]
+    return worker, github, ticket
+
+
+def test_status_issue_shows_fixing_ci_with_attempt_count_during_a_fix_run(tmp_path):
+    worker, github, ticket = _red_pr_with_one_attempt(tmp_path)
+    loop = make_loop(tmp_path, worker, github, tickets=[ticket])
+    loop._last_status_write = _NOW
+
+    loop.tick()
+
+    assert len(worker.fix_ci_calls) == 1
+    bodies = _bodies(github)
+    during = next(b for b in bodies if "Step: fixing CI (2/3)\n" in b)
+    assert "State: working\n" in during
+    assert "Current: owner/repo #03\n" in during
+
+
+def test_status_step_goes_back_to_none_after_the_run(tmp_path):
+    worker, github, ticket = _red_pr_with_one_attempt(tmp_path)
+    loop = make_loop(tmp_path, worker, github, tickets=[ticket])
+    loop._last_status_write = _NOW
+    loop.tick()
+    github.update_issue_body.reset_mock()
+
+    loop._write_status(loop._build_world())
+
+    assert "Step: none\n" in _bodies(github)[0]
+
+
+def test_a_failing_status_write_does_not_stop_the_run(tmp_path):
+    worker, github, ticket = _red_pr_with_one_attempt(tmp_path)
+    github.update_issue_body.side_effect = RuntimeError("boom")
+    loop = make_loop(tmp_path, worker, github, tickets=[ticket])
+    loop._last_status_write = _NOW
+
+    loop.tick()
+
+    assert len(worker.fix_ci_calls) == 1
+
+
+def test_status_issue_shows_last_pr_starts_and_waiting_for_quota(tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / box_worker._LEDGER_FILENAME).write_text(
+        json.dumps(
+            [
+                {"repo": "owner/repo", "ticket": 1, "started_at": "2026-09-26T08:00:00+00:00"},
+                {"repo": "owner/repo", "ticket": 2, "started_at": "2026-09-26T09:00:00+00:00"},
+                {"repo": "owner/repo", "ticket": 3, "started_at": "2026-09-24T09:00:00+00:00"},
+            ]
+        )
+    )
+    (logs / "box_last_pr.json").write_text(
+        json.dumps(
+            {
+                "repo": "owner/repo",
+                "ticket": 2,
+                "pr_number": 124,
+                "opened_at": "2026-09-26T09:30:00+00:00",
+            }
+        )
+    )
+    (logs / box_worker._PAUSE_FILENAME).write_text(
+        json.dumps(
+            {
+                "first_failure": "2026-09-26T11:00:00+00:00",
+                "retry_at": "2026-09-26T15:00:00+00:00",
+                "weekly_cap_alert_open": False,
+            }
+        )
+    )
+    worker = FakeWorker()
+    github = make_github()
+    github.find_open_issue.return_value = 101
+    loop = make_loop(tmp_path, worker, github, tickets=[])
+
+    loop.tick()
+
+    body = _bodies(github)[0]
+    assert "Last PR: owner/repo #02, PR #124, 2026-09-26 4:30 AM CDT\n" in body
+    assert "Started (24h): owner/repo 2/10\n" in body
+    assert "Step: waiting for quota\n" in body
+    assert "Paused until: 2026-09-26 10:00 AM CDT\n" in body

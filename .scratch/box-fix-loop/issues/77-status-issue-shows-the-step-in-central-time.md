@@ -1,6 +1,6 @@
 # 77: The box status issue shows the live step, the last PR and starts, in Central time
 
-**Status:** in-progress
+**Status:** done
 
 **Runner:** any
 
@@ -66,11 +66,11 @@ Write the tests first and watch each fail before changing `src/`. Rewrite
 layout; do not delete any test. Box loop tests use `make_loop` and `make_github()`, whose
 `update_issue_body` calls record each body.
 
-- [ ] **Central time, both seasons.** Tests `test_format_display_uses_cdt_in_summer_and_cst_in_winter` (2026-07-01 20:11 UTC → `2026-07-01 3:11 PM CDT`; 2026-12-01 21:11 UTC → `2026-12-01 3:11 PM CST`) and `test_parse_display_inverts_format_display`.
-- [ ] **The new body round-trips.** Test `test_box_status_round_trips_step_last_pr_and_starts`: render then parse gives back an equal `BoxStatus`, with dates on both sides of the daylight-saving switch.
-- [ ] **The old body still parses.** Test `test_parse_box_status_still_reads_the_old_utc_body`: the exact body `render_box_status` produced before this ticket parses to the same check-in time, state and current ticket.
-- [ ] **The status shows a fix run while it runs.** Test `test_status_issue_shows_fixing_ci_with_attempt_count_during_a_fix_run`: a red box PR with one recorded attempt; during the `fix_ci` call the recorded bodies include `Step: fixing CI (2/3)`.
-- [ ] **Readers still work.** Test `test_morning_report_reads_the_new_status_body`: `render_morning_report` given a parsed new-layout status shows the box's check-in time and state (copy the existing box tests in `tests/test_morning_report.py`).
+- [x] **Central time, both seasons.** Tests `test_format_display_uses_cdt_in_summer_and_cst_in_winter` (2026-07-01 20:11 UTC → `2026-07-01 3:11 PM CDT`; 2026-12-01 21:11 UTC → `2026-12-01 3:11 PM CST`) and `test_parse_display_inverts_format_display`.
+- [x] **The new body round-trips.** Test `test_box_status_round_trips_step_last_pr_and_starts`: render then parse gives back an equal `BoxStatus`, with dates on both sides of the daylight-saving switch.
+- [x] **The old body still parses.** Test `test_parse_box_status_still_reads_the_old_utc_body`: the exact body `render_box_status` produced before this ticket parses to the same check-in time, state and current ticket.
+- [x] **The status shows a fix run while it runs.** Test `test_status_issue_shows_fixing_ci_with_attempt_count_during_a_fix_run`: a red box PR with one recorded attempt; during the `fix_ci` call the recorded bodies include `Step: fixing CI (2/3)`.
+- [x] **Readers still work.** Test `test_morning_report_reads_the_new_status_body`: `render_morning_report` given a parsed new-layout status shows the box's check-in time and state (copy the existing box tests in `tests/test_morning_report.py`).
 
 ## Gate
 
@@ -81,3 +81,5 @@ In CI order (`.github/workflows/ci.yml`):
     pytest -q
 
 ## Comments
+
+2026-10-08: Added `display_time` (Central time, `tzdata` on Windows), `LastPR`/`step`/`starts` on `BoxStatus` with the new render/parse (old UTC body still parses), `LocalWorker.status_hook` (implementing, gate-red resume, fixing CI from the ledger) and `box_last_pr.json`, and `BoxLoop` installing the hook to rewrite the issue at once. Tests: `tests/test_display_time.py` (criteria 1), `tests/test_box_status.py` (2, 3), `tests/test_box_worker.py` (4), `tests/test_morning_report.py` (5), plus `tests/test_local_worker.py` for the hook and last-PR record. Rewrote in place (same names) the three named tests and also `test_render_box_status_lists_not_ready_repos`, whose exact body changed with the layout; no test deleted. The layout renders `Not ready: none` when empty, as in the ticket example. Run the gate with `tzdata` installed on Windows (`pip install -e .`).

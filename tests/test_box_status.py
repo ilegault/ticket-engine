@@ -20,6 +20,7 @@ from ticket_engine.box_status import (
     BoxState,
     BoxStatus,
     EscalationReason,
+    LastPR,
     NotReady,
     NotReadyReason,
     TicketRef,
@@ -33,10 +34,19 @@ from ticket_engine.box_status import (
 
 PUBLIC_LINE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^## Box status$"),
-    re.compile(r"^Checked in: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$"),
+    re.compile(r"^Checked in: \d{4}-\d{2}-\d{2} \d{1,2}:\d{2} (?:AM|PM) (?:CDT|CST)$"),
     re.compile(r"^State: (working|idle|paused_quota|paused_weekly_cap|login_expired|paused_by_developer)$"),
     re.compile(r"^Current: (none|[\w.-]+/[\w.-]+ #\d+)$"),
-    re.compile(r"^Paused until: (none|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z)$"),
+    re.compile(
+        r"^Step: (none|implementing|waiting for quota"
+        r"|pre-push gate red \(resume \d+/\d+\)|fixing CI \(\d+/\d+\))$"
+    ),
+    re.compile(r"^Last PR: (none|[\w.-]+/[\w.-]+ #\d+, PR #\d+, \d{4}-\d{2}-\d{2} \d{1,2}:\d{2} (?:AM|PM) (?:CDT|CST))$"),
+    re.compile(
+        r"^Started \(24h\): (none|[\w.-]+/[\w.-]+ \d+/\d+"
+        r"(, [\w.-]+/[\w.-]+ \d+/\d+)*)$"
+    ),
+    re.compile(r"^Paused until: (none|\d{4}-\d{2}-\d{2} \d{1,2}:\d{2} (?:AM|PM) (?:CDT|CST))$"),
     re.compile(r"^Not ready: .+$"),
     re.compile(r"^Box alert: (weekly cap reached|agy login expired|box silent|[\w.-]+/[\w.-]+ not ready)$"),
     re.compile(r"^@[\w.-]+$"),
@@ -130,10 +140,14 @@ def test_render_box_status_exact_body():
     )
     expected = (
         "## Box status\n"
-        "Checked in: 2026-09-26T03:12Z\n"
+        "Checked in: 2026-09-25 10:12 PM CDT\n"
         "State: working\n"
         "Current: owner/repo #01\n"
+        "Step: none\n"
+        "Last PR: none\n"
+        "Started (24h): none\n"
         "Paused until: none\n"
+        "Not ready: none\n"
     )
     assert render_box_status(s) == expected
 
@@ -149,10 +163,14 @@ def test_render_box_status_paused_body():
     )
     expected = (
         "## Box status\n"
-        "Checked in: 2026-09-26T03:12Z\n"
+        "Checked in: 2026-09-25 10:12 PM CDT\n"
         "State: paused_quota\n"
         "Current: none\n"
-        "Paused until: 2026-09-26T08:00Z\n"
+        "Step: none\n"
+        "Last PR: none\n"
+        "Started (24h): none\n"
+        "Paused until: 2026-09-26 3:00 AM CDT\n"
+        "Not ready: none\n"
     )
     assert render_box_status(s) == expected
 
@@ -494,9 +512,12 @@ def test_render_box_status_lists_not_ready_repos():
     )
     expected = (
         "## Box status\n"
-        "Checked in: 2026-10-06T12:00Z\n"
+        "Checked in: 2026-10-06 7:00 AM CDT\n"
         "State: working\n"
         "Current: none\n"
+        "Step: none\n"
+        "Last PR: none\n"
+        "Started (24h): none\n"
         "Paused until: none\n"
         "Not ready: owner/a (baseline_red), owner/b (env_failed)\n"
     )
@@ -600,4 +621,89 @@ def test_render_repo_not_ready_alert_exact_text_and_rejects_free_text():
             reason=NotReadyReason.baseline_red,
             owner="bad owner",
             since=since,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Ticket 77: step, last PR, starts, Central time
+# ---------------------------------------------------------------------------
+
+
+def test_box_status_round_trips_step_last_pr_and_starts():
+    # One side of the daylight-saving switch (CDT), then the other (CST).
+    for checked_in, opened in (
+        (
+            datetime.datetime(2026, 10, 7, 20, 11, tzinfo=datetime.UTC),
+            datetime.datetime(2026, 10, 7, 18, 5, tzinfo=datetime.UTC),
+        ),
+        (
+            datetime.datetime(2026, 12, 1, 21, 11, tzinfo=datetime.UTC),
+            datetime.datetime(2026, 11, 2, 7, 30, tzinfo=datetime.UTC),
+        ),
+    ):
+        s = BoxStatus(
+            checked_in_at=checked_in,
+            state=BoxState.working,
+            current=TicketRef("ilegault/slackbot", 101),
+            step="fixing CI (2/3)",
+            last_pr=LastPR(
+                ref=TicketRef("ilegault/slackbot", 102), pr_number=124, opened_at=opened
+            ),
+            starts=(("ilegault/slackbot", 3, 10), ("ilegault/tds-t8", 0, 10)),
+            paused_until=checked_in + datetime.timedelta(hours=5),
+        )
+        assert parse_box_status(render_box_status(s)) == s
+
+
+def test_render_box_status_shows_the_new_layout_in_central_time():
+    s = BoxStatus(
+        checked_in_at=datetime.datetime(2026, 10, 7, 20, 11, tzinfo=datetime.UTC),
+        state=BoxState.working,
+        current=TicketRef("ilegault/slackbot", 101),
+        step="fixing CI (2/3)",
+        last_pr=LastPR(
+            ref=TicketRef("ilegault/slackbot", 102),
+            pr_number=124,
+            opened_at=datetime.datetime(2026, 10, 7, 18, 5, tzinfo=datetime.UTC),
+        ),
+        starts=(("ilegault/slackbot", 3, 10), ("ilegault/tds-t8", 0, 10)),
+    )
+    assert render_box_status(s) == (
+        "## Box status\n"
+        "Checked in: 2026-10-07 3:11 PM CDT\n"
+        "State: working\n"
+        "Current: ilegault/slackbot #101\n"
+        "Step: fixing CI (2/3)\n"
+        "Last PR: ilegault/slackbot #102, PR #124, 2026-10-07 1:05 PM CDT\n"
+        "Started (24h): ilegault/slackbot 3/10, ilegault/tds-t8 0/10\n"
+        "Paused until: none\n"
+        "Not ready: none\n"
+    )
+
+
+def test_parse_box_status_still_reads_the_old_utc_body():
+    old_body = (
+        "## Box status\n"
+        "Checked in: 2026-09-26T03:12Z\n"
+        "State: working\n"
+        "Current: owner/repo #01\n"
+        "Paused until: 2026-09-26T08:00Z\n"
+    )
+    parsed = parse_box_status(old_body)
+    assert parsed is not None
+    assert parsed.checked_in_at == datetime.datetime(2026, 9, 26, 3, 12, tzinfo=datetime.UTC)
+    assert parsed.state == BoxState.working
+    assert parsed.current == TicketRef("owner/repo", 1)
+    assert parsed.paused_until == datetime.datetime(2026, 9, 26, 8, 0, tzinfo=datetime.UTC)
+    assert parsed.step == "none"
+    assert parsed.last_pr is None
+    assert parsed.starts == ()
+
+
+def test_box_status_rejects_a_free_text_step():
+    with pytest.raises(ValueError):
+        BoxStatus(
+            checked_in_at=datetime.datetime(2026, 10, 7, 20, 11, tzinfo=datetime.UTC),
+            state=BoxState.working,
+            step="Traceback (most recent call last)",
         )

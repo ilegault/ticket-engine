@@ -2615,3 +2615,79 @@ def test_local_integrity_skipped_when_a_gate_command_failed(tmp_path):
     worker.run_one(entry, ticket)
     assert gate_calls
     assert not [c for _, c in gate_calls if _is_integrity(c)]
+
+
+# ---------------------------------------------------------------------------
+# Ticket 77: the live step and the last PR
+# ---------------------------------------------------------------------------
+
+
+def test_status_hook_reports_implementing_then_gate_red_resume(tmp_path):
+    worker, entry, ticket, _, _, _, _, _ = _gate_setup(
+        tmp_path,
+        lambda call, cmd: _only_ruff_fails(call, cmd) if call < 3 else (0, "ok"),
+        max_resumes_per_ticket=3,
+    )
+    steps: list[str] = []
+    worker.status_hook = steps.append
+
+    worker.run_one(entry, ticket)
+
+    assert steps == ["implementing", "pre-push gate red (resume 1/3)"]
+
+
+def test_fix_ci_reports_fixing_ci_from_the_fix_attempt_ledger(tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "fix_attempts.json").write_text(
+        json.dumps({"owner/repo#5": {"attempts": 2, "escalated": False}})
+    )
+    gh = make_fake_github()
+    gh.list_check_runs.return_value = [("tests", "failure")]
+    steps: list[str] = []
+    worker = LocalWorker(
+        config=make_config(logs_dir=str(logs)),
+        github_client=gh,
+        agy_driver=AgyDriver(
+            run_fn=lambda args, cwd=None: (0, json.dumps({"status": "SUCCESS"}))
+        ),
+        git_runner=_make_git_runner(
+            [], {"ls-remote": (0, "abc123\trefs/heads/ticket/phase-1-09-ticket-9\n")}
+        ),
+        command_runner=lambda cmd, cwd, env, shell: (0, ""),
+    )
+    worker.status_hook = steps.append
+
+    worker.fix_ci(make_repo_entry(), make_ticket(9), 5)
+
+    assert steps[0] == "fixing CI (2/3)"
+
+
+def test_opening_a_pr_records_the_last_pr_in_the_logs_dir(tmp_path):
+    import datetime
+
+    logs = tmp_path / "logs"
+    worker, entry, ticket, github, _, _, _, _ = _gate_setup(
+        tmp_path, lambda call, cmd: (0, "ok"), logs_dir=str(logs)
+    )
+    github.create_pull_request.return_value = 124
+    worker._now = lambda: datetime.datetime(2026, 10, 7, 18, 5, tzinfo=datetime.UTC)
+
+    worker.run_one(entry, ticket)
+
+    record = json.loads((logs / "box_last_pr.json").read_text(encoding="utf-8"))
+    assert record == {
+        "repo": "owner/repo",
+        "ticket": 9,
+        "pr_number": 124,
+        "opened_at": "2026-10-07T18:05:00+00:00",
+    }
+
+
+def test_no_last_pr_record_when_no_pr_is_opened(tmp_path):
+    logs = tmp_path / "logs"
+    worker, entry, ticket, _, _, _, _, _ = _gate_setup(
+        tmp_path, _only_ruff_fails, marks_done=False, logs_dir=str(logs)
+    )
+    worker.run_one(entry, ticket)
+    assert not (logs / "box_last_pr.json").exists()

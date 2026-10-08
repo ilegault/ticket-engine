@@ -8,7 +8,9 @@ version = "0.1.0"
 description = "Machinery to dispatch and merge tickets overnight via agents"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "tzdata; sys_platform == 'win32'",
+]
 
 [project.scripts]
 dispatch = "ticket_engine.cli:main"

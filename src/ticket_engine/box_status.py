@@ -32,6 +32,13 @@ It reads no clock and does no I/O itself; `scripts/check_box_silent.py` supplies
 Ticket 56 (ADR 0010 rules 4–6) adds `paused_by_developer` to `BoxState`,
 `NotReadyReason`, `NotReady`, not-ready repo reporting in `BoxStatus` /
 `render_box_status` / `parse_box_status`, and `render_repo_not_ready_alert`.
+
+Ticket 77 (ADR 0007 rule 4) reshapes the status body: the times are Central time
+(`display_time`), and it gains `Step` (what the box is doing right now, from a fixed
+vocabulary), `Last PR` and `Started (24h)`. `parse_box_status` still reads the
+old UTC body (no `Step`/`Last PR`/`Started` lines), because the dispatcher, the
+morning report and the box-silent check may run a different engine version than
+the box that wrote the issue.
 """
 from __future__ import annotations
 
@@ -40,15 +47,24 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
+from ticket_engine.display_time import format_display, parse_display
+
 _REPO_RE = re.compile(r"^[\w.-]+/[\w.-]+$")
 _IDENT_RE = re.compile(r"^[\w.-]+$")
 _ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z$")
+_STEP_RE = re.compile(
+    r"^(?:none|implementing|waiting for quota"
+    r"|pre-push gate red \(resume \d+/\d+\)|fixing CI \(\d+/\d+\))$"
+)
+_LAST_PR_RE = re.compile(r"^([\w.-]+/[\w.-]+) #(\d+), PR #(\d+), (.+)$")
+_STARTS_ITEM_RE = re.compile(r"^([\w.-]+/[\w.-]+) (\d+)/(\d+)$")
 
 __all__ = [
     "AlertKind",
     "BoxState",
     "BoxStatus",
     "EscalationReason",
+    "LastPR",
     "NotReady",
     "NotReadyReason",
     "TicketRef",
@@ -126,14 +142,40 @@ class TicketRef:
 
 
 @dataclass(frozen=True)
+class LastPR:
+    """The most recent pull request the box opened, and when."""
+
+    ref: TicketRef
+    pr_number: int
+    opened_at: datetime.datetime
+
+    def __post_init__(self) -> None:
+        if self.opened_at.tzinfo is None:
+            raise ValueError("opened_at must be timezone-aware (UTC)")
+        object.__setattr__(
+            self,
+            "opened_at",
+            self.opened_at.astimezone(datetime.UTC).replace(second=0, microsecond=0),
+        )
+
+
+@dataclass(frozen=True)
 class BoxStatus:
-    """Snapshot of the box worker's current operational heartbeat."""
+    """Snapshot of the box worker's current operational heartbeat.
+
+    `step` is one of `none`, `implementing`, `waiting for quota`,
+    `pre-push gate red (resume <n>/<m>)`, `fixing CI (<n>/<m>)`. `starts` is
+    `(repo, starts in the last 24 h, daily_cap)` per repo.
+    """
 
     checked_in_at: datetime.datetime
     state: BoxState
     current: TicketRef | None = None
     paused_until: datetime.datetime | None = None
     not_ready: tuple[NotReady, ...] = ()
+    step: str = "none"
+    last_pr: LastPR | None = None
+    starts: tuple[tuple[str, int, int], ...] = ()
 
     def __post_init__(self) -> None:
         if self.checked_in_at.tzinfo is None:
@@ -156,6 +198,15 @@ class BoxStatus:
 
         if not isinstance(self.not_ready, tuple):
             object.__setattr__(self, "not_ready", tuple(self.not_ready))
+
+        if not isinstance(self.step, str) or not _STEP_RE.match(self.step):
+            raise ValueError(f"Invalid box step: {self.step!r}")
+
+        starts = tuple((str(r), int(n), int(cap)) for r, n, cap in self.starts)
+        for repo, _n, _cap in starts:
+            if not _REPO_RE.match(repo):
+                raise ValueError(f"Invalid repository reference: {repo!r}")
+        object.__setattr__(self, "starts", starts)
 
 
 def _format_iso(dt: datetime.datetime) -> str:
@@ -184,19 +235,39 @@ def render_box_status(s: BoxStatus) -> str:
         f"{s.current.repo} #{s.current.number:02d}" if s.current is not None else "none"
     )
     paused_str = (
-        _format_iso(s.paused_until) if s.paused_until is not None else "none"
+        format_display(s.paused_until) if s.paused_until is not None else "none"
+    )
+    last_pr_str = (
+        f"{s.last_pr.ref.repo} #{s.last_pr.ref.number:02d}, PR #{s.last_pr.pr_number}, "
+        f"{format_display(s.last_pr.opened_at)}"
+        if s.last_pr is not None
+        else "none"
+    )
+    starts_str = (
+        ", ".join(f"{repo} {n}/{cap}" for repo, n, cap in s.starts) if s.starts else "none"
+    )
+    not_ready_str = (
+        ", ".join(f"{nr.repo} ({nr.reason.value})" for nr in s.not_ready)
+        if s.not_ready
+        else "none"
     )
     lines = [
         "## Box status",
-        f"Checked in: {_format_iso(s.checked_in_at)}",
+        f"Checked in: {format_display(s.checked_in_at)}",
         f"State: {s.state.value}",
         f"Current: {current_str}",
+        f"Step: {s.step}",
+        f"Last PR: {last_pr_str}",
+        f"Started (24h): {starts_str}",
         f"Paused until: {paused_str}",
+        f"Not ready: {not_ready_str}",
     ]
-    if s.not_ready:
-        not_ready_str = ", ".join(f"{nr.repo} ({nr.reason.value})" for nr in s.not_ready)
-        lines.append(f"Not ready: {not_ready_str}")
     return "\n".join(lines) + "\n"
+
+
+def _parse_time(text: str) -> datetime.datetime | None:
+    """Read a status time in Central display form or the old UTC form."""
+    return parse_display(text) or _parse_iso(text)
 
 
 def parse_box_status(text: str) -> BoxStatus | None:
@@ -222,7 +293,7 @@ def parse_box_status(text: str) -> BoxStatus | None:
         if "Checked in" not in data or "State" not in data:
             return None
 
-        checked_in_at = _parse_iso(data["Checked in"])
+        checked_in_at = _parse_time(data["Checked in"])
         if checked_in_at is None:
             return None
 
@@ -248,12 +319,40 @@ def parse_box_status(text: str) -> BoxStatus | None:
 
         paused_until: datetime.datetime | None = None
         if paused_str.lower() != "none":
-            paused_until = _parse_iso(paused_str)
+            paused_until = _parse_time(paused_str)
             if paused_until is None:
                 return None
 
+        step = data.get("Step", "none")
+        if not _STEP_RE.match(step):
+            return None
+
+        last_pr: LastPR | None = None
+        last_pr_str = data.get("Last PR", "none")
+        if last_pr_str.lower() != "none":
+            m = _LAST_PR_RE.match(last_pr_str)
+            if not m:
+                return None
+            opened_at = _parse_time(m.group(4))
+            if opened_at is None:
+                return None
+            last_pr = LastPR(
+                ref=TicketRef(repo=m.group(1), number=int(m.group(2))),
+                pr_number=int(m.group(3)),
+                opened_at=opened_at,
+            )
+
+        starts: list[tuple[str, int, int]] = []
+        starts_str = data.get("Started (24h)", "none")
+        if starts_str.lower() != "none":
+            for item in starts_str.split(","):
+                m = _STARTS_ITEM_RE.match(item.strip())
+                if not m:
+                    return None
+                starts.append((m.group(1), int(m.group(2)), int(m.group(3))))
+
         not_ready: tuple[NotReady, ...] = ()
-        if "Not ready" in data:
+        if "Not ready" in data and data["Not ready"].lower() != "none":
             raw_not_ready = data["Not ready"]
             if not raw_not_ready:
                 return None
@@ -281,6 +380,9 @@ def parse_box_status(text: str) -> BoxStatus | None:
             current=current,
             paused_until=paused_until,
             not_ready=not_ready,
+            step=step,
+            last_pr=last_pr,
+            starts=tuple(starts),
         )
     except (ValueError, TypeError, KeyError, IndexError):
         return None
