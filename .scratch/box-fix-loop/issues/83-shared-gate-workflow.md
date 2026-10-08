@@ -1,6 +1,6 @@
 # 83: The shared `gate.yml` workflow runs a repo's gate list in CI
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
