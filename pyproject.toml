@@ -16,11 +16,8 @@ integrity-gate = "ticket_engine.integrity_runner:main"
 work-windows = "ticket_engine.cli:local_worker_main"
 box-worker = "ticket_engine.box_worker:main"
 add-repo = "ticket_engine.add_repo:main"
-<<<<<<< HEAD
 engine-gate = "ticket_engine.gate:main"
-=======
 box-launcher = "ticket_engine.launcher:main"
->>>>>>> 6db98d7 (79: box-launcher starts the box and rolls back a bad update)
 
 [tool.ruff]
 line-length = 100

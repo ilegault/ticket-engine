@@ -1063,7 +1063,6 @@ def test_box_paused_variable_sets_paused_by_developer_status(tmp_path: pathlib.P
     assert "State: paused_by_developer" in body
 
 
-<<<<<<< HEAD
 # ---------------------------------------------------------------------------
 # Ticket 70: Durable fix attempts, surviving restart, quota not counted
 # ---------------------------------------------------------------------------
@@ -1133,7 +1132,8 @@ def test_quota_fix_run_does_not_count_as_an_attempt(tmp_path: pathlib.Path) -> N
     pr_record = data.get("owner/repo#55")
     assert pr_record is not None
     assert pr_record["attempts"] == 1
-=======
+
+
 def test_worker_records_its_commit_as_good_after_a_tick(tmp_path: pathlib.Path) -> None:
     worker = FakeWorker()
     gh = make_github()
@@ -1150,5 +1150,4 @@ def test_worker_records_its_commit_as_good_after_a_tick(tmp_path: pathlib.Path) 
     assert state_path.is_file()
     state_data = json.loads(state_path.read_text(encoding="utf-8"))
     assert state_data["good_commit"] == "abc1234"
->>>>>>> 6db98d7 (79: box-launcher starts the box and rolls back a bad update)
 
