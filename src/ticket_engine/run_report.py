@@ -24,6 +24,7 @@ import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+from ticket_engine.display_time import format_display
 from ticket_engine.parser import Ticket
 
 # The permission a fine-grained PAT needs to read and set TICKET_ENGINE_PAUSED.
@@ -233,11 +234,11 @@ def _box_line(facts: RunFacts) -> str:
                 if facts.box_checked_in.tzinfo is not None
                 else facts.box_checked_in.replace(tzinfo=datetime.UTC)
             )
-            time_str = dt.astimezone(datetime.UTC).strftime("%H:%M")
+            time_str = format_display(dt)
         left_str = ""
         if facts.left_for_box:
             left_str = f" Left for the box: {', '.join(_label(t) for t in facts.left_for_box)}."
-        return f"**Box:** available (checked in {time_str} UTC).{left_str}"
+        return f"**Box:** available (checked in {time_str}).{left_str}"
     elif facts.box_state == "paused":
         return "**Box:** paused — overflow to Jules is on."
     elif facts.box_state == "silent":
@@ -248,8 +249,8 @@ def _box_line(facts: RunFacts) -> str:
                 if facts.box_checked_in.tzinfo is not None
                 else facts.box_checked_in.replace(tzinfo=datetime.UTC)
             )
-            time_str = dt.astimezone(datetime.UTC).strftime("%H:%M")
-        return f"**Box:** silent since {time_str} UTC — overflow to Jules is on."
+            time_str = format_display(dt)
+        return f"**Box:** silent since {time_str} — overflow to Jules is on."
     elif facts.box_state == "unreadable":
         return "**Box:** status unreadable — overflow to Jules is on."
     return ""

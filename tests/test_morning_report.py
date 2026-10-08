@@ -460,7 +460,7 @@ def _box_lines(report: str) -> list[str]:
 def test_render_morning_report_box_available():
     box = BoxStatus(checked_in_at=_CHECKED_IN, state=BoxState.idle)
     report = _box_report(box)
-    expected = "**Box:** available — last check-in 2026-09-26 03:12 UTC"
+    expected = "**Box:** available — last check-in 2026-09-25 10:12 PM CDT"
     assert _line_under_title(report) == expected
     assert _box_lines(report) == [expected]
 
@@ -468,7 +468,7 @@ def test_render_morning_report_box_available():
 def test_render_morning_report_box_paused():
     box = BoxStatus(checked_in_at=_CHECKED_IN, state=BoxState.paused_quota)
     report = _box_report(box)
-    expected = "**Box:** paused — last check-in 2026-09-26 03:12 UTC"
+    expected = "**Box:** paused — last check-in 2026-09-25 10:12 PM CDT"
     assert _line_under_title(report) == expected
     assert _box_lines(report) == [expected]
 
@@ -478,7 +478,7 @@ def test_render_morning_report_box_silent():
     checked_in = _BOX_NOW - datetime.timedelta(hours=12)
     box = BoxStatus(checked_in_at=checked_in, state=BoxState.working)
     report = _box_report(box)
-    expected = "**Box:** silent — last check-in 2026-09-26 00:00 UTC"
+    expected = "**Box:** silent — last check-in 2026-09-25 7:00 PM CDT"
     assert _line_under_title(report) == expected
     assert _box_lines(report) == [expected]
 
@@ -498,7 +498,7 @@ def test_morning_report_reads_the_new_status_body():
     box = parse_box_status(body)
     assert box is not None
     report = _box_report(box)
-    assert _box_lines(report) == ["**Box:** available — last check-in 2026-09-26 03:12 UTC"]
+    assert _box_lines(report) == ["**Box:** available — last check-in 2026-09-25 10:12 PM CDT"]
 
 
 def test_render_morning_report_box_unreadable():
@@ -576,7 +576,7 @@ def test_run_morning_report_main_passes_box_status(monkeypatch):
         for p in requested
     )
     assert len(updated) == 1
-    assert _line_under_title(updated[0]) == "**Box:** silent — last check-in 2020-01-01 03:12 UTC"
+    assert _line_under_title(updated[0]) == "**Box:** silent — last check-in 2019-12-31 9:12 PM CST"
 
 
 def test_run_morning_report_main_failed_box_fetch_is_unreadable(monkeypatch):
@@ -599,3 +599,11 @@ def test_run_morning_report_main_unreadable_repo_list_returns_1(monkeypatch, cap
         assert runner.main() == 1
     assert "engine-repos.toml unreadable: corrupted format" in caplog.text
 
+
+
+def test_morning_report_times_are_central():
+    box = BoxStatus(checked_in_at=_CHECKED_IN, state=BoxState.idle)
+    report = _box_report(box)
+    assert report.splitlines()[0] == "## Morning Report — 2026-09-26 7:00 AM CDT"
+    assert _box_lines(report) == ["**Box:** available — last check-in 2026-09-25 10:12 PM CDT"]
+    assert "UTC" not in report

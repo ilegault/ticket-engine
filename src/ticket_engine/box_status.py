@@ -39,6 +39,8 @@ vocabulary), `Last PR` and `Started (24h)`. `parse_box_status` still reads the
 old UTC body (no `Step`/`Last PR`/`Started` lines), because the dispatcher, the
 morning report and the box-silent check may run a different engine version than
 the box that wrote the issue.
+
+Ticket 78 (ADR 0007 rule 4) puts the alert `Since:` lines in Central time too.
 """
 from __future__ import annotations
 
@@ -207,13 +209,6 @@ class BoxStatus:
             if not _REPO_RE.match(repo):
                 raise ValueError(f"Invalid repository reference: {repo!r}")
         object.__setattr__(self, "starts", starts)
-
-
-def _format_iso(dt: datetime.datetime) -> str:
-    """Format a timezone-aware datetime as YYYY-MM-DDTHH:MMZ."""
-    if dt.tzinfo is None:
-        raise ValueError("datetime must be timezone-aware")
-    return dt.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%MZ")
 
 
 def _parse_iso(text: str) -> datetime.datetime | None:
@@ -408,7 +403,7 @@ def render_repo_not_ready_alert(
         raise ValueError(f"Invalid not-ready reason: {reason!r}") from None
 
     title = f"Box alert: {repo} not ready"
-    body = f"@{owner}\nReason: {not_ready_reason.value}\nSince: {_format_iso(since)}\n"
+    body = f"@{owner}\nReason: {not_ready_reason.value}\nSince: {format_display(since)}\n"
     return title, body
 
 
@@ -432,7 +427,7 @@ def render_box_alert(
         AlertKind.box_silent: "Box alert: box silent",
     }
     title = titles[alert_kind]
-    body = f"@{owner}\nSince: {_format_iso(since)}\n"
+    body = f"@{owner}\nSince: {format_display(since)}\n"
     return title, body
 
 

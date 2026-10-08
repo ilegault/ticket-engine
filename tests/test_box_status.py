@@ -50,7 +50,7 @@ PUBLIC_LINE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^Not ready: .+$"),
     re.compile(r"^Box alert: (weekly cap reached|agy login expired|box silent|[\w.-]+/[\w.-]+ not ready)$"),
     re.compile(r"^@[\w.-]+$"),
-    re.compile(r"^Since: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$"),
+    re.compile(r"^Since: \d{4}-\d{2}-\d{2} \d{1,2}:\d{2} (?:AM|PM) (?:CDT|CST)$"),
     re.compile(r"^Escalation: [\w.-]+-\d+ [\w.-]+$"),
     re.compile(r"^Ticket: [\w.-]+/[\w.-]+ #\d+$"),
     re.compile(r"^Link: https://github\.com/\S+$"),
@@ -322,7 +322,7 @@ def test_render_box_alert_titles_and_bodies():
     for kind, expected_title in cases:
         title, body = render_box_alert(kind, "owner", since)
         assert title == expected_title
-        assert body == "@owner\nSince: 2026-09-26T03:12Z\n"
+        assert body == "@owner\nSince: 2026-09-25 10:12 PM CDT\n"
 
     # Validation
     with pytest.raises(ValueError):
@@ -584,7 +584,7 @@ def test_render_repo_not_ready_alert_exact_text_and_rejects_free_text():
         since=since,
     )
     assert title == "Box alert: owner/repo not ready"
-    assert body == "@developer\nReason: baseline_red\nSince: 2026-10-06T12:00Z\n"
+    assert body == "@developer\nReason: baseline_red\nSince: 2026-10-06 7:00 AM CDT\n"
 
     # String reason works too
     title2, body2 = render_repo_not_ready_alert(
@@ -707,3 +707,21 @@ def test_box_status_rejects_a_free_text_step():
             state=BoxState.working,
             step="Traceback (most recent call last)",
         )
+
+
+# ---------------------------------------------------------------------------
+# Ticket 78: alerts show Central time
+# ---------------------------------------------------------------------------
+
+
+def test_box_alert_since_is_central():
+    since = datetime.datetime(2026, 7, 1, 20, 11, tzinfo=datetime.UTC)
+    _, body = render_box_alert(AlertKind.weekly_cap, "owner", since)
+    assert "Since: 2026-07-01 3:11 PM CDT\n" in body
+    _, body = render_repo_not_ready_alert(
+        repo="owner/repo",
+        reason=NotReadyReason.baseline_red,
+        owner="owner",
+        since=since,
+    )
+    assert "Since: 2026-07-01 3:11 PM CDT\n" in body

@@ -1,6 +1,6 @@
 # 78: Every time the developer reads is in Central time
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Runner:** any
 
@@ -33,11 +33,11 @@ Write the tests first and watch each fail before changing `src/`. Tests that ass
 today's UTC text are rewritten in place, same names, to the Central text; delete
 no test. Fix the clock with the existing `now` parameters; nothing else is faked.
 
-- [ ] **Alerts.** Test `test_box_alert_since_is_central`: `render_box_alert(..., since=2026-07-01 20:11 UTC)` body has `Since: 2026-07-01 3:11 PM CDT`; same for `render_repo_not_ready_alert`.
-- [ ] **Morning report.** Test `test_morning_report_times_are_central`: the report timestamp and the box check-in line end in `CDT` or `CST` and contain no `UTC`.
-- [ ] **Run report.** Test `test_run_report_times_are_central`: every time in a rendered run report is Central with its zone.
-- [ ] **Box log lines.** Each line starts `YYYY-MM-DD h:mm:ss AM|PM CDT|CST LEVEL name: message`. Test `test_box_log_lines_are_central`: with the clock fixed by patching the formatter's converter time to 2026-07-01 20:11:05 UTC, `_configure_logging(tmp_path)` then one `logger.warning("x")` writes a line starting `2026-07-01 3:11:05 PM CDT WARNING`.
-- [ ] **Machine files stay UTC.** Test `test_machine_files_stay_utc`: after a claim and a quota pause in a `make_loop` run, `box_ledger.json` and `box_pause.json` hold ISO strings ending `+00:00`.
+- [x] **Alerts.** Test `test_box_alert_since_is_central`: `render_box_alert(..., since=2026-07-01 20:11 UTC)` body has `Since: 2026-07-01 3:11 PM CDT`; same for `render_repo_not_ready_alert`.
+- [x] **Morning report.** Test `test_morning_report_times_are_central`: the report timestamp and the box check-in line end in `CDT` or `CST` and contain no `UTC`.
+- [x] **Run report.** Test `test_run_report_times_are_central`: every time in a rendered run report is Central with its zone.
+- [x] **Box log lines.** Each line starts `YYYY-MM-DD h:mm:ss AM|PM CDT|CST LEVEL name: message`. Test `test_box_log_lines_are_central`: with the clock fixed by patching the formatter's converter time to 2026-07-01 20:11:05 UTC, `_configure_logging(tmp_path)` then one `logger.warning("x")` writes a line starting `2026-07-01 3:11:05 PM CDT WARNING`.
+- [x] **Machine files stay UTC.** Test `test_machine_files_stay_utc`: after a claim and a quota pause in a `make_loop` run, `box_ledger.json` and `box_pause.json` hold ISO strings ending `+00:00`.
 
 ## Gate
 
@@ -48,3 +48,5 @@ In CI order (`.github/workflows/ci.yml`):
     pytest -q
 
 ## Comments
+
+2026-10-08: Every human-facing time now uses `format_display` (new `seconds=` option for log lines). Alerts (`Since:`), morning report, run report box lines, `_describe_step` wait text and the box log formatter (`_CentralFormatter`) are Central. Machine files untouched (ISO UTC). Tests: `test_box_alert_since_is_central`, `test_morning_report_times_are_central`, `test_run_report_times_are_central`, `test_box_log_lines_are_central`, `test_machine_files_stay_utc`; old UTC-text tests rewritten in place. Removed now-unused `_format_iso`.

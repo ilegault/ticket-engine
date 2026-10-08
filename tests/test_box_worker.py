@@ -731,7 +731,7 @@ def test_every_tick_logs_the_step_it_took(tmp_path, caplog):
 
     assert [r.getMessage() for r in _box_records(caplog, logging.INFO)] == [
         "tick: write status",
-        "tick: wait until 2026-09-26T12:10Z",
+        "tick: wait until 2026-09-26 7:10 AM CDT",
     ]
 
 
@@ -1275,3 +1275,49 @@ def test_status_issue_shows_last_pr_starts_and_waiting_for_quota(tmp_path):
     assert "Started (24h): owner/repo 2/10\n" in body
     assert "Step: waiting for quota\n" in body
     assert "Paused until: 2026-09-26 10:00 AM CDT\n" in body
+
+
+# ---------------------------------------------------------------------------
+# Ticket 78: Central time for logs, UTC for machine files
+# ---------------------------------------------------------------------------
+
+
+def test_box_log_lines_are_central(tmp_path, monkeypatch):
+    import time
+
+    fixed = datetime.datetime(2026, 7, 1, 20, 11, 5, tzinfo=datetime.UTC).timestamp()
+    root = logging.getLogger()
+    before = list(root.handlers)
+    level = root.level
+    monkeypatch.setattr(
+        box_worker._CentralFormatter, "converter", staticmethod(lambda _secs: time.gmtime(fixed))
+    )
+    try:
+        box_worker._configure_logging(str(tmp_path))
+        logging.getLogger("ticket_engine.box_worker").warning("x")
+        added = [h for h in root.handlers if h not in before]
+        for h in added:
+            h.flush()
+        text = (tmp_path / "box-worker.log").read_text(encoding="utf-8")
+    finally:
+        for h in [h for h in root.handlers if h not in before]:
+            root.removeHandler(h)
+            h.close()
+        root.setLevel(level)
+    assert text.startswith("2026-07-01 3:11:05 PM CDT WARNING ticket_engine.box_worker: x")
+
+
+def test_machine_files_stay_utc(tmp_path):
+    worker = FakeWorker()
+    worker.run_one_result = FakeRunResult("quota", reset_at=None)
+    loop = make_loop(tmp_path, worker, make_github(), tickets=[make_ticket(4)])
+    loop._last_status_write = _NOW
+
+    loop.tick()
+
+    logs = tmp_path / "logs"
+    ledger = json.loads((logs / box_worker._LEDGER_FILENAME).read_text())
+    pause = json.loads((logs / box_worker._PAUSE_FILENAME).read_text())
+    assert ledger[0]["started_at"].endswith("+00:00")
+    assert pause["first_failure"].endswith("+00:00")
+    assert pause["retry_at"].endswith("+00:00")
