@@ -1,6 +1,6 @@
 # 80: The box updates its own engine code between runs, and reports a rollback
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
