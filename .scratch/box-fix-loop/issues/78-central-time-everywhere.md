@@ -1,6 +1,6 @@
 # 78: Every time the developer reads is in Central time
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
