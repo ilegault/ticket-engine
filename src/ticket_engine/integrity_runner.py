@@ -19,6 +19,12 @@ ADR 0005:
   is a required check that left the developer no way to merge a held PR. Green is
   safe: only a `pass` enables auto-merge, so nothing but the developer's own click
   merges a held PR. A later pass or fail removes the label.
+
+Ticket 73 (ADR 0011 rule 3): `--local` is the box's pre-push run. It judges the
+checkout against the default branch and prints the verdict comment, but passes
+`token=None`, `repo_name=None`, `pr_number=None` and `head_sha=None` whatever the
+environment holds, so it cannot comment, set a status, label or merge. Exit 1 is a
+`fail`; a `hold` exits 0 because a hold is a green check that waits for the developer.
 """
 from __future__ import annotations
 
@@ -644,7 +650,28 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="Commit message to evaluate for escape hatch tags",
     )
+    parser.add_argument(
+        "--local",
+        action="store_true",
+        help="Judge the checkout and print the verdict; write nothing to GitHub",
+    )
     args = parser.parse_args(argv)
+
+    if args.local:
+        # The box's pre-push gate (ticket 73, ADR 0011 rule 3): the environment may
+        # hold a token and a repository, but a local run never uses them, and
+        # never reads a PR event payload either.
+        return run_integrity_gate(
+            repo_path=args.repo_path,
+            base_ref=args.base_ref,
+            ticket_path=args.ticket,
+            token=None,
+            repo_name=None,
+            pr_number=None,
+            head_sha=None,
+            labels=list(args.label) or None,
+            commit_messages=list(args.commit_message) or None,
+        )
 
     event_path = os.environ.get("GITHUB_EVENT_PATH")
     pr_num = args.pr_number

@@ -82,6 +82,15 @@ resume against `max_resumes_per_ticket`) and the next prompt carries the full
 failure report. Pushes to a branch with no PR (the checkpoint timer, an unfinished
 ticket) stay ungated, since nothing can merge them. Gate output goes to the box
 log only, never to a GitHub request body.
+
+Ticket 73 (ADR 0011 rule 3): once every gate command passes, `_publish` runs the
+integrity gate locally (`integrity_runner --local`) against `origin/<default
+branch>`, as one more gate entry named `integrity gate (local)`. It runs under the
+repo environment's Python, because check 7 runs the PR's new tests with whatever
+Python runs the gate; the engine has no dependencies, so its source folder goes on
+`PYTHONPATH` rather than being installed into every repo environment. A `fail` blocks
+the push like a red command; a `hold` exits 0 and still pushes. It writes nothing
+to GitHub.
 """
 from __future__ import annotations
 
@@ -96,6 +105,7 @@ import time
 import urllib.error
 from collections.abc import Callable
 
+import ticket_engine
 from ticket_engine.agy import AgyDriver
 from ticket_engine.box_status import EscalationReason, TicketRef, render_escalation_issue
 from ticket_engine.config import RepoConfig, load_repo_config
@@ -107,7 +117,7 @@ from ticket_engine.dispatch import (
     assemble_escalation_brief,
     insert_claimed_by,
 )
-from ticket_engine.gate import GateResult, format_gate_report, run_gate
+from ticket_engine.gate import GateCommandResult, GateResult, format_gate_report, run_gate
 from ticket_engine.github import GitHubClient
 from ticket_engine.local_config import LocalRepoEntry, LocalWorkerConfig
 from ticket_engine.parser import Ticket, TicketParser
@@ -119,7 +129,7 @@ from ticket_engine.prompt import (
 from ticket_engine.prompt import (
     extract_progress_note as _extract_progress_note,
 )
-from ticket_engine.repo_env import CommandRunner, default_command_runner
+from ticket_engine.repo_env import CommandRunner, default_command_runner, env_paths
 from ticket_engine.sonnet import SonnetDriver
 
 logger = logging.getLogger(__name__)
@@ -1081,6 +1091,10 @@ class LocalWorker:
             self._gate_env(entry, cfg),
             self._command_runner,
         )
+        if gate.passed:
+            gate = self._with_local_integrity(
+                gate, entry, worktree_path, cfg, push_env
+            )
         if not gate.passed:
             logger.warning(
                 "pre-push gate red for %s #%02d\n%s",
@@ -1096,6 +1110,51 @@ class LocalWorker:
             entry, ticket, ticket_path, worktree_path, ticket_branch, effort
         )
         return gate
+
+    def _with_local_integrity(
+        self,
+        gate: GateResult,
+        entry: LocalRepoEntry,
+        worktree_path: str,
+        cfg: RepoConfig,
+        push_env: dict[str, str] | None,
+    ) -> GateResult:
+        """Append the local integrity run to a green gate (ticket 73, ADR 0011 rule 3).
+
+        Exit 0 (a pass or a hold) is a passed entry; any other exit code is a failed
+        entry named `integrity gate (local)` carrying the runner's output, so a
+        crashed run blocks the push rather than passing unseen.
+        """
+        branch = cfg.default_branch
+        rc, out = self._git_runner(
+            ["git", "-C", worktree_path, "fetch", "origin", branch], worktree_path, push_env
+        )
+        if rc != 0:
+            logger.warning("Fetching origin/%s failed (rc=%d): %s", branch, rc, out.strip())
+        python = env_paths(self.config.envs_dir, entry.repo, os.name == "nt").python
+        engine_src = str(pathlib.Path(ticket_engine.__file__).resolve().parents[1])
+        env = {**(self._gate_env(entry, cfg) or os.environ), "PYTHONPATH": engine_src}
+        command = [
+            str(python),
+            "-m",
+            "ticket_engine.integrity_runner",
+            "--local",
+            "--repo-path",
+            worktree_path,
+            "--base-ref",
+            f"origin/{branch}",
+        ]
+        exit_code, output = self._command_runner(command, worktree_path, env, False)
+        output = output or ""
+        result = GateCommandResult(
+            command="integrity gate (local)",
+            exit_code=exit_code,
+            passed=exit_code == 0,
+            output_tail=output[-4000:],
+        )
+        return GateResult(
+            passed=gate.passed and result.passed, results=(*gate.results, result)
+        )
 
     def _default_branch(self, entry: LocalRepoEntry) -> str:
         """The repo's configured default branch, for a PR's base."""
