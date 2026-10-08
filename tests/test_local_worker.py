@@ -940,6 +940,7 @@ def test_pr_opened_when_worktree_ticket_is_done():
         github_client=mock_github,
         agy_driver=AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}')),
         git_runner=_make_git_runner([]),
+        command_runner=lambda cmd, cwd, env, shell: (0, ""),
         read_ticket_fn=lambda p: done_content,
     )
     success = worker.run_one(make_repo_entry(repo="owner/repo", path="/fake/repo"), ticket)
@@ -970,6 +971,7 @@ def test_no_second_pr_when_one_already_open():
         github_client=mock_github,
         agy_driver=AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}')),
         git_runner=_make_git_runner([]),
+        command_runner=lambda cmd, cwd, env, shell: (0, ""),
         read_ticket_fn=lambda p: done_content,
     )
     success = worker.run_one(make_repo_entry(), ticket)
@@ -1420,6 +1422,7 @@ def test_resumes_exhausted_converts_existing_open_pr_to_draft():
         github_client=mock_github,
         agy_driver=AgyDriver(run_fn=run_fn),
         git_runner=_make_git_runner(git_calls),
+        command_runner=lambda cmd, cwd, env, shell: (0, ""),
         sleep_fn=lambda s: None,
         read_ticket_fn=lambda p: "# 09: Test\n**Status:** in-progress\n\n## Comments\n",
         write_ticket_fn=lambda p, c: None,
@@ -1500,6 +1503,7 @@ def test_second_escalation_of_same_ticket_creates_no_second_issue():
         github_client=mock_github,
         agy_driver=AgyDriver(run_fn=run_fn),
         git_runner=_make_git_runner(git_calls),
+        command_runner=lambda cmd, cwd, env, shell: (0, ""),
         sleep_fn=lambda s: None,
         read_ticket_fn=lambda p: "# 09: Test\n**Status:** in-progress\n\n## Comments\n",
         write_ticket_fn=lambda p, c: None,
@@ -1876,6 +1880,7 @@ def test_run_one_uses_repo_relative_ticket_path_with_a_loaded_ticket(tmp_path):
         github_client=mock_github,
         agy_driver=AgyDriver(run_fn=run_fn),
         git_runner=_make_git_runner([]),
+        command_runner=lambda cmd, cwd, env, shell: (0, ""),
         read_ticket_fn=lambda p: done_content,
     )
     entry = make_repo_entry(path=str(tmp_path))
@@ -2176,6 +2181,7 @@ def test_refused_pr_after_success_is_logged_and_run_one_returns(caplog):
         github_client=mock_github,
         agy_driver=AgyDriver(run_fn=lambda a, cwd=None: (0, '{"status": "SUCCESS"}')),
         git_runner=_make_git_runner([]),
+        command_runner=lambda cmd, cwd, env, shell: (0, ""),
         read_ticket_fn=lambda p: "# 09: T\n**Status:** done\n\n## Comments\n",
     )
     with caplog.at_level(logging.WARNING):
@@ -2288,6 +2294,7 @@ def test_run_one_runs_agy_with_the_repos_env():
         github_client=mock_github,
         agy_driver=AgyDriver(run_fn=fake_run),
         git_runner=_make_git_runner([]),
+        command_runner=lambda cmd, cwd, env, shell: (0, ""),
         read_ticket_fn=lambda p: "# 09: T\n**Status:** done\n\n## Comments\n",
         env_for=lambda e: {"VIRTUAL_ENV": "/envs/repo"},
     )
@@ -2322,3 +2329,186 @@ def test_fix_ci_runs_agy_with_the_repos_env():
     assert recorded_envs == [{"VIRTUAL_ENV": "/envs/repo"}]
 
 
+
+
+# ---------------------------------------------------------------------------
+# Ticket 72: the pre-push gate (ADR 0011 rule 3)
+# ---------------------------------------------------------------------------
+
+_GATE_MARKER = "FAKE_GATE_SECRET_OUTPUT_24680"
+_DONE_FILE = "# 09: T\n\n**Status:** done\n\n## Comments\n"
+_OPEN_FILE = "# 09: T\n\n**Status:** in-progress\n\n## Comments\n"
+
+
+def _gate_setup(
+    tmp_path,
+    gate_script,
+    *,
+    marks_done=True,
+    open_pr=None,
+    on_agy_run=None,
+    **config,
+):
+    """A LocalWorker with a real ticket file in a real (tmp) worktree folder.
+
+    `gate_script(call_number, command) -> (exit_code, output)` scripts the fake
+    command runner; the fake agy run writes the ticket file's status. Git pushes
+    made from the main thread (not the checkpoint timer) are collected in the
+    returned list.
+    """
+    import threading
+
+    ticket = make_ticket(9, effort="phase-1")
+    entry = make_repo_entry(path=str(tmp_path / "repo"), repo="owner/repo")
+    worker_cfg = make_config(worktree_base=str(tmp_path / "wt"), **config)
+    worktree = tmp_path / "wt" / "ticket-phase-1-09-ticket-9"
+    ticket_file = worktree / _ticket_path_str(ticket, "phase-1")
+    ticket_file.parent.mkdir(parents=True)
+    (worktree / ".git").write_text("gitdir: elsewhere", encoding="utf-8")
+    ticket_file.write_text(_OPEN_FILE, encoding="utf-8")
+
+    prompts: list[str] = []
+    gate_calls: list[tuple[int, str]] = []
+    pushes: list[list[str]] = []
+    main_thread = threading.current_thread()
+    git_log: list[list[str]] = []
+    base_git = _make_git_runner(git_log)
+
+    def git_runner(args, cwd=None, env=None):
+        if "push" in args and threading.current_thread() is main_thread:
+            pushes.append(list(args))
+        return base_git(args, cwd, env)
+
+    def run_fn(args, cwd=None):
+        prompts.append(args[args.index("-p") + 1])
+        if on_agy_run is not None:
+            on_agy_run(len(prompts), github, pushes)
+        if marks_done:
+            ticket_file.write_text(_DONE_FILE, encoding="utf-8")
+        return 0, json.dumps({"status": "SUCCESS"})
+
+    def command_runner(cmd, cwd, env, shell):
+        gate_calls.append((len(gate_calls), cmd))
+        return gate_script(len(gate_calls) - 1, cmd)
+
+    github = make_fake_github()
+    github.find_open_pr.return_value = open_pr
+    github.find_open_issue.return_value = None
+    worker = LocalWorker(
+        config=worker_cfg,
+        github_client=github,
+        agy_driver=AgyDriver(run_fn=run_fn),
+        git_runner=git_runner,
+        sleep_fn=lambda s: None,
+        command_runner=command_runner,
+    )
+    return worker, entry, ticket, github, prompts, gate_calls, pushes, git_log
+
+
+def _only_ruff_fails(call, cmd):
+    return (1, "E501 line too long") if cmd == "ruff check ." else (0, "ok")
+
+
+def test_red_gate_opens_no_pull_request(tmp_path):
+    seen = {}
+
+    def on_agy_run(n, github, pushes):
+        if n == 2:  # the run after the red gate: nothing may have gone out
+            seen["prs"] = github.create_pull_request.call_count
+            seen["pushes"] = len(pushes)
+
+    worker, entry, ticket, _, _, _, _, _ = _gate_setup(
+        tmp_path,
+        lambda call, cmd: _only_ruff_fails(call, cmd) if call < 3 else (0, "ok"),
+        on_agy_run=on_agy_run,
+        max_resumes_per_ticket=3,
+    )
+    worker.run_one(entry, ticket)
+    assert seen == {"prs": 0, "pushes": 0}
+
+
+def test_red_gate_does_not_push_to_a_branch_with_an_open_pr(tmp_path):
+    seen = {}
+
+    def on_agy_run(n, github, pushes):
+        if n == 2:
+            seen["pushes"] = len(pushes)
+
+    worker, entry, ticket, github, _, _, pushes, _ = _gate_setup(
+        tmp_path,
+        lambda call, cmd: _only_ruff_fails(call, cmd) if call < 3 else (0, "ok"),
+        open_pr=125,
+        on_agy_run=on_agy_run,
+        max_resumes_per_ticket=3,
+    )
+    worker.run_one(entry, ticket)
+    assert seen == {"pushes": 0}
+    assert len(pushes) == 1  # the green second run
+    github.create_pull_request.assert_not_called()
+
+
+def test_checkpoint_push_without_pr_is_ungated(tmp_path):
+    worker, entry, ticket, github, _, gate_calls, pushes, _ = _gate_setup(
+        tmp_path, _only_ruff_fails, marks_done=False
+    )
+    worker.run_one(entry, ticket)
+    assert gate_calls == []
+    assert len(pushes) == 1
+    github.create_pull_request.assert_not_called()
+
+
+def test_red_gate_sends_agy_back_with_every_failure_and_counts_a_resume(tmp_path):
+    def script(call, cmd):
+        if call < 3:  # first run: ruff and pytest fail, the checks script passes
+            return (1, f"{cmd} FAILED HERE") if cmd != "python scripts/check_tests_first.py" else (0, "ok")
+        return 0, "ok"
+
+    worker, entry, ticket, github, prompts, _, pushes, _ = _gate_setup(
+        tmp_path, script, max_resumes_per_ticket=3
+    )
+    worker.run_one(entry, ticket)
+    assert len(prompts) == 2
+    assert "## PRE-PUSH GATE FAILED — FIX IT" not in prompts[0]
+    assert "## PRE-PUSH GATE FAILED — FIX IT" in prompts[1]
+    assert "ruff check . FAILED HERE" in prompts[1]
+    assert "pytest FAILED HERE" in prompts[1]
+    assert github.create_pull_request.call_count == 1
+    assert github.create_pull_request.call_args.kwargs.get("draft") in (None, False)
+    assert len(pushes) == 1
+
+
+def test_red_gate_every_run_escalates_when_resumes_run_out(tmp_path):
+    worker, entry, ticket, github, prompts, _, pushes, git_log = _gate_setup(
+        tmp_path, _only_ruff_fails, max_resumes_per_ticket=3
+    )
+    result = worker.run_one(entry, ticket)
+    assert result is False
+    assert len(prompts) == 3
+    assert [c for c in git_log if "commit" in c and "-m" in c][-1][-1] == (
+        "Escalate 09: resumes exhausted"
+    )
+    assert len(pushes) == 1  # the escalation's push, nothing from the gate
+    assert github.create_pull_request.call_args.kwargs["draft"] is True
+    github.add_issue_labels.assert_called_once()
+    github.create_issue.assert_called_once()
+
+
+def test_green_gate_pushes_and_opens_the_pr(tmp_path):
+    worker, entry, ticket, github, prompts, gate_calls, pushes, _ = _gate_setup(
+        tmp_path, lambda call, cmd: (0, "ok")
+    )
+    assert worker.run_one(entry, ticket) is True
+    assert len(prompts) == 1
+    assert [c for _, c in gate_calls] == ["ruff check .", "python scripts/check_tests_first.py", "pytest"]
+    assert len(pushes) == 1
+    github.create_pull_request.assert_called_once()
+
+
+def test_gate_output_never_reaches_a_github_request_body(tmp_path):
+    worker, entry, ticket, github, _, _, _, _ = _gate_setup(
+        tmp_path, lambda call, cmd: (1, _GATE_MARKER), max_resumes_per_ticket=2
+    )
+    worker.run_one(entry, ticket)
+    assert github.mock_calls
+    for call in github.mock_calls:
+        assert _GATE_MARKER not in repr(call)
