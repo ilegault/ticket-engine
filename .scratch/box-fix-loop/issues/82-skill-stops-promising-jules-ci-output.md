@@ -1,6 +1,6 @@
 # 82: The skill stops promising Jules its CI output, and the dead escalation path says it is Jules-only
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Runner:** any
 
@@ -38,9 +38,9 @@ honours it.
 Write the tests first and watch each fail before changing `src/`. Tests read the
 real skill through `load_ticket_skill()`; nothing is faked.
 
-- [ ] **No false promise.** Test `test_skill_does_not_promise_jules_the_ci_output` (in `tests/test_prompt.py`): the skill text does not contain `you will receive the failing`.
-- [ ] **The replacement rule is there.** Test `test_skill_tells_jules_to_run_every_gate_command_itself`: the skill text contains `The engine does not yet send you CI results`.
-- [ ] **The dead path says so.** Test `test_dispatcher_pr_escalation_is_documented_as_jules_only`: `EscalatePRAction.__doc__` and `LiveDispatcher.dispatch_escalations_and_stale_claims.__doc__` both contain `Jules-only and not wired into live dispatch`.
+- [x] **No false promise.** Test `test_skill_does_not_promise_jules_the_ci_output` (in `tests/test_prompt.py`): the skill text does not contain `you will receive the failing`.
+- [x] **The replacement rule is there.** Test `test_skill_tells_jules_to_run_every_gate_command_itself`: the skill text contains `The engine does not yet send you CI results`.
+- [x] **The dead path says so.** Test `test_dispatcher_pr_escalation_is_documented_as_jules_only`: `EscalatePRAction.__doc__` and `LiveDispatcher.dispatch_escalations_and_stale_claims.__doc__` both contain `Jules-only and not wired into live dispatch`.
 
 ## Gate
 
@@ -51,3 +51,12 @@ In CI order (`.github/workflows/ci.yml`):
     pytest -q
 
 ## Comments
+
+### Summary (2026-10-07)
+- In `src/ticket_engine/resources/ticket_skill.md`, replaced the Jules section bullet promising failing CI output with a rule instructing the worker to run all gate commands itself before finishing.
+- Added docstrings to `EscalatePRAction` (`src/ticket_engine/dispatch.py`) and `dispatch_escalations_and_stale_claims` (`src/ticket_engine/live_dispatch.py`) documenting that they are Jules-only and not wired into live dispatch.
+- Added unit tests in `tests/test_prompt.py` covering all three criteria:
+  - `test_skill_does_not_promise_jules_the_ci_output`
+  - `test_skill_tells_jules_to_run_every_gate_command_itself`
+  - `test_dispatcher_pr_escalation_is_documented_as_jules_only`
+- Full test suite and lint gates pass cleanly.
