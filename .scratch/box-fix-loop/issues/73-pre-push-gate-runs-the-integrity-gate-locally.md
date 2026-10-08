@@ -1,6 +1,6 @@
 # 73: Pre-push gate: the integrity gate runs locally, writing nothing to GitHub
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
