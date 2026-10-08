@@ -69,6 +69,12 @@ can be seen:
   `_do_fix_ci` increments before running `fix_ci` and decrements if quota;
   `EscalateFixes` calls `LocalWorker.escalate_fixes` and marks the PR
   `escalated`.
+- Ticket 80 (ADR 0012): between runs the box compares the engine's default
+  branch head with the commit it runs. When they differ (and the head is not a
+  commit the launcher rolled back) `UpdateEngine` fetches, checks out the new
+  commit, reinstalls, records it in `launcher_state.json` and exits 75 so the
+  launcher starts the box on the new code. A `rollback.json` the launcher left
+  behind is reported once as a box alert and renamed `rollback.reported.json`.
 """
 from __future__ import annotations
 
@@ -80,6 +86,8 @@ import logging
 import logging.handlers
 import os
 import pathlib
+import re
+import sys
 import time
 from collections.abc import Callable
 
@@ -96,6 +104,7 @@ from ticket_engine.box_core import (
     FixCI,
     RaiseAlert,
     ResumeClaim,
+    UpdateEngine,
     Wait,
     WriteStatus,
 )
@@ -137,6 +146,11 @@ _BOX_REPOS_FILENAME = "box_repos.json"
 _FIX_ATTEMPTS_FILENAME = FIX_ATTEMPTS_FILENAME
 _LEDGER_WINDOW_HOURS = 24
 _AUTH_RETRY_HOURS = 1
+_LAUNCHER_STATE_FILENAME = "launcher_state.json"
+_ROLLBACK_FILENAME = "rollback.json"
+_ROLLBACK_REPORTED_FILENAME = "rollback.reported.json"
+_ENGINE_UPDATED_EXIT_CODE = 75
+_COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
 GitRunner = Callable[[list[str], str | None, dict[str, str] | None], tuple[int, str]]
 
@@ -162,12 +176,14 @@ class BoxLoop:
         now_fn: Callable[[], datetime.datetime] | None = None,
         ticket_loader: Callable[[LocalRepoEntry], list[Ticket]] | None = None,
         repo_list_fn: Callable[[], list[RepoListEntry]] | None = None,
+        exit_fn: Callable[[int], None] | None = None,
     ) -> None:
         self.config = config
         self.worker = worker
         self.github_client = github_client
         self.box_core = box_core if box_core is not None else BoxCore()
         self._repo_list_fn = repo_list_fn
+        self._exit: Callable[[int], None] = exit_fn if exit_fn is not None else sys.exit
         self._last_repo_list: list[RepoListEntry] = []
         # The default runner looks `_default_git_runner` up at call time and
         # always passes the configured timeout.
@@ -217,6 +233,7 @@ class BoxLoop:
     def _tick(self) -> None:
         world = self._build_world()
         self._last_world = world
+        self._report_rollback(world)
 
         if self._auth_retry_at is not None and world.now < self._auth_retry_at:
             step = self.box_core.next_step(world)
@@ -237,9 +254,12 @@ class BoxLoop:
         while True:
             self.tick()
 
-    def _record_good_commit(self) -> None:
-        """Record the engine checkout commit as good and current in launcher_state.json."""
-        engine_checkout = pathlib.Path(ticket_engine.__file__).resolve().parents[2]
+    def _engine_checkout(self) -> pathlib.Path:
+        return pathlib.Path(ticket_engine.__file__).resolve().parents[2]
+
+    def _running_commit(self) -> str:
+        """The commit of the engine checkout, or "" when git cannot say."""
+        engine_checkout = self._engine_checkout()
         rc, out = self._git_runner(
             ["git", "-C", str(engine_checkout), "rev-parse", "HEAD"],
             str(engine_checkout),
@@ -247,26 +267,47 @@ class BoxLoop:
         )
         if rc != 0:
             logger.debug("git rev-parse HEAD failed (exit %d): %s", rc, out.strip())
-            return
-        commit = out.strip()
-        if not commit:
-            return
+            return ""
+        return out.strip()
 
-        state_path = pathlib.Path(self.config.logs_dir) / "launcher_state.json"
-        state_data: dict[str, object] = {}
-        if state_path.is_file():
-            try:
-                loaded = json.loads(state_path.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    state_data = loaded
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Failed to read launcher_state.json %s: %s", state_path, exc)
+    def _launcher_state_path(self) -> pathlib.Path:
+        return pathlib.Path(self.config.logs_dir) / _LAUNCHER_STATE_FILENAME
 
-        state_data["good_commit"] = commit
-        state_data["current_commit"] = commit
+    def _read_launcher_state(self) -> dict[str, object]:
+        state_path = self._launcher_state_path()
+        if not state_path.is_file():
+            return {}
+        try:
+            loaded = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Failed to read launcher_state.json %s: %s", state_path, exc)
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+    def _update_launcher_state(self, **fields: object) -> None:
+        state_path = self._launcher_state_path()
+        state_data = self._read_launcher_state()
+        state_data.update(fields)
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.write_text(json.dumps(state_data, indent=2), encoding="utf-8")
+
+    def _record_good_commit(self) -> None:
+        """Record the engine checkout commit as good and current in launcher_state.json."""
+        world = self._last_world
+        commit = world.running_commit if world is not None else self._running_commit()
+        if not commit:
+            return
+        self._update_launcher_state(good_commit=commit, current_commit=commit)
         self._recorded_good_commit = True
+
+    def _engine_head(self) -> str:
+        """The engine default branch's head commit, or "" when GitHub cannot say."""
+        try:
+            head = self.github_client.get_default_branch_sha(self.config.engine_repo, "master")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not read the engine head: %s", exc)
+            return ""
+        return head if isinstance(head, str) else ""
 
     # ------------------------------------------------------------------
     # World building
@@ -405,6 +446,9 @@ class BoxLoop:
             weekly_cap_backoff_hours=self.config.weekly_cap_backoff_hours,
             now=now,
             developer_paused=developer_paused,
+            engine_head=self._engine_head(),
+            running_commit=self._running_commit(),
+            bad_commit=str(self._read_launcher_state().get("bad_commit", "")),
         )
 
     def _collect_open_prs(
@@ -456,6 +500,8 @@ class BoxLoop:
             self._write_status(world)
         elif isinstance(step, Wait):
             self._sleep(max((step.until - world.now).total_seconds(), 0.0))
+        elif isinstance(step, UpdateEngine):
+            self._do_update_engine(step)
         elif isinstance(step, FixCI):
             self._do_fix_ci(world, step)
         elif isinstance(step, EscalateFixes):
@@ -471,6 +517,49 @@ class BoxLoop:
         else:
             msg = f"Unknown box step: {step!r}"
             raise TypeError(msg)
+
+    def _do_update_engine(self, step: UpdateEngine) -> None:
+        """Check out the new engine commit, reinstall, and exit 75 for the launcher."""
+        engine = str(self._engine_checkout())
+        commands = [
+            ["git", "-C", engine, "fetch", "origin", "master"],
+            ["git", "-C", engine, "checkout", "--detach", step.commit],
+            [sys.executable, "-m", "pip", "install", "-e", engine],
+        ]
+        for command in commands:
+            rc, out = self._git_runner(command, engine, None)
+            if rc != 0:
+                logger.warning(
+                    "engine update to %s failed at %r (exit %d): %s",
+                    step.commit,
+                    command[:5],
+                    rc,
+                    out.strip(),
+                )
+                return
+        self._update_launcher_state(
+            current_commit=step.commit, updated_at=self._now().isoformat()
+        )
+        logger.info("engine updated to %s; exiting %d", step.commit, _ENGINE_UPDATED_EXIT_CODE)
+        self._exit(_ENGINE_UPDATED_EXIT_CODE)
+
+    def _report_rollback(self, world: BoxWorld) -> None:
+        """Raise one alert for a rollback the launcher recorded, then mark it reported."""
+        path = pathlib.Path(self.config.logs_dir) / _ROLLBACK_FILENAME
+        if not path.is_file():
+            return
+        bad_commit = world.bad_commit
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(record, dict) and record.get("bad_commit"):
+                bad_commit = str(record["bad_commit"])
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Failed to read rollback record %s: %s", path, exc)
+        try:
+            self._raise_alert(AlertKind.engine_rolled_back, world.now, commit=bad_commit or None)
+            path.replace(path.with_name(_ROLLBACK_REPORTED_FILENAME))
+        except ValueError as exc:
+            logger.warning("Rollback record %s not reportable: %s", path, exc)
 
     def _entry_for(self, repo: str) -> LocalRepoEntry:
         for entry in self._current_entries():
@@ -625,8 +714,12 @@ class BoxLoop:
             return None
 
     def _current_box_status(self, world: BoxWorld) -> BoxStatus:
+        launcher = self._read_launcher_state()
+        engine_commit = str(launcher.get("current_commit", ""))
         extras = {
             "step": self._step,
+            "engine_commit": engine_commit if _COMMIT_SHA_RE.match(engine_commit) else "",
+            "engine_updated_at": _parse_iso(launcher.get("updated_at")),
             "last_pr": self._read_last_pr(),
             "starts": tuple(
                 (repo.repo, world.starts_24h.get(repo.repo, 0), repo.config.daily_cap)
@@ -680,10 +773,12 @@ class BoxLoop:
     # Alerts
     # ------------------------------------------------------------------
 
-    def _raise_alert(self, kind: AlertKind, since: datetime.datetime) -> None:
+    def _raise_alert(
+        self, kind: AlertKind, since: datetime.datetime, commit: str | None = None
+    ) -> None:
         repo = self.config.engine_repo
         owner = repo.split("/")[0]
-        title, body = render_box_alert(kind, owner, since)
+        title, body = render_box_alert(kind, owner, since, commit=commit)
         if self.github_client.find_open_issue(repo, "engine:box-alert", title) is None:
             self.github_client.create_issue(repo, title, body, ["engine:box-alert"])
 
@@ -884,6 +979,8 @@ def _describe_step(step: object) -> str:
         return f"claim {step.repo} #{step.ticket.number:02d}"
     if isinstance(step, ResumeClaim):
         return f"resume {step.repo} #{step.ticket_number:02d}"
+    if isinstance(step, UpdateEngine):
+        return f"update engine to {step.commit[:7]}"
     if isinstance(step, FixCI):
         return f"fix CI {step.repo} #{step.ticket_number:02d} (PR {step.pr_number})"
     if isinstance(step, EscalateFixes):

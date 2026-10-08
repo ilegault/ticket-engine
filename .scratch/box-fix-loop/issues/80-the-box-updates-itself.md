@@ -1,6 +1,6 @@
 # 80: The box updates its own engine code between runs, and reports a rollback
 
-**Status:** in-progress
+**Status:** done
 
 **Runner:** any
 
@@ -54,11 +54,11 @@ Write the tests first and watch each fail before changing `src/`. `BoxCore` test
 are pure. Box loop tests use `make_loop`, `make_github()` and a fake git runner that
 answers `rev-parse HEAD`; `exit_fn` is a recorder.
 
-- [ ] **The engine moved → update.** Tests `test_engine_moved_gives_update_step` and `test_update_comes_after_write_status_and_before_quota_wait`.
-- [ ] **Never back onto a bad commit.** Test `test_bad_commit_is_not_updated_to`: `engine_head == bad_commit` → not `UpdateEngine`.
-- [ ] **The update checks out, reinstalls and exits 75.** Test `test_update_step_checks_out_reinstalls_and_exits_75`: asserts the three command argument lists in order, `launcher_state.json`'s `current_commit`, and `exit_fn` called with 75. Test `test_failed_checkout_does_not_exit`.
-- [ ] **A rollback is reported once.** Test `test_rollback_record_raises_one_alert_naming_the_bad_commit`: `rollback.json` present; after two ticks exactly one issue titled `Box alert: engine update rolled back` was created, its body has `Commit: <bad sha>`, and `rollback.reported.json` exists. Rewrite `test_render_box_alert_titles_and_bodies` in place to include the new kind.
-- [ ] **The status shows the engine.** Test `test_box_status_round_trips_the_engine_line`.
+- [x] **The engine moved → update.** Tests `test_engine_moved_gives_update_step` and `test_update_comes_after_write_status_and_before_quota_wait`.
+- [x] **Never back onto a bad commit.** Test `test_bad_commit_is_not_updated_to`: `engine_head == bad_commit` → not `UpdateEngine`.
+- [x] **The update checks out, reinstalls and exits 75.** Test `test_update_step_checks_out_reinstalls_and_exits_75`: asserts the three command argument lists in order, `launcher_state.json`'s `current_commit`, and `exit_fn` called with 75. Test `test_failed_checkout_does_not_exit`.
+- [x] **A rollback is reported once.** Test `test_rollback_record_raises_one_alert_naming_the_bad_commit`: `rollback.json` present; after two ticks exactly one issue titled `Box alert: engine update rolled back` was created, its body has `Commit: <bad sha>`, and `rollback.reported.json` exists. Rewrite `test_render_box_alert_titles_and_bodies` in place to include the new kind.
+- [x] **The status shows the engine.** Test `test_box_status_round_trips_the_engine_line`.
 
 ## Gate
 
@@ -69,3 +69,4 @@ In CI order (`.github/workflows/ci.yml`):
     pytest -q
 
 ## Comments
+2026-10-08: done. `UpdateEngine` step and `BoxWorld` engine fields in `box_core.py`; `BoxLoop` fills them, carries out the update (fetch, checkout, pip install, `launcher_state.json`, `exit_fn(75)`) and reports `rollback.json` once; `engine_rolled_back` alert with `Commit:` line and the optional `Engine:` status line in `box_status.py`. Tests: the named tests in `test_box_core.py`, `test_box_worker.py`, `test_box_status.py`; `test_render_box_alert_titles_and_bodies` rewritten in place; allowlist test widened. Needs `tzdata` installed to run Central-time tests locally.

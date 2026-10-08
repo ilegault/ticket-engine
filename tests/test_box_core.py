@@ -25,6 +25,7 @@ from ticket_engine.box_core import (
     FixCI,
     RaiseAlert,
     ResumeClaim,
+    UpdateEngine,
     Wait,
     WriteStatus,
 )
@@ -70,6 +71,9 @@ def make_world(
     weekly_cap_after_hours: int = 5,
     weekly_cap_backoff_hours: int = 12,
     developer_paused: bool = False,
+    engine_head: str = "",
+    running_commit: str = "",
+    bad_commit: str = "",
 ) -> BoxWorld:
     return BoxWorld(
         repos=repos if repos is not None else [],
@@ -85,6 +89,9 @@ def make_world(
         weekly_cap_backoff_hours=weekly_cap_backoff_hours,
         now=now,
         developer_paused=developer_paused,
+        engine_head=engine_head,
+        running_commit=running_commit,
+        bad_commit=bad_commit,
     )
 
 
@@ -797,3 +804,65 @@ def test_escalated_pr_gets_neither_fix_nor_escalation() -> None:
     step = BoxCore.next_step(world)
     assert not isinstance(step, (FixCI, EscalateFixes))
     assert step == Wait(until=now + datetime.timedelta(minutes=world.poll_interval_minutes))
+
+
+# ---------------------------------------------------------------------------
+# Ticket 80: the box updates its own engine between runs
+# ---------------------------------------------------------------------------
+
+_NEW = "b" * 40
+_OLD = "a" * 40
+
+
+def test_engine_moved_gives_update_step() -> None:
+    now = datetime.datetime(2026, 10, 8, 12, 0, tzinfo=datetime.UTC)
+    world = make_world(
+        now=now,
+        last_status_write=now - datetime.timedelta(minutes=5),
+        engine_head=_NEW,
+        running_commit=_OLD,
+    )
+    assert BoxCore.next_step(world) == UpdateEngine(commit=_NEW)
+
+    # Same commit, or either side unknown: no update.
+    for head, running in ((_OLD, _OLD), ("", _OLD), (_NEW, "")):
+        quiet = make_world(
+            now=now,
+            last_status_write=now - datetime.timedelta(minutes=5),
+            engine_head=head,
+            running_commit=running,
+        )
+        assert not isinstance(BoxCore.next_step(quiet), UpdateEngine)
+
+
+def test_update_comes_after_write_status_and_before_quota_wait() -> None:
+    now = datetime.datetime(2026, 10, 8, 12, 0, tzinfo=datetime.UTC)
+    due = make_world(
+        now=now,
+        last_status_write=None,
+        engine_head=_NEW,
+        running_commit=_OLD,
+        quota_retry_at=now + datetime.timedelta(hours=1),
+    )
+    assert BoxCore.next_step(due) == WriteStatus()
+
+    waiting = make_world(
+        now=now,
+        last_status_write=now - datetime.timedelta(minutes=5),
+        engine_head=_NEW,
+        running_commit=_OLD,
+        quota_retry_at=now + datetime.timedelta(hours=1),
+    )
+    assert BoxCore.next_step(waiting) == UpdateEngine(commit=_NEW)
+
+
+def test_bad_commit_is_not_updated_to() -> None:
+    now = datetime.datetime(2026, 10, 8, 12, 0, tzinfo=datetime.UTC)
+    world = make_world(
+        now=now,
+        last_status_write=now - datetime.timedelta(minutes=5),
+        engine_head=_NEW,
+        running_commit=_OLD,
+        bad_commit=_NEW,
+    )
+    assert not isinstance(BoxCore.next_step(world), UpdateEngine)
