@@ -1321,3 +1321,106 @@ def test_machine_files_stay_utc(tmp_path):
     assert ledger[0]["started_at"].endswith("+00:00")
     assert pause["first_failure"].endswith("+00:00")
     assert pause["retry_at"].endswith("+00:00")
+
+
+# ---------------------------------------------------------------------------
+# Ticket 80: the box updates its own engine
+# ---------------------------------------------------------------------------
+
+_OLD_SHA = "a" * 40
+_NEW_SHA = "b" * 40
+
+
+def _engine_runner(running: str, calls: list, fail_on: str | None = None):
+    def runner(args, cwd, env):
+        calls.append(list(args))
+        if "rev-parse" in args and "HEAD" in args:
+            return (0, running + "\n")
+        if fail_on is not None and fail_on in args:
+            return (1, "boom")
+        return (0, "")
+
+    return runner
+
+
+def _make_update_loop(tmp_path, calls, exits, fail_on=None):
+    gh = make_github()
+    gh.get_default_branch_sha.return_value = _NEW_SHA
+    loop = make_loop(
+        tmp_path, FakeWorker(), gh, git_runner=_engine_runner(_OLD_SHA, calls, fail_on)
+    )
+
+    def record_exit(code):
+        exits.append(code)
+        raise SystemExit(code)
+
+    loop._exit = record_exit
+    loop._last_status_write = _NOW - datetime.timedelta(minutes=1)
+    return loop, gh
+
+
+def test_update_step_checks_out_reinstalls_and_exits_75(tmp_path):
+    import sys
+
+    calls: list[list[str]] = []
+    exits: list[int] = []
+    loop, gh = _make_update_loop(tmp_path, calls, exits)
+    with pytest.raises(SystemExit):
+        loop.tick()
+
+    engine = str(pathlib.Path(ticket_engine.__file__).resolve().parents[2])
+    updates = [c for c in calls if "rev-parse" not in c and "pull" not in c]
+    assert updates == [
+        ["git", "-C", engine, "fetch", "origin", "master"],
+        ["git", "-C", engine, "checkout", "--detach", _NEW_SHA],
+        [sys.executable, "-m", "pip", "install", "-e", engine],
+    ]
+    assert exits == [75]
+    state = json.loads((tmp_path / "logs" / "launcher_state.json").read_text("utf-8"))
+    assert state["current_commit"] == _NEW_SHA
+    assert state["updated_at"]
+    gh.get_default_branch_sha.assert_called_with("owner/engine", "master")
+
+
+def test_failed_checkout_does_not_exit(tmp_path):
+    calls: list[list[str]] = []
+    exits: list[int] = []
+    loop, _ = _make_update_loop(tmp_path, calls, exits, fail_on="--detach")
+    loop.tick()
+
+    assert exits == []
+    assert not any(c[1:3] == ["-m", "pip"] for c in calls)
+    state = json.loads((tmp_path / "logs" / "launcher_state.json").read_text("utf-8"))
+    assert state["current_commit"] == _OLD_SHA
+
+
+def test_rollback_record_raises_one_alert_naming_the_bad_commit(tmp_path):
+    gh = make_github()
+    loop = make_loop(tmp_path, FakeWorker(), gh)
+    loop._last_status_write = _NOW - datetime.timedelta(minutes=1)
+    logs = tmp_path / "logs"
+    logs.mkdir(parents=True)
+    (logs / "rollback.json").write_text(
+        json.dumps({"bad_commit": _NEW_SHA, "good_commit": _OLD_SHA, "at": _NOW.isoformat()}),
+        encoding="utf-8",
+    )
+
+    created: list[tuple] = []
+
+    def create_issue(repo, title, body, labels):
+        created.append((title, body))
+        return 200 + len(created)
+
+    gh.create_issue.side_effect = create_issue
+    gh.find_open_issue.side_effect = lambda repo, label, title: (
+        300 if any(t == title for t, _ in created) else None
+    )
+
+    loop.tick()
+    loop.tick()
+
+    alerts = [c for c in created if c[0] == "Box alert: engine update rolled back"]
+    assert len(alerts) == 1
+    assert f"Commit: {_NEW_SHA}" in alerts[0][1]
+    assert not (logs / "rollback.json").exists()
+    assert (logs / "rollback.reported.json").exists()

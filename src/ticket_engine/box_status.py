@@ -41,6 +41,11 @@ morning report and the box-silent check may run a different engine version than
 the box that wrote the issue.
 
 Ticket 78 (ADR 0007 rule 4) puts the alert `Since:` lines in Central time too.
+
+Ticket 80 (ADR 0012) adds the `engine_rolled_back` alert, whose body names the
+rolled-back commit (a hex sha only, never free text), and an optional `Engine`
+status line: the first 7 characters of the commit the box runs and when it was
+updated. A body without the line (an older box) still parses.
 """
 from __future__ import annotations
 
@@ -59,6 +64,8 @@ _STEP_RE = re.compile(
     r"|pre-push gate red \(resume \d+/\d+\)|fixing CI \(\d+/\d+\))$"
 )
 _LAST_PR_RE = re.compile(r"^([\w.-]+/[\w.-]+) #(\d+), PR #(\d+), (.+)$")
+_COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}$")
+_ENGINE_RE = re.compile(r"^([0-9a-f]{7,40})(?:, updated (.+))?$")
 _STARTS_ITEM_RE = re.compile(r"^([\w.-]+/[\w.-]+) (\d+)/(\d+)$")
 
 __all__ = [
@@ -121,6 +128,7 @@ class AlertKind(str, Enum):
     weekly_cap = "weekly_cap"
     login_expired = "login_expired"
     box_silent = "box_silent"
+    engine_rolled_back = "engine_rolled_back"
 
 
 class EscalationReason(str, Enum):
@@ -178,6 +186,8 @@ class BoxStatus:
     step: str = "none"
     last_pr: LastPR | None = None
     starts: tuple[tuple[str, int, int], ...] = ()
+    engine_commit: str = ""
+    engine_updated_at: datetime.datetime | None = None
 
     def __post_init__(self) -> None:
         if self.checked_in_at.tzinfo is None:
@@ -209,6 +219,21 @@ class BoxStatus:
             if not _REPO_RE.match(repo):
                 raise ValueError(f"Invalid repository reference: {repo!r}")
         object.__setattr__(self, "starts", starts)
+
+        if self.engine_commit:
+            if not _COMMIT_RE.match(self.engine_commit):
+                raise ValueError(f"Invalid engine commit: {self.engine_commit!r}")
+            object.__setattr__(self, "engine_commit", self.engine_commit[:7])
+        if self.engine_updated_at is not None:
+            if self.engine_updated_at.tzinfo is None:
+                raise ValueError("engine_updated_at must be timezone-aware (UTC)")
+            object.__setattr__(
+                self,
+                "engine_updated_at",
+                self.engine_updated_at.astimezone(datetime.UTC).replace(
+                    second=0, microsecond=0
+                ),
+            )
 
 
 def _parse_iso(text: str) -> datetime.datetime | None:
@@ -257,6 +282,11 @@ def render_box_status(s: BoxStatus) -> str:
         f"Paused until: {paused_str}",
         f"Not ready: {not_ready_str}",
     ]
+    if s.engine_commit:
+        engine_str = s.engine_commit
+        if s.engine_updated_at is not None:
+            engine_str += f", updated {format_display(s.engine_updated_at)}"
+        lines.append(f"Engine: {engine_str}")
     return "\n".join(lines) + "\n"
 
 
@@ -346,6 +376,18 @@ def parse_box_status(text: str) -> BoxStatus | None:
                     return None
                 starts.append((m.group(1), int(m.group(2)), int(m.group(3))))
 
+        engine_commit = ""
+        engine_updated_at: datetime.datetime | None = None
+        if "Engine" in data:
+            m = _ENGINE_RE.match(data["Engine"])
+            if not m:
+                return None
+            engine_commit = m.group(1)
+            if m.group(2) is not None:
+                engine_updated_at = _parse_time(m.group(2))
+                if engine_updated_at is None:
+                    return None
+
         not_ready: tuple[NotReady, ...] = ()
         if "Not ready" in data and data["Not ready"].lower() != "none":
             raw_not_ready = data["Not ready"]
@@ -378,6 +420,8 @@ def parse_box_status(text: str) -> BoxStatus | None:
             step=step,
             last_pr=last_pr,
             starts=tuple(starts),
+            engine_commit=engine_commit,
+            engine_updated_at=engine_updated_at,
         )
     except (ValueError, TypeError, KeyError, IndexError):
         return None
@@ -411,10 +455,13 @@ def render_box_alert(
     kind: AlertKind | str,
     owner: str,
     since: datetime.datetime,
+    commit: str | None = None,
 ) -> tuple[str, str]:
     """Render the issue title and body for an operational box alert."""
     if not _IDENT_RE.match(owner):
         raise ValueError(f"Invalid owner format: {owner!r}")
+    if commit is not None and not _COMMIT_RE.match(commit):
+        raise ValueError(f"Invalid commit: {commit!r}")
 
     try:
         alert_kind = AlertKind(kind)
@@ -425,9 +472,12 @@ def render_box_alert(
         AlertKind.weekly_cap: "Box alert: weekly cap reached",
         AlertKind.login_expired: "Box alert: agy login expired",
         AlertKind.box_silent: "Box alert: box silent",
+        AlertKind.engine_rolled_back: "Box alert: engine update rolled back",
     }
     title = titles[alert_kind]
     body = f"@{owner}\nSince: {format_display(since)}\n"
+    if commit is not None:
+        body += f"Commit: {commit}\n"
     return title, body
 
 

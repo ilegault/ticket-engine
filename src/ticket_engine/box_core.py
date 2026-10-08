@@ -18,6 +18,11 @@ permitting in-flight work to resume.
 Ticket 70 (spec §Problem Statement, ADR 0011 rule 1): fix attempts are counted
 durably in `fix_attempts.json`, and running out escalates the ticket via
 `EscalateFixes` rather than stalling.
+
+Ticket 80 (ADR 0012): the box updates its own engine checkout between runs.
+`BoxWorld` carries the engine's default-branch head, the commit the process is
+running and the commit the launcher rolled back; `UpdateEngine` is chosen right
+after `WriteStatus`, never onto a rolled-back commit.
 """
 from __future__ import annotations
 
@@ -42,6 +47,7 @@ __all__ = [
     "FixCI",
     "RaiseAlert",
     "ResumeClaim",
+    "UpdateEngine",
     "Wait",
     "WriteStatus",
 ]
@@ -88,11 +94,21 @@ class BoxWorld:
     weekly_cap_backoff_hours: int
     now: datetime.datetime
     developer_paused: bool = False
+    engine_head: str = ""
+    running_commit: str = ""
+    bad_commit: str = ""
 
 
 @dataclass(frozen=True)
 class WriteStatus:
     """Action to update the pinned box status issue."""
+
+
+@dataclass(frozen=True)
+class UpdateEngine:
+    """Action to move the box's engine checkout to `commit` and restart."""
+
+    commit: str
 
 
 @dataclass(frozen=True)
@@ -152,6 +168,7 @@ class CloseAlert:
 
 type BoxStep = (
     WriteStatus
+    | UpdateEngine
     | Wait
     | FixCI
     | EscalateFixes
@@ -176,6 +193,17 @@ class BoxCore:
             >= datetime.timedelta(minutes=world.status_interval_minutes)
         ):
             return WriteStatus()
+
+        # Rule 1b (ticket 80, ADR 0012): the engine's default branch moved and the
+        # launcher has not rolled back to it. Each tick is between runs.
+        if (
+            world.engine_head
+            and world.running_commit
+            and world.engine_head != world.running_commit
+            and world.engine_head != world.bad_commit
+           
+        ):
+            return UpdateEngine(commit=world.engine_head)
 
         # Rule 2: Wait(quota_retry_at) while now < quota_retry_at
         if world.quota_retry_at is not None and world.now < world.quota_retry_at:

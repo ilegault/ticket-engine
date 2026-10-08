@@ -48,7 +48,13 @@ PUBLIC_LINE_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
     re.compile(r"^Paused until: (none|\d{4}-\d{2}-\d{2} \d{1,2}:\d{2} (?:AM|PM) (?:CDT|CST))$"),
     re.compile(r"^Not ready: .+$"),
-    re.compile(r"^Box alert: (weekly cap reached|agy login expired|box silent|[\w.-]+/[\w.-]+ not ready)$"),
+    re.compile(r"^Box alert: (weekly cap reached|agy login expired|box silent|engine update rolled back"
+        r"|[\w.-]+/[\w.-]+ not ready)$"),
+    re.compile(r"^Commit: [0-9a-f]{7,40}$"),
+    re.compile(
+        r"^Engine: [0-9a-f]{7}"
+        r"(, updated \d{4}-\d{2}-\d{2} \d{1,2}:\d{2} (?:AM|PM) (?:CDT|CST))?$"
+    ),
     re.compile(r"^@[\w.-]+$"),
     re.compile(r"^Since: \d{4}-\d{2}-\d{2} \d{1,2}:\d{2} (?:AM|PM) (?:CDT|CST)$"),
     re.compile(r"^Escalation: [\w.-]+-\d+ [\w.-]+$"),
@@ -307,9 +313,9 @@ def test_parse_box_status_unreadable_bodies_return_none():
 
 def test_alert_kind_enum():
     assert issubclass(AlertKind, str)
-    expected = {"weekly_cap", "login_expired", "box_silent"}
+    expected = {"weekly_cap", "login_expired", "box_silent", "engine_rolled_back"}
     assert {k.value for k in AlertKind} == expected
-    assert len(AlertKind) == 3
+    assert len(AlertKind) == 4
 
 
 def test_render_box_alert_titles_and_bodies():
@@ -318,11 +324,22 @@ def test_render_box_alert_titles_and_bodies():
         (AlertKind.weekly_cap, "Box alert: weekly cap reached"),
         (AlertKind.login_expired, "Box alert: agy login expired"),
         (AlertKind.box_silent, "Box alert: box silent"),
+        (AlertKind.engine_rolled_back, "Box alert: engine update rolled back"),
     ]
     for kind, expected_title in cases:
         title, body = render_box_alert(kind, "owner", since)
         assert title == expected_title
         assert body == "@owner\nSince: 2026-09-25 10:12 PM CDT\n"
+
+    # Ticket 80: the rollback alert names the bad commit, and only a real sha.
+    title, body = render_box_alert(
+        AlertKind.engine_rolled_back, "owner", since, commit="0123abc"
+    )
+    assert title == "Box alert: engine update rolled back"
+    assert body == "@owner\nSince: 2026-09-25 10:12 PM CDT\nCommit: 0123abc\n"
+    for bad in ("not a sha", "abc", "0123abc\nx", "G" * 10):
+        with pytest.raises(ValueError):
+            render_box_alert(AlertKind.engine_rolled_back, "owner", since, commit=bad)
 
     # Validation
     with pytest.raises(ValueError):
@@ -441,6 +458,15 @@ def test_every_public_box_line_is_on_the_allowlist():
         title, body = render_box_alert(kind, "owner", since)
         all_lines.append(title)
         all_lines.extend(body.splitlines())
+    title, body = render_box_alert(AlertKind.engine_rolled_back, "owner", since, commit="0123abc")
+    all_lines.extend(body.splitlines())
+    s3 = BoxStatus(
+        checked_in_at=since,
+        state=BoxState.idle,
+        engine_commit="0123abc",
+        engine_updated_at=since,
+    )
+    all_lines.extend(render_box_status(s3).splitlines())
 
     # 3. Render all escalation reasons
     for reason in EscalationReason:
@@ -725,3 +751,34 @@ def test_box_alert_since_is_central():
         since=since,
     )
     assert "Since: 2026-07-01 3:11 PM CDT\n" in body
+
+
+# ---------------------------------------------------------------------------
+# Ticket 80: the engine line
+# ---------------------------------------------------------------------------
+
+
+def test_box_status_round_trips_the_engine_line():
+    checked_in = datetime.datetime(2026, 10, 8, 20, 11, tzinfo=datetime.UTC)
+    updated = datetime.datetime(2026, 10, 8, 18, 5, tzinfo=datetime.UTC)
+    s = BoxStatus(
+        checked_in_at=checked_in,
+        state=BoxState.idle,
+        engine_commit="0123abcdef0123abcdef0123abcdef0123abcdef",
+        engine_updated_at=updated,
+    )
+    body = render_box_status(s)
+    assert "Engine: 0123abc, updated 2026-10-08 1:05 PM CDT\n" in body
+    parsed = parse_box_status(body)
+    assert parsed == s
+    assert parsed.engine_commit == "0123abc"
+    assert parsed.engine_updated_at == updated
+
+    never = BoxStatus(checked_in_at=checked_in, state=BoxState.idle, engine_commit="0123abc")
+    assert "Engine: 0123abc\n" in render_box_status(never)
+    assert parse_box_status(render_box_status(never)) == never
+
+    # A body from an older box has no Engine line and still parses.
+    old = BoxStatus(checked_in_at=checked_in, state=BoxState.idle)
+    assert "Engine" not in render_box_status(old)
+    assert parse_box_status(render_box_status(old)) == old
