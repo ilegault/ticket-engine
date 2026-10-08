@@ -1,0 +1,47 @@
+name: Gate
+
+# Runs a target repo's own gate list (its `gate_commands`) in CI, through the
+# engine's `engine-gate`. ADR 0011 rule 4. A caller job named `gate` makes the
+# required check `gate / gate`.
+
+on:
+  workflow_call:
+
+jobs:
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read the repo's environment from .ticket-engine.toml
+        id: cfg
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import pathlib, tomllib
+          path = pathlib.Path(".ticket-engine.toml")
+          data = tomllib.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+          print("python_version=" + str(data.get("python_version", "3.12")))
+          print("install=" + str(data.get("install", "pip install -e .[dev]")))
+          PY
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ steps.cfg.outputs.python_version }}
+
+      - name: Install the repository's own dependencies
+        env:
+          INSTALL_CMD: ${{ steps.cfg.outputs.install }}
+        run: eval "$INSTALL_CMD"
+
+      - name: Install ticket-engine
+        run: |
+          pip install --upgrade pip
+          pip install "ticket-engine @ git+https://github.com/ilegault/ticket-engine.git@v1"
+
+      - name: Run every gate command
+        run: engine-gate

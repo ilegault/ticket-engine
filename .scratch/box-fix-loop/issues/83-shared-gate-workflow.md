@@ -1,6 +1,6 @@
 # 83: The shared `gate.yml` workflow runs a repo's gate list in CI
 
-**Status:** in-progress
+**Status:** done
 
 **Runner:** any
 
@@ -40,9 +40,9 @@ Write the tests first, in a new `tests/test_gate_workflow.py`, and watch each fa
 before adding the workflow. Tests read the workflow file as text, as
 `tests/test_bootstrap_adopt.py` reads caller workflows; nothing is faked.
 
-- [ ] **Reusable, one job named `gate`.** Test `test_gate_workflow_is_reusable_with_one_gate_job`: the file contains `workflow_call:`, a job with `name: gate`, and no other job.
-- [ ] **It builds the repo's environment from its config.** Test `test_gate_workflow_reads_python_version_and_install_from_the_repo_config`: the file mentions `.ticket-engine.toml`, `tomllib`, `python_version`, `install`, and `actions/setup-python@v5`.
-- [ ] **It runs the engine's gate.** Test `test_gate_workflow_installs_the_engine_and_runs_engine_gate`: the file contains the `pip install "ticket-engine @ git+https://github.com/ilegault/ticket-engine.git@v1"` line and a step whose `run:` is `engine-gate`.
+- [x] **Reusable, one job named `gate`.** Test `test_gate_workflow_is_reusable_with_one_gate_job`: the file contains `workflow_call:`, a job with `name: gate`, and no other job.
+- [x] **It builds the repo's environment from its config.** Test `test_gate_workflow_reads_python_version_and_install_from_the_repo_config`: the file mentions `.ticket-engine.toml`, `tomllib`, `python_version`, `install`, and `actions/setup-python@v5`.
+- [x] **It runs the engine's gate.** Test `test_gate_workflow_installs_the_engine_and_runs_engine_gate`: the file contains the `pip install "ticket-engine @ git+https://github.com/ilegault/ticket-engine.git@v1"` line and a step whose `run:` is `engine-gate`.
 - [ ] **Run once on a real target.** After merge and a `v1` move, a Slackbot PR shows a `gate / gate` check that runs every gate command. (by hand)
 
 ## Gate
@@ -54,3 +54,5 @@ In CI order (`.github/workflows/ci.yml`):
     pytest -q
 
 ## Comments
+
+2026-10-07: Added `.github/workflows/gate.yml` (reusable, single job `gate`) and `tests/test_gate_workflow.py` covering criteria 1-3. Criterion 4 (real target, after the developer moves `v1`) is by hand. Held: changes `.github/`.
