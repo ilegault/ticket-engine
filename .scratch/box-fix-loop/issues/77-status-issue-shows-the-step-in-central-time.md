@@ -1,6 +1,6 @@
 # 77: The box status issue shows the live step, the last PR and starts, in Central time
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
