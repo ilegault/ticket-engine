@@ -384,7 +384,7 @@ def test_run_report_renders_box_available_line_after_zero_started():
     report = build_run_report([], facts)
     expected_block = (
         "**Started 0 tickets.**\n"
-        "**Box:** available (checked in 03:12 UTC). Left for the box: 21, 22."
+        "**Box:** available (checked in 2026-09-25 10:12 PM CDT). Left for the box: 21, 22."
     )
     assert expected_block in report
 
@@ -399,7 +399,7 @@ def test_run_report_renders_box_silent():
     dt = datetime.datetime(2026, 9, 26, 3, 12, tzinfo=datetime.UTC)
     facts = RunFacts(repo=REPO, box_state="silent", box_checked_in=dt)
     report = build_run_report([], facts)
-    assert "**Box:** silent since 03:12 UTC — overflow to Jules is on." in report
+    assert "**Box:** silent since 2026-09-25 10:12 PM CDT — overflow to Jules is on." in report
 
 
 def test_run_report_renders_box_unreadable():
@@ -412,3 +412,18 @@ def test_run_report_box_state_none_renders_no_box_line():
     facts = RunFacts(repo=REPO, box_state="none")
     report = build_run_report([], facts)
     assert "**Box:**" not in report
+
+
+def test_run_report_times_are_central():
+    summer = datetime.datetime(2026, 7, 1, 20, 11, tzinfo=datetime.UTC)
+    winter = datetime.datetime(2026, 1, 15, 20, 11, tzinfo=datetime.UTC)
+    avail = build_run_report(
+        [], RunFacts(repo=REPO, box_state="available", box_checked_in=summer)
+    )
+    silent = build_run_report(
+        [], RunFacts(repo=REPO, box_state="silent", box_checked_in=winter)
+    )
+    assert "**Box:** available (checked in 2026-07-01 3:11 PM CDT)." in avail
+    assert "**Box:** silent since 2026-01-15 2:11 PM CST — overflow to Jules is on." in silent
+    assert "UTC" not in avail
+    assert "UTC" not in silent

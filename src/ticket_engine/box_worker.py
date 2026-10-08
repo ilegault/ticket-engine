@@ -109,6 +109,7 @@ from ticket_engine.box_status import (
     render_box_status,
 )
 from ticket_engine.config import RepoConfig, load_repo_config
+from ticket_engine.display_time import format_display
 from ticket_engine.github import GitHubClient
 from ticket_engine.local_config import (
     BoxConfigError,
@@ -878,7 +879,7 @@ def _describe_step(step: object) -> str:
     if isinstance(step, WriteStatus):
         return "write status"
     if isinstance(step, Wait):
-        return "wait until " + step.until.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%MZ")
+        return "wait until " + format_display(step.until)
     if isinstance(step, ClaimTicket):
         return f"claim {step.repo} #{step.ticket.number:02d}"
     if isinstance(step, ResumeClaim):
@@ -894,6 +895,16 @@ def _describe_step(step: object) -> str:
     return type(step).__name__
 
 
+class _CentralFormatter(logging.Formatter):
+    """Log formatter whose `asctime` is Central time with its zone (ticket 78)."""
+
+    converter = time.gmtime  # type: ignore[assignment]
+
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        utc = datetime.datetime(*self.converter(record.created)[:6], tzinfo=datetime.UTC)
+        return format_display(utc, seconds=True)
+
+
 def _configure_logging(logs_dir: str) -> None:
     """Route every log record to a rotating file under `logs_dir`, never stdout.
 
@@ -907,7 +918,9 @@ def _configure_logging(logs_dir: str) -> None:
     handler = logging.handlers.RotatingFileHandler(
         path / "box-worker.log", maxBytes=10_000_000, backupCount=5, encoding="utf-8"
     )
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    handler.setFormatter(
+        _CentralFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     root.addHandler(handler)

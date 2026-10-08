@@ -33,16 +33,20 @@ _DISPLAY_RE = re.compile(
 _OFFSET_HOURS = {"CDT": -5, "CST": -6}
 
 
-def format_display(dt: datetime.datetime) -> str:
-    """Format a timezone-aware datetime as `2026-10-07 3:11 PM CDT`."""
+def format_display(dt: datetime.datetime, *, seconds: bool = False) -> str:
+    """Format a timezone-aware datetime as `2026-10-07 3:11 PM CDT`.
+
+    `seconds=True` gives `2026-10-07 3:11:05 PM CDT`, for log lines (ticket 78).
+    """
     if dt.tzinfo is None:
         raise ValueError("datetime must be timezone-aware")
     local = dt.astimezone(ZoneInfo(DISPLAY_TIMEZONE))
     hour12 = local.hour % 12 or 12
     meridiem = "AM" if local.hour < 12 else "PM"
-    return (
-        f"{local:%Y-%m-%d} {hour12}:{local.minute:02d} {meridiem} {local.tzname()}"
-    )
+    clock = f"{hour12}:{local.minute:02d}"
+    if seconds:
+        clock += f":{local.second:02d}"
+    return f"{local:%Y-%m-%d} {clock} {meridiem} {local.tzname()}"
 
 
 def parse_display(text: str) -> datetime.datetime | None:

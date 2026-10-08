@@ -42,6 +42,7 @@ from ticket_engine.dispatch import (
     WorldSnapshot,
     classify_box,
 )
+from ticket_engine.display_time import format_display
 from ticket_engine.run_report import needs_you_table
 
 logger = logging.getLogger(__name__)
@@ -155,7 +156,7 @@ def _box_line(box: BoxStatus | None, now: datetime.datetime) -> str:
     state = classify_box(box, now, RepoConfig().box_silent_hours)
     if not isinstance(box, BoxStatus) or state == "unreadable":
         return "**Box:** status unreadable"
-    checked_in = box.checked_in_at.strftime("%Y-%m-%d %H:%M UTC")
+    checked_in = format_display(box.checked_in_at)
     return f"**Box:** {state} — last check-in {checked_in}"
 
 
@@ -175,7 +176,7 @@ def render_morning_report(
     echoes ticket titles, PR numbers, and repo names supplied by the caller.
     """
     now = data.now or datetime.datetime.now(datetime.UTC)
-    ts = now.strftime("%Y-%m-%d %H:%M UTC")
+    ts = format_display(now)
 
     lines: list[str] = [
         f"## Morning Report — {ts}",
