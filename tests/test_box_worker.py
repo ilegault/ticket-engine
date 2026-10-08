@@ -22,6 +22,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import ticket_engine
 from ticket_engine import box_worker
 from ticket_engine.box_core import CloseAlert, RaiseAlert
 from ticket_engine.box_status import AlertKind, BoxState, parse_box_status, render_box_alert
@@ -832,7 +833,11 @@ def test_box_loop_pulls_with_the_configured_git_timeout(tmp_path, monkeypatch):
 
     loop.tick()
 
-    assert seen == [(["git", "-C", "/fake/repo", "pull", "--ff-only"], 42)]
+    engine_checkout = pathlib.Path(ticket_engine.__file__).resolve().parents[2]
+    assert seen == [
+        (["git", "-C", "/fake/repo", "pull", "--ff-only"], 42),
+        (["git", "-C", str(engine_checkout), "rev-parse", "HEAD"], 42),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1127,4 +1132,22 @@ def test_quota_fix_run_does_not_count_as_an_attempt(tmp_path: pathlib.Path) -> N
     pr_record = data.get("owner/repo#55")
     assert pr_record is not None
     assert pr_record["attempts"] == 1
+
+
+def test_worker_records_its_commit_as_good_after_a_tick(tmp_path: pathlib.Path) -> None:
+    worker = FakeWorker()
+    gh = make_github()
+
+    def git_runner(args, cwd, env):
+        if "rev-parse" in args and "HEAD" in args:
+            return (0, "abc1234\n")
+        return (0, "")
+
+    loop = make_loop(tmp_path, worker, gh, git_runner=git_runner)
+    loop.tick()
+
+    state_path = tmp_path / "logs" / "launcher_state.json"
+    assert state_path.is_file()
+    state_data = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state_data["good_commit"] == "abc1234"
 
