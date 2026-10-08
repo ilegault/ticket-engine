@@ -1,6 +1,6 @@
 # 72: Pre-push gate: the box runs the repo's gate commands before opening or updating a PR
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
