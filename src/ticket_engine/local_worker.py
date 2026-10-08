@@ -78,6 +78,7 @@ from __future__ import annotations
 import base64
 import datetime
 import logging
+import os
 import pathlib
 import re
 import threading
@@ -96,16 +97,19 @@ from ticket_engine.dispatch import (
     assemble_escalation_brief,
     insert_claimed_by,
 )
+from ticket_engine.gate import run_gate
 from ticket_engine.github import GitHubClient
 from ticket_engine.local_config import LocalRepoEntry, LocalWorkerConfig
 from ticket_engine.parser import Ticket, TicketParser
 from ticket_engine.prompt import (
+    assemble_fix_prompt,
     assemble_prompt,
     load_ticket_skill,
 )
 from ticket_engine.prompt import (
     extract_progress_note as _extract_progress_note,
 )
+from ticket_engine.repo_env import CommandRunner, default_command_runner
 from ticket_engine.sonnet import SonnetDriver
 
 logger = logging.getLogger(__name__)
@@ -170,11 +174,13 @@ class LocalWorker:
         write_ticket_fn: Callable[[str | pathlib.Path, str], None] | None = None,
         sonnet_driver: SonnetDriver | None = None,
         env_for: Callable[[LocalRepoEntry], dict[str, str] | None] | None = None,
+        command_runner: CommandRunner = default_command_runner,
     ) -> None:
         self.config = config
         self.github_client = github_client
         self.agy_driver = agy_driver
         self.sonnet_driver = sonnet_driver
+        self._command_runner = command_runner
         self._env_for: Callable[[LocalRepoEntry], dict[str, str] | None] = (
             env_for if env_for is not None else (lambda entry: None)
         )
@@ -377,15 +383,17 @@ class LocalWorker:
     def fix_ci(
         self, entry: LocalRepoEntry, ticket: Ticket, pr_number: int
     ) -> object | None:
-        """Run agy again on the ticket branch, naming the PR's failing checks.
+        """Run agy again on the ticket branch with the real failing output.
 
-        Ticket 30 (spec §Local worker orchestration): the dispatcher's own
-        `max_fix_attempts`/`EscalatePRAction` (dispatch.py) is the authority on
-        how many times to try and when to escalate a red-CI PR; this method is
-        the box's one fix attempt, called by the caller that owns that count.
-        The prompt is the normal one plus a fixed `## CI FAILED — FIX IT`
-        section listing one `- <check name>` line per check whose conclusion
-        is `failure`, so agy sees only what actually broke.
+        Ticket 30, reworked by ticket 71 (ADR 0011 rules 1 and 2): the dispatcher
+        and the box's fix-attempt ledger own how many times to try; this method is
+        one attempt. It builds `failures` from each failed check run's job-log tail
+        plus a local `run_gate` of the repo's `gate_commands` in the worktree, and
+        starts agy with `assemble_fix_prompt` (the ticket is already done and
+        claimed, so no skill and no claim instructions). The result goes through
+        `_resolve_outcome(box_mode=True)` with the fix prompt as `resume_prompt`,
+        so a failed or timed-out fix run is resumed with the fix prompt and then
+        escalated, and a quota result is returned with the worktree left in place.
         """
         effort = ticket.effort or "phase-1"
         ticket_branch = f"ticket/{effort}-{ticket.number:02d}-{ticket.slug}"
@@ -406,22 +414,53 @@ class LocalWorker:
                 exc,
             )
             return None
-        checks = self.github_client.list_check_runs(entry.repo, ticket_branch)
-        failing = [name for name, conclusion in checks if conclusion == "failure"]
+        failures: list[tuple[str, str]] = []
+        for name, job_id in self.github_client.list_failed_check_runs(
+            entry.repo, ticket_branch
+        ):
+            failures.append((name, self.github_client.get_job_log_tail(entry.repo, job_id)))
 
-        base_prompt = assemble_prompt(self.skill_text, entry.repo, ticket_path)
-        fix_section = "\n\n## CI FAILED — FIX IT\n" + "\n".join(
-            f"- {name}" for name in failing
+        repo_path = pathlib.Path(entry.path)
+        cfg = load_repo_config(repo_path) if repo_path.is_dir() else RepoConfig()
+        gate_env = self._env_for(entry)
+        if cfg.test_env:
+            gate_env = {
+                **(gate_env if gate_env is not None else os.environ),
+                **cfg.test_env,
+            }
+        gate = run_gate(
+            list(cfg.gate_commands), worktree_path, gate_env, self._command_runner
         )
+        for command_result in gate.results:
+            if not command_result.passed:
+                failures.append(
+                    ("local: " + command_result.command, command_result.output_tail)
+                )
+
+        fix_prompt = assemble_fix_prompt(entry.repo, ticket_path, failures)
         result = self._start_with_fallback(
-            base_prompt + fix_section, cwd=worktree_path, env=self._env_for(entry)
+            fix_prompt, cwd=worktree_path, env=self._env_for(entry)
         )
 
         push_env = _make_push_env(self.config.github_token) if self.config.github_token else None
         self._push_if_claimed(
             entry.repo, claim_branch, ticket_path, worktree_path, ticket_branch, push_env
         )
-        return result
+        # A fix run is resumed, answered, paused or escalated like any other run
+        # (ticket 71); before this a failed or timed-out fix run was dropped.
+        return self._resolve_outcome(
+            entry=entry,
+            ticket=ticket,
+            effort=effort,
+            ticket_path=ticket_path,
+            ticket_branch=ticket_branch,
+            claim_branch=claim_branch,
+            worktree_path=worktree_path,
+            push_env=push_env,
+            result=result,
+            box_mode=True,
+            resume_prompt=fix_prompt,
+        )
 
     def escalate_fixes(
         self, entry: LocalRepoEntry, ticket: Ticket, pr_number: int
@@ -475,6 +514,7 @@ class LocalWorker:
         push_env: dict[str, str] | None,
         result: object,
         box_mode: bool = False,
+        resume_prompt: str | None = None,
     ) -> object | None:
         """Classify each agy outcome and decide whether to resume, answer, or escalate.
 
@@ -539,7 +579,9 @@ class LocalWorker:
             if result.outcome == "waiting":
                 if auto_replies < cfg.max_auto_replies:
                     auto_replies += 1
-                    result = self._send_auto_reply(entry, ticket_path, worktree_path)
+                    result = self._send_auto_reply(
+                        entry, ticket_path, worktree_path, resume_prompt
+                    )
                     self._push_if_claimed(
                         entry.repo, claim_branch, ticket_path, worktree_path, ticket_branch, push_env
                     )
@@ -575,7 +617,9 @@ class LocalWorker:
                 )
                 return None
 
-            result = self._resume_from_checkpoint(entry, ticket_path, worktree_path)
+            result = self._resume_from_checkpoint(
+                entry, ticket_path, worktree_path, resume_prompt
+            )
             self._push_if_claimed(
                 entry.repo, claim_branch, ticket_path, worktree_path, ticket_branch, push_env
             )
@@ -586,9 +630,21 @@ class LocalWorker:
         return result
 
     def _resume_from_checkpoint(
-        self, entry: LocalRepoEntry, ticket_path: str, worktree_path: str
+        self,
+        entry: LocalRepoEntry,
+        ticket_path: str,
+        worktree_path: str,
+        resume_prompt: str | None = None,
     ) -> object:
-        """Start a fresh agy session that includes the ticket's checkpoint progress note."""
+        """Start a fresh agy session that includes the ticket's checkpoint progress note.
+
+        With `resume_prompt` (a fix run, ticket 71) that prompt is used as is: a
+        fix run resumes with the fix prompt, never the implement-from-scratch one.
+        """
+        if resume_prompt is not None:
+            return self._start_with_fallback(
+                resume_prompt, cwd=worktree_path, env=self._env_for(entry)
+            )
         progress_note = self._read_progress_note(worktree_path, ticket_path)
         checkpoint_prompt = _assemble_checkpoint_prompt(
             self.skill_text, entry.repo, ticket_path, progress_note
@@ -598,11 +654,19 @@ class LocalWorker:
         )
 
     def _send_auto_reply(
-        self, entry: LocalRepoEntry, ticket_path: str, worktree_path: str
+        self,
+        entry: LocalRepoEntry,
+        ticket_path: str,
+        worktree_path: str,
+        resume_prompt: str | None = None,
     ) -> object:
         """Start a fresh agy session whose prompt ends with `dispatch.AUTO_REPLY_TEXT`
         (ADR 0004: answer a waiting worker exactly as the engine answers Jules)."""
-        prompt = assemble_prompt(self.skill_text, entry.repo, ticket_path)
+        prompt = (
+            resume_prompt
+            if resume_prompt is not None
+            else assemble_prompt(self.skill_text, entry.repo, ticket_path)
+        )
         return self._start_with_fallback(
             f"{prompt}\n\n{AUTO_REPLY_TEXT}", cwd=worktree_path, env=self._env_for(entry)
         )

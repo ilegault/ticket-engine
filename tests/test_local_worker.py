@@ -1147,8 +1147,8 @@ def test_pusher_stops_pushing_once_claim_is_lost_mid_run():
 # ---------------------------------------------------------------------------
 
 def test_fix_ci_prompt_names_only_failing_checks():
-    """fix_ci reads the PR head's check runs and adds a CI FAILED section
-    naming one `- <check name>` line per check whose conclusion is failure."""
+    """fix_ci reads the PR head's failed check runs; the fix prompt names only
+    those (ticket 71 supersedes the bare `- <name>` list with `### <name>`)."""
     prompts_seen = []
     git_calls = []
 
@@ -1158,10 +1158,8 @@ def test_fix_ci_prompt_names_only_failing_checks():
         return 0, json.dumps({"status": "SUCCESS"})
 
     mock_github = make_fake_github()
-    mock_github.list_check_runs.return_value = [
-        ("integrity-gate", "failure"),
-        ("pytest", "success"),
-    ]
+    mock_github.list_failed_check_runs.return_value = [("integrity-gate", 5)]
+    mock_github.get_job_log_tail.return_value = "gate said no"
 
     ticket = make_ticket(30, effort="box-primary-worker")
     entry = make_repo_entry(repo="owner/repo")
@@ -1171,19 +1169,128 @@ def test_fix_ci_prompt_names_only_failing_checks():
         github_client=mock_github,
         agy_driver=AgyDriver(run_fn=run_fn),
         git_runner=_make_git_runner(git_calls),
+        command_runner=lambda cmd, cwd, env, shell: (0, ""),
     )
     worker.fix_ci(entry, ticket, pr_number=12)
 
     assert prompts_seen, "agy must be invoked"
     prompt = prompts_seen[0]
     assert "## CI FAILED — FIX IT" in prompt
-    assert "- integrity-gate" in prompt
-    assert "- pytest" not in prompt
-    mock_github.list_check_runs.assert_called_once()
-    assert mock_github.list_check_runs.call_args.args[0] == "owner/repo"
+    assert "### integrity-gate" in prompt
+    assert "pytest" not in prompt.split("## CI FAILED — FIX IT")[1]
+    mock_github.list_failed_check_runs.assert_called_once()
+    assert mock_github.list_failed_check_runs.call_args.args[0] == "owner/repo"
 
     push_calls = [c for c in git_calls if "push" in c]
     assert push_calls, "fix_ci must push the branch after agy runs"
+
+
+def _fix_worker(run_fn, command_runner=None, github=None, **config):
+    git_calls = []
+    mock_github = github if github is not None else make_fake_github()
+    worker = LocalWorker(
+        config=make_config(**config),
+        github_client=mock_github,
+        agy_driver=AgyDriver(run_fn=run_fn),
+        git_runner=_make_git_runner(git_calls),
+        sleep_fn=lambda s: None,
+        read_ticket_fn=lambda p: "# 09: Test\n**Status:** done\n\n## Comments\n",
+        write_ticket_fn=lambda p, c: None,
+        command_runner=command_runner or (lambda cmd, cwd, env, shell: (0, "")),
+    )
+    return worker, mock_github, git_calls
+
+
+def test_fix_ci_prompt_has_job_log_tail_and_local_gate_failure():
+    prompts_seen = []
+
+    def run_fn(args, cwd=None):
+        prompts_seen.append(args[args.index("-p") + 1])
+        return 0, json.dumps({"status": "SUCCESS"})
+
+    def command_runner(cmd, cwd, env, shell):
+        if cmd == "ruff check .":
+            return 1, "src/x.py:1:1: E501 line too long"
+        return 0, "all good"
+
+    github = make_fake_github()
+    github.list_failed_check_runs.return_value = [("lint", 9)]
+    github.get_job_log_tail.return_value = "step failed\nF401 unused import"
+    worker, _, _ = _fix_worker(run_fn, command_runner, github)
+
+    worker.fix_ci(make_repo_entry(), make_ticket(9), pr_number=3)
+
+    prompt = prompts_seen[0]
+    assert "### lint" in prompt
+    assert "F401 unused import" in prompt
+    assert "### local: ruff check ." in prompt
+    assert "E501" in prompt
+    assert "### local: pytest" not in prompt
+    assert "### local: python scripts/check_tests_first.py" not in prompt
+    github.get_job_log_tail.assert_called_once_with("owner/repo", 9)
+
+
+def test_failed_fix_run_is_resumed_with_the_fix_prompt_then_escalated():
+    prompts_seen = []
+
+    def run_fn(args, cwd=None):
+        prompts_seen.append(args[args.index("-p") + 1])
+        return 1, json.dumps({"status": "ERROR", "message": "boom"})
+
+    github = make_fake_github()
+    github.list_failed_check_runs.return_value = [("lint", 9)]
+    github.get_job_log_tail.return_value = "F401 unused import"
+    github.find_open_pr.return_value = 77
+    github.find_open_issue.return_value = None
+    worker, _, git_calls = _fix_worker(run_fn, github=github, max_resumes_per_ticket=3)
+
+    worker.fix_ci(make_repo_entry(), make_ticket(9), pr_number=77)
+
+    assert len(prompts_seen) == 3
+    assert prompts_seen[1] == prompts_seen[0]
+    assert prompts_seen[2] == prompts_seen[0]
+    assert "## CI FAILED — FIX IT" in prompts_seen[0]
+    assert [c for c in git_calls if "commit" in c and "-m" in c]
+    assert [c for c in git_calls if "push" in c]
+    github.convert_pr_to_draft.assert_called_once()
+    github.add_issue_labels.assert_called_once_with("owner/repo", 77, ["engine:escalated"])
+    github.create_issue.assert_called_once()
+
+
+def test_waiting_fix_run_gets_the_fix_prompt_plus_auto_reply():
+    prompts_seen = []
+
+    def run_fn(args, cwd=None):
+        prompts_seen.append(args[args.index("-p") + 1])
+        status = "WAITING" if len(prompts_seen) == 1 else "SUCCESS"
+        return 0, json.dumps({"status": status})
+
+    github = make_fake_github()
+    github.list_failed_check_runs.return_value = [("lint", 9)]
+    github.get_job_log_tail.return_value = "F401"
+    worker, _, _ = _fix_worker(run_fn, github=github)
+
+    worker.fix_ci(make_repo_entry(), make_ticket(9), pr_number=3)
+
+    assert len(prompts_seen) == 2
+    assert prompts_seen[1] == prompts_seen[0] + "\n\n" + AUTO_REPLY_TEXT
+
+
+def test_quota_fix_run_returns_the_quota_result():
+    def run_fn(args, cwd=None):
+        return 1, json.dumps({"status": "ERROR", "message": "quota exhausted"})
+
+    github = make_fake_github()
+    github.list_failed_check_runs.return_value = [("lint", 9)]
+    github.get_job_log_tail.return_value = "F401"
+    worker, _, git_calls = _fix_worker(run_fn, github=github)
+
+    result = worker.fix_ci(make_repo_entry(), make_ticket(9), pr_number=3)
+
+    assert result is not None
+    assert result.outcome == "quota"
+    removals = [c for c in git_calls if "worktree" in c and "remove" in c]
+    assert removals == [], "the worktree is left in place for the box to resume"
 
 
 # ---------------------------------------------------------------------------
@@ -1637,6 +1744,7 @@ def test_fix_ci_falls_back_to_sonnet_on_quota():
         agy_driver=agy,
         sonnet_driver=sonnet,
         git_runner=_make_git_runner([]),
+        command_runner=lambda cmd, cwd, env, shell: (0, ""),
     )
     result = worker.fix_ci(entry, ticket, pr_number=12)
 
@@ -1981,6 +2089,7 @@ def test_fix_ci_makes_the_worktree_before_running_agy():
         github_client=gh,
         agy_driver=AgyDriver(run_fn=run_fn),
         git_runner=runner,
+        command_runner=lambda cmd, cwd, env, shell: (0, ""),
     )
     worker.fix_ci(make_repo_entry(), make_ticket(9), 5)
 
@@ -2205,6 +2314,7 @@ def test_fix_ci_runs_agy_with_the_repos_env():
         github_client=mock_github,
         agy_driver=AgyDriver(run_fn=fake_run),
         git_runner=_make_git_runner([]),
+        command_runner=lambda cmd, cwd, env, shell: (0, ""),
         env_for=lambda e: {"VIRTUAL_ENV": "/envs/repo"},
     )
     worker.fix_ci(entry, ticket, pr_number=12)

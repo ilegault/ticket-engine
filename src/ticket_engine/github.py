@@ -573,6 +573,56 @@ class GitHubClient:
             if isinstance(item, dict)
         ]
 
+    def list_failed_check_runs(self, repo: str, ref: str) -> list[tuple[str, int]]:
+        """`(name, id)` for each check run on `ref` whose conclusion is `failure`.
+
+        Ticket 71: same endpoint as `list_check_runs`. A GitHub Actions check run's
+        id is its job id, which `get_job_log_tail` takes.
+        """
+        endpoint = f"/repos/{repo}/commits/{ref}/check-runs"
+        data = self._request("GET", endpoint)
+        if not isinstance(data, dict):
+            return []
+        runs = data.get("check_runs")
+        if not isinstance(runs, list):
+            return []
+        return [
+            (str(item.get("name", "")), int(item["id"]))
+            for item in runs
+            if isinstance(item, dict)
+            and item.get("conclusion") == "failure"
+            and "id" in item
+        ]
+
+    def get_job_log_tail(self, repo: str, job_id: int, max_chars: int = 4000) -> str:
+        """The last `max_chars` characters of a job's plain-text log, or `""`.
+
+        Ticket 71: `GET /repos/{repo}/actions/jobs/{job_id}/logs` answers with a
+        redirect to a plain-text log, which `urllib` follows. Any HTTP or network
+        error returns `""` (logged by status only, never the body: ADR 0002), so a
+        missing log degrades the fix prompt rather than stopping the fix run.
+        """
+        url = f"{self.base_url}/repos/{repo}/actions/jobs/{job_id}/logs"
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {self.token}",
+            "User-Agent": "ticket-engine",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(req) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            logger.warning("Job log for %s job %s unavailable: HTTP %s", repo, job_id, exc.code)
+            return ""
+        except (urllib.error.URLError, OSError) as exc:
+            logger.warning(
+                "Job log for %s job %s unavailable: %s", repo, job_id, type(exc).__name__
+            )
+            return ""
+        return text[-max_chars:] if max_chars > 0 else ""
+
     def find_open_pr(self, repo: str, head_branch: str) -> int | None:
         """The number of the open PR for `head_branch`, or `None`.
 
