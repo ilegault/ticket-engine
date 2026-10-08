@@ -16,7 +16,13 @@ import pytest
 
 from ticket_engine.dispatch import EscalatePRAction, Handoff
 from ticket_engine.live_dispatch import LiveDispatcher
-from ticket_engine.prompt import assemble_prompt, extract_progress_note, load_ticket_skill
+from ticket_engine.prompt import (
+    _UNATTENDED_RULE,
+    assemble_fix_prompt,
+    assemble_prompt,
+    extract_progress_note,
+    load_ticket_skill,
+)
 
 
 def test_prompt_assembly_includes_required_elements():
@@ -297,3 +303,49 @@ def test_dispatcher_pr_escalation_is_documented_as_jules_only():
         in LiveDispatcher.dispatch_escalations_and_stale_claims.__doc__
     )
 
+
+# ---------------------------------------------------------------------------
+# Ticket 71: the fix prompt
+# ---------------------------------------------------------------------------
+
+_FAILURES = [("lint", "F401 unused import"), ("local: pytest -q", "E   assert 1 == 2")]
+
+
+def test_fix_prompt_says_the_ticket_is_already_yours_and_done():
+    prompt = assemble_fix_prompt("owner/repo", ".scratch/e/issues/07-x.md", _FAILURES)
+
+    assert "owner/repo" in prompt
+    assert ".scratch/e/issues/07-x.md" in prompt
+    assert "## THIS TICKET IS ALREADY YOURS AND DONE" in prompt
+    assert (
+        "The ticket is claimed by you and its Status is done. Do not run "
+        "scripts/check_claimable.py, do not create or change any claim, and do not "
+        "change the Status line. Fix only the failures below, then commit."
+    ) in prompt
+    assert _UNATTENDED_RULE in prompt
+    assert (
+        "Never delete, skip, xfail or weaken a test, and never raise a ratchet, "
+        "to make a check pass."
+    ) in prompt
+    order = [
+        prompt.index("owner/repo"),
+        prompt.index("## THIS TICKET IS ALREADY YOURS AND DONE"),
+        prompt.index(_UNATTENDED_RULE),
+        prompt.index("Never delete, skip, xfail"),
+        prompt.index("## CI FAILED — FIX IT"),
+    ]
+    assert order == sorted(order)
+
+
+def test_fix_prompt_carries_each_failing_output_under_its_name():
+    prompt = assemble_fix_prompt("owner/repo", ".scratch/e/issues/07-x.md", _FAILURES)
+
+    assert "### lint\n```\nF401 unused import\n```" in prompt
+    assert "### local: pytest -q\n```\nE   assert 1 == 2\n```" in prompt
+    assert prompt.index("### lint") < prompt.index("### local: pytest -q")
+
+
+def test_fix_prompt_has_no_claim_instructions():
+    prompt = assemble_fix_prompt("owner/repo", ".scratch/e/issues/07-x.md", _FAILURES)
+
+    assert "### Claim the ticket" not in prompt

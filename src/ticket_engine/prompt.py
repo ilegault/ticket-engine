@@ -189,3 +189,47 @@ def extract_progress_note(ticket_text: str) -> str:
     if not match:
         return ""
     return match.group(1).strip()
+
+
+def assemble_fix_prompt(
+    repo: str, ticket_path: str, failures: list[tuple[str, str]]
+) -> str:
+    """Assemble the prompt for a CI-fix run on a ticket that is already done.
+
+    Ticket 71 (ADR 0011 rules 1 and 2, spec box-fix-loop): `assemble_prompt` tells
+    a worker to check the frontier, claim the ticket and set `in-progress`. On a
+    ticket that is already `done` and already claimed, that lets agy reasonably
+    stop without doing anything. This prompt says plainly what the situation is
+    and carries each failing check's real output, and it deliberately omits the
+    ticket skill.
+
+    `failures` is `(name, output)` pairs, rendered as `### <name>` followed by the
+    output in a fenced block. Pure: no I/O, no logging.
+    """
+    clean_ticket_path = str(ticket_path).replace("\\", "/").strip()
+    parts = [
+        f"You are fixing failing CI for a ticket in the repository '{str(repo).strip()}'.",
+        f"Ticket file: {clean_ticket_path}",
+        "",
+        "## THIS TICKET IS ALREADY YOURS AND DONE",
+        (
+            "The ticket is claimed by you and its Status is done. Do not run "
+            "scripts/check_claimable.py, do not create or change any claim, and do not "
+            "change the Status line. Fix only the failures below, then commit."
+        ),
+        "",
+        _UNATTENDED_RULE,
+        "",
+        (
+            "Never delete, skip, xfail or weaken a test, and never raise a ratchet, "
+            "to make a check pass."
+        ),
+        "",
+        "## CI FAILED — FIX IT",
+    ]
+    for name, output in failures:
+        parts.append(f"### {name}")
+        parts.append("```")
+        parts.append(str(output).strip("\n"))
+        parts.append("```")
+    return "\n".join(parts)

@@ -503,3 +503,47 @@ def test_can_read_variables_raises_on_500():
     with patch("urllib.request.urlopen", side_effect=err), pytest.raises(urllib.error.HTTPError):
         client.can_read_variables("owner/repo")
 
+
+def test_list_failed_check_runs_returns_names_and_ids():
+    """Ticket 71: only check runs whose conclusion is failure, as (name, id)."""
+    fixture_json = load_fixture("check_runs_mixed.json")
+    client = GitHubClient(token="mock_token")
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = fixture_json.encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        failed = client.list_failed_check_runs(repo="owner/repo", ref="ticket/e-71-x")
+
+    assert failed == [("integrity-gate", 1)]
+    req = mock_urlopen.call_args[0][0]
+    assert req.method == "GET"
+    assert req.full_url == (
+        "https://api.github.com/repos/owner/repo/commits/ticket/e-71-x/check-runs"
+    )
+
+
+def test_get_job_log_tail_returns_the_tail_and_empty_on_error():
+    """Ticket 71: the last max_chars of the plain-text job log; "" on any error."""
+    client = GitHubClient(token="mock_token")
+    log = ("x" * 100) + "F401 unused import"
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = log.encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        tail = client.get_job_log_tail("owner/repo", 42, max_chars=20)
+
+    assert tail == log[-20:]
+    assert tail.endswith("F401 unused import")
+    req = mock_urlopen.call_args[0][0]
+    assert req.method == "GET"
+    assert req.full_url == "https://api.github.com/repos/owner/repo/actions/jobs/42/logs"
+
+    err = urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+    with patch("urllib.request.urlopen", side_effect=err):
+        assert client.get_job_log_tail("owner/repo", 42) == ""
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("down")):
+        assert client.get_job_log_tail("owner/repo", 42) == ""
