@@ -1,6 +1,6 @@
 # 74: Integrity check 9: every named test exists and failed on the old code
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Runner:** any
 
@@ -53,11 +53,11 @@ fail before changing `src/`. `named_test_problems` tests are pure. `evaluate` te
 build base and head trees and `base_test_results` the way
 `tests/test_integrity_check7.py` does; nothing is faked.
 
-- [ ] **A missing named test fails.** Test `test_check9_fails_when_a_named_test_is_missing`: a done ticket names `test_alpha` and `test_beta`, the head has only `test_alpha`; asserts verdict `fail` and a reason naming `test_beta`.
-- [ ] **A named test that passed on the old code fails.** Test `test_check9_fails_when_a_named_test_passed_on_base`: `test_alpha` is new but not in `failed_tests`; asserts `fail` and a reason containing `did not fail on the base code`.
-- [ ] **A rewrite criterion needs only an existing test.** Test `test_check9_rewrite_criterion_needs_only_an_existing_test`: a criterion "Rewrite `test_old` in place …" with `test_old` present on base and head and not failing on base; asserts no check 9 reason.
-- [ ] **No named tests, no check 9.** Test `test_check9_silent_when_the_ticket_names_no_tests`: asserts the verdict and reasons equal what they were without check 9 (`pass`, summary `checks 1-9`).
-- [ ] **Every named test that did its job passes.** Test `test_check9_passes_when_every_named_test_is_new_and_failed_on_base`: two named tests, both new and both in `failed_tests`; asserts verdict `pass`.
+- [x] **A missing named test fails.** Test `test_check9_fails_when_a_named_test_is_missing`: a done ticket names `test_alpha` and `test_beta`, the head has only `test_alpha`; asserts verdict `fail` and a reason naming `test_beta`.
+- [x] **A named test that passed on the old code fails.** Test `test_check9_fails_when_a_named_test_passed_on_base`: `test_alpha` is new but not in `failed_tests`; asserts `fail` and a reason containing `did not fail on the base code`.
+- [x] **A rewrite criterion needs only an existing test.** Test `test_check9_rewrite_criterion_needs_only_an_existing_test`: a criterion "Rewrite `test_old` in place …" with `test_old` present on base and head and not failing on base; asserts no check 9 reason.
+- [x] **No named tests, no check 9.** Test `test_check9_silent_when_the_ticket_names_no_tests`: asserts the verdict and reasons equal what they were without check 9 (`pass`, summary `checks 1-9`).
+- [x] **Every named test that did its job passes.** Test `test_check9_passes_when_every_named_test_is_new_and_failed_on_base`: two named tests, both new and both in `failed_tests`; asserts verdict `pass`.
 
 ## Gate
 
@@ -68,3 +68,15 @@ In CI order (`.github/workflows/ci.yml`):
     pytest -q
 
 ## Comments
+
+### Implementation summary — 2026-10-07
+- Implemented pure function `named_test_problems` in `src/ticket_engine/integrity.py` extracting criteria and backticked `test_\w+` names, joining multiline blocks using `_blocks`, and checking test presence on head and failure on base code (with exemption for `rewrite`/`rewrites`/`rewritten`).
+- Added Check 9 invocation to `IntegrityCore.evaluate` after Check 7 when exactly one ticket is found and marked `done`.
+- Updated pass summary to `All integrity checks passed (checks 1-9)`.
+- All acceptance criteria verified in `tests/test_integrity_check9.py`:
+  - Criterion 1: `test_check9_fails_when_a_named_test_is_missing`
+  - Criterion 2: `test_check9_fails_when_a_named_test_passed_on_base`
+  - Criterion 3: `test_check9_rewrite_criterion_needs_only_an_existing_test`
+  - Criterion 4: `test_check9_silent_when_the_ticket_names_no_tests`
+  - Criterion 5: `test_check9_passes_when_every_named_test_is_new_and_failed_on_base`
+- No bench verification required; pure integrity gate evaluation.
