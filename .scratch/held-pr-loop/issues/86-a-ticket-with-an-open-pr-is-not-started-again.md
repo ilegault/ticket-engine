@@ -1,6 +1,6 @@
 # 86: A ticket that already has an open PR is never started again
 
-**Status:** in-progress
+**Status:** done
 
 **Runner:** any
 
@@ -56,10 +56,10 @@ Write the tests first and watch each fail before changing `src/`. Core tests bui
 Jules clients with `MagicMock`, as `test_live_dispatch_claims_and_starts_jules_session`
 in `tests/test_live_dispatch.py` does; the dispatcher and core are real.
 
-- [ ] **The core skips it and starts the next ticket.** Test `test_scenario_ticket_with_an_open_pr_is_not_started` in `tests/test_dispatch_scenarios.py`: tickets 1 and 2, no claims, `concurrency=1`, `tickets_with_open_prs=frozenset({1})`; asserts exactly one `StartTicketAction`, for ticket 2.
-- [ ] **Jules-suffixed branch names match, near-misses do not.** Test `test_ticket_numbers_with_open_prs_matches_suffixed_ticket_branches` in `tests/test_dispatch_scenarios.py`: tickets 19 and 20 in effort `cold-start-and-traceability`; refs `ticket/cold-start-and-traceability-20-simulated-filament-13276867537050285691`, `ticket/cold-start-and-traceability-200-other` and `claim/cold-start-and-traceability/19`; asserts the result is `frozenset({20})`.
-- [ ] **Live dispatch does not restart it.** Test `test_live_dispatch_does_not_restart_a_ticket_with_an_open_pr` in `tests/test_live_dispatch.py`: `list_open_pr_head_refs` returns `["ticket/phase-1-01-test-ticket-1-123456"]`; tickets 1 and 2; asserts `create_session` was called once, with title starting `phase-1-02`.
-- [ ] **No PR list, no starts.** Test `test_live_dispatch_starts_nothing_when_open_prs_cannot_be_listed` in `tests/test_live_dispatch.py`: `list_open_pr_head_refs` raises `urllib.error.URLError("down")`; asserts `dispatch` returns `[]`, `create_session` was not called, and `dispatcher.last_run.stopped_early` contains `could not list open pull requests`.
+- [x] **The core skips it and starts the next ticket.** Test `test_scenario_ticket_with_an_open_pr_is_not_started` in `tests/test_dispatch_scenarios.py`: tickets 1 and 2, no claims, `concurrency=1`, `tickets_with_open_prs=frozenset({1})`; asserts exactly one `StartTicketAction`, for ticket 2.
+- [x] **Jules-suffixed branch names match, near-misses do not.** Test `test_ticket_numbers_with_open_prs_matches_suffixed_ticket_branches` in `tests/test_dispatch_scenarios.py`: tickets 19 and 20 in effort `cold-start-and-traceability`; refs `ticket/cold-start-and-traceability-20-simulated-filament-13276867537050285691`, `ticket/cold-start-and-traceability-200-other` and `claim/cold-start-and-traceability/19`; asserts the result is `frozenset({20})`.
+- [x] **Live dispatch does not restart it.** Test `test_live_dispatch_does_not_restart_a_ticket_with_an_open_pr` in `tests/test_live_dispatch.py`: `list_open_pr_head_refs` returns `["ticket/phase-1-01-test-ticket-1-123456"]`; tickets 1 and 2; asserts `create_session` was called once, with title starting `phase-1-02`.
+- [x] **No PR list, no starts.** Test `test_live_dispatch_starts_nothing_when_open_prs_cannot_be_listed` in `tests/test_live_dispatch.py`: `list_open_pr_head_refs` raises `urllib.error.URLError("down")`; asserts `dispatch` returns `[]`, `create_session` was not called, and `dispatcher.last_run.stopped_early` contains `could not list open pull requests`.
 
 ## Gate
 
@@ -70,3 +70,5 @@ In CI order (`.github/workflows/ci.yml`):
     pytest -q
 
 ## Comments
+
+2026-10-11: Added `WorldSnapshot.tickets_with_open_prs`, `ticket_numbers_with_open_prs` and the skip in `DispatchCore.evaluate` (dispatch.py), `GitHubClient.list_open_pr_head_refs` (github.py), and the step-2a open-PR read in `LiveDispatcher.dispatch` (a failed read stops the run). The four named tests cover the four criteria; mutating the skip turns the core and live tests red. Gate: ruff clean for this change (one `DTZ001` in `tests/test_box_status.py` exists on master); the full suite shows 73 failures from `tzdata` missing in the shared venv, plus 2 in `tests/test_box_worker.py` whose count (20 in that file) is identical with and without this change.

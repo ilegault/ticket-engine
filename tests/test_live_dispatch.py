@@ -595,3 +595,49 @@ def test_live_dispatch_unreadable_repo_list_sets_box_none():
     assert dispatcher.last_run.box_status_error == "repo list unreadable"
     mock_jules.create_session.assert_called_once()
 
+
+def test_live_dispatch_does_not_restart_a_ticket_with_an_open_pr():
+    mock_github = MagicMock()
+    mock_github.get_default_branch_sha.return_value = "base123sha"
+    mock_github.create_claim_branch.return_value = True
+    mock_github.list_open_pr_head_refs.return_value = [
+        "ticket/phase-1-01-test-ticket-1-123456"
+    ]
+
+    mock_jules = MagicMock()
+    mock_jules.count_recent_sessions.return_value = 5
+    mock_jules.create_session.return_value = {"id": "sessions/test123", "state": "RUNNING"}
+
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=RepoConfig(default_branch="main", concurrency=2, daily_cap=10),
+    )
+
+    dispatcher.dispatch(tickets=[make_ticket(1), make_ticket(2)])
+
+    assert mock_jules.create_session.call_count == 1
+    assert mock_jules.create_session.call_args.kwargs["title"].startswith("phase-1-02")
+
+
+def test_live_dispatch_starts_nothing_when_open_prs_cannot_be_listed():
+    mock_github = MagicMock()
+    mock_github.get_default_branch_sha.return_value = "base123sha"
+    mock_github.list_open_pr_head_refs.side_effect = urllib.error.URLError("down")
+
+    mock_jules = MagicMock()
+    mock_jules.count_recent_sessions.return_value = 5
+
+    dispatcher = LiveDispatcher(
+        repo="owner/repo",
+        github_client=mock_github,
+        jules_client=mock_jules,
+        config=RepoConfig(default_branch="main", concurrency=2, daily_cap=10),
+    )
+
+    started = dispatcher.dispatch(tickets=[make_ticket(1), make_ticket(2)])
+
+    assert started == []
+    mock_jules.create_session.assert_not_called()
+    assert "could not list open pull requests" in dispatcher.last_run.stopped_early
