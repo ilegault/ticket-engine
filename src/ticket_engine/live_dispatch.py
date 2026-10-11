@@ -85,6 +85,7 @@ from ticket_engine.dispatch import (
     insert_claimed_by,
     release_done_claims,
     session_resource_name,
+    ticket_numbers_with_open_prs,
     ticket_repo_path,
 )
 from ticket_engine.parser import TicketParser
@@ -577,6 +578,15 @@ class LiveDispatcher:
             logger.warning("Failed to list existing claims for %s: %s", self.repo, exc)
             existing_claims = set()
 
+        # 2a. Tickets that already have an open PR are never started again. Starting
+        # blind could duplicate a ticket, so a failed read stops the run.
+        try:
+            open_pr_refs = self.github_client.list_open_pr_head_refs(self.repo)
+        except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+            logger.warning("Failed to list open pull requests for %s: %s", self.repo, exc)
+            facts.stopped_early = f"could not list open pull requests ({exc})"
+            return []
+
         # 3. Fetch recent Jules sessions for quota counting
         try:
             recent_jules_count = self.jules_client.count_recent_sessions(hours=24)
@@ -812,6 +822,7 @@ class LiveDispatcher:
             box_status_error=box_status_error,
             checkpoints=checkpoints,
             repo_name=self.repo,
+            tickets_with_open_prs=ticket_numbers_with_open_prs(open_pr_refs, tickets),
         )
         result = self.core.evaluate(snapshot)
 

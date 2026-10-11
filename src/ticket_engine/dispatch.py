@@ -80,7 +80,7 @@ from __future__ import annotations
 import datetime
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -338,6 +338,9 @@ class WorldSnapshot:
     tickets: Sequence[Ticket] = field(default_factory=list)
     claims: Sequence[Claim | str] | set[str] = field(default_factory=set)
     open_prs: Sequence[OpenPR | object] = field(default_factory=list)
+    # Tickets that already have an open PR, by number. Unlike `open_prs` these take no
+    # concurrency slot (a held PR waits for the developer); they are only never restarted.
+    tickets_with_open_prs: frozenset[int] = frozenset()
     concurrency_limit: int = 2
     config: RepoConfig = field(default_factory=RepoConfig)
     jules_sessions_count_24h: int = 0
@@ -396,6 +399,26 @@ def classify_box(
     if box.state in (BoxState.paused_quota, BoxState.paused_weekly_cap, BoxState.login_expired):
         return "paused"
     return "unreadable"
+
+
+def ticket_numbers_with_open_prs(
+    head_refs: Iterable[str], tickets: Sequence[Ticket]
+) -> frozenset[int]:
+    """Numbers of the tickets that have an open PR, read from PR head branch names.
+
+    Prefix match, not equality: Jules appends a session id to the slug
+    (`ticket/<effort>-<NN>-<slug>-<session id>`). The trailing `-` in the prefix
+    keeps ticket 20 from matching `...-200-...`.
+    """
+    refs = list(head_refs)
+    return frozenset(
+        ticket.number
+        for ticket in tickets
+        if any(
+            ref.startswith(f"ticket/{ticket.effort or 'phase-1'}-{ticket.number:02d}-")
+            for ref in refs
+        )
+    )
 
 
 def is_ticket_claimed(ticket: Ticket, claims: Sequence[Claim | str] | set[str]) -> bool:
@@ -1016,11 +1039,18 @@ class DispatchCore:
         remaining_quota_starts = max(0, remaining_quota - cfg.jules_reserve + 1)
         available_slots = min(available_slots, remaining_cap, remaining_quota_starts)
 
+        open_pr_ticket_numbers = set(snapshot.tickets_with_open_prs) | {
+            pr.ticket_number for pr in snapshot.open_prs if isinstance(pr, OpenPR)
+        }
         lint_held: list[Ticket] = []
         for ticket in frontier:
             if ticket.runner == "windows":
                 skipped_windows.append(ticket)
             elif is_ticket_claimed(ticket, active_claims):
+                continue
+            elif ticket.number in open_pr_ticket_numbers:
+                # A ticket with an open PR is never started again, whatever the PR's
+                # labels; the PR holds no slot, so other tickets keep moving.
                 continue
             elif lint_ticket(ticket):
                 # ADR 0005: a ticket that cannot land as written is not started. It

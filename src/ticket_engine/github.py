@@ -202,6 +202,16 @@ class GitHubClient:
                 return []
             raise
 
+    def list_open_pr_head_refs(self, repo: str) -> list[str]:
+        """List the head branch name of every open pull request."""
+        prs = self._request("GET", f"/repos/{repo}/pulls?state=open&per_page=100")
+        result: list[str] = []
+        if isinstance(prs, list):
+            for item in prs:
+                if isinstance(item, dict) and isinstance(item.get("head"), dict):
+                    result.append(str(item["head"]["ref"]))
+        return result
+
     def post_or_update_pr_comment(
         self, repo: str, pr_number: int, body: str
     ) -> dict[str, Any]:

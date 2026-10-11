@@ -26,6 +26,7 @@ from ticket_engine.dispatch import (
     WorldSnapshot,
     claim_precheck,
     release_done_claims,
+    ticket_numbers_with_open_prs,
 )
 from ticket_engine.parser import Ticket
 
@@ -663,3 +664,31 @@ def test_release_done_claims_ignores_claim_for_ticket_not_done():
     )
     assert released == []
     assert kept == []
+
+
+def test_scenario_ticket_with_an_open_pr_is_not_started():
+    core = DispatchCore()
+    snapshot = WorldSnapshot(
+        tickets=[make_ticket(1), make_ticket(2)],
+        config=RepoConfig(concurrency=1),
+        tickets_with_open_prs=frozenset({1}),
+    )
+
+    result = core.evaluate(snapshot)
+
+    starts = [a for a in result.actions if isinstance(a, StartTicketAction)]
+    assert [a.ticket.number for a in starts] == [2]
+
+
+def test_ticket_numbers_with_open_prs_matches_suffixed_ticket_branches():
+    tickets = [
+        make_ticket(19, effort="cold-start-and-traceability"),
+        make_ticket(20, effort="cold-start-and-traceability"),
+    ]
+    refs = [
+        "ticket/cold-start-and-traceability-20-simulated-filament-13276867537050285691",
+        "ticket/cold-start-and-traceability-200-other",
+        "claim/cold-start-and-traceability/19",
+    ]
+
+    assert ticket_numbers_with_open_prs(refs, tickets) == frozenset({20})
