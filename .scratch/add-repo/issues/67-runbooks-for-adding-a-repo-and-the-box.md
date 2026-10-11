@@ -49,8 +49,7 @@ Write the tests first and watch each fail before changing the docs.
   `test_box_setup_doc_names_every_not_ready_reason` in
   `tests/test_box_setup_doc.py` asserts each `NotReadyReason` value appears in
   the doc.
-- [ ] **Existing tests unchanged.** Every existing test passes with its assertions
-  as they are. No test is deleted, skipped or weakened.
+- [ ] Existing tests unchanged. Every existing test passes with its assertions as they are (they use repo_list_fn=None, which skips readiness checks: keep it that way). No test is deleted, skipped or weakened. (no test: enforced by the integrity gate's existing checks)
 
 ## Gate
 

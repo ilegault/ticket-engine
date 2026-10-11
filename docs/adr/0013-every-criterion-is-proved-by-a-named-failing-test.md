@@ -1,6 +1,7 @@
 # ADR 0013 — Every acceptance criterion is proved by a named test that failed before the code
 
-**Status:** accepted
+**Status:** accepted; amended by ADR 0014 (check 9 reads the base copy of the ticket and
+never skips its failed-on-base half)
 **Date:** 2026-10-07
 **Applies to:** the integrity gate (new check 9), ticket lint, and every ticket the planner writes
 **Amends:** ADR 0001's list of integrity checks

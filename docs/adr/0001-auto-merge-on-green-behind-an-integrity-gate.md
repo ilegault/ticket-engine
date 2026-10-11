@@ -3,7 +3,8 @@
 **Status:** accepted; amended by ADR 0005 (check 2 honours a ticket's
 `Deletes tests:` line from the base branch; a `hold` reports green and the developer
 merges it by hand); amended by ADR 0008 (check 8: a PR that creates a new ticket
-file always holds)
+file always holds); amended by ADR 0014 (check 6 fails a hollow PR; the criteria and
+`Auto-merge` are read from the base copy of the ticket)
 **Date:** 2026-09-23
 **Applies to:** every target repo wired to the engine
 

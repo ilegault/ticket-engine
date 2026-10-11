@@ -38,7 +38,7 @@ mechanically, so no synonyms:
 | Status | Meaning |
 |---|---|
 | `ready-for-agent` | may be claimed by a worker |
-| `ready-for-developer` | needs the developer (bench work, a judgement call). A worker must never claim it |
+| `ready-for-developer` | needs the developer (bench work, a judgement call). A worker must never claim it. The only status from which a ticket may be marked `done` with no change outside `.scratch/` |
 | `in-progress` | a worker is on it (only visible on the ticket branch; see *Claim*) |
 | `blocked` | escalated; the reason is under the ticket's `## Comments` |
 | `done` | merged |
@@ -55,11 +55,17 @@ never takes it.
 
 **Auto-merge** — the ticket's `Auto-merge:` line: `yes` (default) or `no`. The
 planner sets `no` on safety-critical tickets. A `no` ticket always ends in a
-*merge hold*.
+*merge hold*. Read from the *base copy*, so a worker cannot change it.
 
 **Frontier** — the tickets that are `ready-for-agent` and whose every *Blocked
 by* ticket is `done`. First by number wins. The frontier is computed from
 `master`/`main`, never from a branch.
+
+**Base copy** — a ticket as it stands on the default branch, which the developer
+merged. The integrity gate takes everything a ticket asks for or allows from it:
+`Auto-merge`, `Deletes tests`, the acceptance criteria, their named tests and their
+tags. A worker's PR supplies only `Status:`, the ticks and `## Comments`, so a worker
+cannot change what it is judged against (ADR 0005, ADR 0014).
 
 ---
 
@@ -166,12 +172,13 @@ decides whether a green PR may merge on its own. Its answer is a *verdict*.
 `hold` (green, but waits for the developer). Always with reasons.
 
 **Deletes tests** — the ticket's optional `Deletes tests:` line: the test
-functions (`<file>.py::<name>`) the worker may delete. Read only from the default
-branch's copy of the ticket (ADR 0005).
+functions (`<file>.py::<name>`) the worker may delete. Read only from the *base
+copy* (ADR 0005).
 
-**Named test** — a `test_...` function named in a ticket's acceptance criterion.
-The integrity gate requires each to exist and to have failed on the base code
-(check 9, ADR 0013).
+**Named test** — a `test_...` function named in an acceptance criterion of the
+ticket's *base copy*. The integrity gate requires each to exist and to have failed
+on the base code, unless its criterion says it rewrites an existing test (check 9,
+ADR 0013, ADR 0014).
 
 **Ticket lint** — the check that a `ready-for-agent` ticket can land through the
 integrity gate as written, including that every criterion has a *named test* or
@@ -180,6 +187,10 @@ is tagged `(by hand)` / `(no test: <reason>)`. A ticket with findings is not sta
 **Merge hold** — a PR whose verdict is `hold`. Its gate check is green and it is
 labelled `engine:hold`, but it is never auto-merged: the developer merges it by hand.
 Tickets that depend on it wait; nothing is built on top of an unmerged PR.
+
+**Hollow PR** — a PR that marks a ticket `done` but changes nothing outside
+`.scratch/`. Its verdict is `fail`, so nobody can merge it, unless the ticket's
+*base copy* is `ready-for-developer` (ADR 0014).
 
 **New ticket file** — a ticket markdown file the PR adds that did not exist on
 the base branch. Check 8 holds any PR that creates one, always, whatever every

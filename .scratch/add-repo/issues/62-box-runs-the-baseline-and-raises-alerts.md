@@ -61,8 +61,7 @@ same fakes as ticket 61, plus a fake command runner for the gate commands
   box first saw the repo not ready this run. Tests
   `test_not_ready_repo_opens_one_alert_across_ticks` and
   `test_alert_closes_when_the_repo_becomes_ready`.
-- [ ] **Existing tests unchanged.** Every existing test passes with its assertions
-  as they are. No test is deleted, skipped or weakened.
+- [ ] Existing tests unchanged. Every existing test passes with its assertions as they are (they use repo_list_fn=None, which skips readiness checks: keep it that way). No test is deleted, skipped or weakened. (no test: enforced by the integrity gate's existing checks)
 
 ## Gate
 
