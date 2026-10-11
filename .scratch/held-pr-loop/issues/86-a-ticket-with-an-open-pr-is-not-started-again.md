@@ -1,6 +1,6 @@
 # 86: A ticket that already has an open PR is never started again
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
