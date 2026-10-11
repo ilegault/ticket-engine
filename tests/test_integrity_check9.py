@@ -351,3 +351,42 @@ def test_check9_passes_when_every_named_test_is_new_and_failed_on_base():
     assert verdict.is_pass()
     assert "All integrity checks passed (checks 1-9)" in verdict.reasons
     assert not any("Check 9" in r for r in verdict.reasons)
+
+
+def test_check9_skips_the_base_claim_when_source_paths_are_misconfigured():
+    """The gate could not run a base comparison, so check 9 must not fail the PR for it."""
+    base_tree = {
+        "tests/test_sample.py": "def test_existing():\n    pass\n",
+    }
+    pr_diff = textwrap.dedent("""
+        diff --git a/tests/test_sample.py b/tests/test_sample.py
+        --- a/tests/test_sample.py
+        +++ b/tests/test_sample.py
+        @@ -1,2 +1,4 @@
+         def test_existing():
+             pass
+        +def test_alpha():
+        +    pass
+    """).strip() + "\n"
+    ticket_content = textwrap.dedent("""
+        # 10: Feature
+        **Status:** done
+        ## Acceptance criteria
+        - [x] Feature works `test_alpha`
+    """)
+    ticket = TicketParser().parse_text(ticket_content, filename="10-feature.md")
+
+    verdict = IntegrityCore().evaluate(
+        base_tree=base_tree,
+        pr_diff=pr_diff,
+        ticket=ticket,
+        base_test_results=BaseTestResults(
+            new_tests=["tests/test_sample.py::test_alpha"],
+            passed_tests=[],
+            failed_tests=[],
+            misconfigured_source_paths=["src"],
+        ),
+    )
+
+    assert verdict.verdict == Verdict.HOLD
+    assert not any("did not fail on the base code" in r for r in verdict.reasons)

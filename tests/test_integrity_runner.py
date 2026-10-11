@@ -373,16 +373,21 @@ def test_gate_sees_a_deleted_test_when_given_a_bare_base_name(tmp_path: pathlib.
 _TICKET_FOR_CHECK7 = "# 7: T\n**Status:** done\n## Acceptance criteria\n- [x] x\n"
 
 
-def _check7_repo(tmp_path: pathlib.Path, new_test: str, extra: dict | None = None) -> pathlib.Path:
-    """Base has src/lib.py with `old()`. The PR adds `new()`, the ticket and `new_test`."""
+def _check7_repo(
+    tmp_path: pathlib.Path,
+    new_test: str,
+    extra: dict | None = None,
+    code_dir: str = "src",
+) -> pathlib.Path:
+    """Base has <code_dir>/lib.py with `old()`. The PR adds `new()`, the ticket and `new_test`."""
     repo = tmp_path / "repo"
-    (repo / "src").mkdir(parents=True)
+    (repo / code_dir).mkdir(parents=True)
     (repo / "tests").mkdir()
     (repo / ".scratch/e/issues").mkdir(parents=True)
-    (repo / "src/__init__.py").write_text("", encoding="utf-8")
-    (repo / "src/lib.py").write_text("def old():\n    return 1\n", encoding="utf-8")
+    (repo / f"{code_dir}/__init__.py").write_text("", encoding="utf-8")
+    (repo / f"{code_dir}/lib.py").write_text("def old():\n    return 1\n", encoding="utf-8")
     (repo / "tests/test_old.py").write_text(
-        "from src.lib import old\n\ndef test_old():\n    assert old() == 1\n", encoding="utf-8"
+        f"from {code_dir}.lib import old\n\ndef test_old():\n    assert old() == 1\n", encoding="utf-8"
     )
     (repo / ".scratch/e/issues/07-t.md").write_text(
         "# 7: T\n**Status:** ready-for-agent\n## Acceptance criteria\n- [ ] x\n", encoding="utf-8"
@@ -391,7 +396,7 @@ def _check7_repo(tmp_path: pathlib.Path, new_test: str, extra: dict | None = Non
     _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "add", ".")
     _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "base")
     _git(repo, "checkout", "-q", "-b", "pr")
-    (repo / "src/lib.py").write_text(
+    (repo / f"{code_dir}/lib.py").write_text(
         "def old():\n    return 1\n\n\ndef new():\n    return 2\n", encoding="utf-8"
     )
     (repo / "tests/test_new.py").write_text(new_test, encoding="utf-8")
@@ -517,3 +522,15 @@ def test_local_flag_prints_the_verdict_comment(tmp_path: pathlib.Path, monkeypat
     assert code == 1
     assert "## Integrity Gate Verdict: FAIL" in out
     assert "`fail`" in out
+
+
+def test_check7_holds_with_a_config_reason_when_no_source_path_exists(tmp_path: pathlib.Path):
+    # The repo keeps its code in pkg/ and never set source_paths, so the default
+    # "src" does not exist and the "base" run would be the PR's own code again.
+    new_test = "from pkg.lib import new\n\n\ndef test_new():\n    assert new() == 2\n"
+    repo = _check7_repo(tmp_path, new_test, code_dir="pkg")
+    code, text = _run_gate(repo, tmp_path)
+    assert "Check 7 cannot run: none of source_paths (src) exist" in text, text
+    assert "HOLD" in text
+    assert "passed on base" not in text
+    assert code == 0

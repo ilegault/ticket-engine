@@ -96,6 +96,13 @@ def run_dispatch_dry_run(path_str: str, concurrency_limit: int = 2) -> int:
             for finding in problems[num]:
                 print(f"  - {num:02d}: {finding}")
 
+    if not any((repo_path / sp).exists() for sp in config.source_paths):
+        print("\nConfig problems (the integrity gate cannot run check 7):")
+        print(
+            f"  - none of source_paths ({', '.join(config.source_paths)}) exist in {repo_path}; "
+            "set source_paths in .ticket-engine.toml to the folder(s) that hold the code under test"
+        )
+
     print(f"\n=== Parse findings: ({len(result.findings)} finding(s)) ===")
     if result.findings:
         for f in result.findings:
