@@ -1,6 +1,6 @@
 # 76: Ticket lint: every criterion names a test or carries a tag
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
