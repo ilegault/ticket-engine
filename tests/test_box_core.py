@@ -50,7 +50,7 @@ def ticket(
         f"**Status:** {status}\n\n"
         f"**Blocked by:** {blocked_by}\n\n"
         f"**Runner:** {runner}\n\n"
-        f"## Acceptance criteria\n\n- [ ] criterion 1\n\n"
+        f"## Acceptance criteria\n\n- [ ] criterion 1 (by hand)\n\n"
         f"{raw_extra}\n"
     )
     path = pathlib.Path(".scratch") / effort / "issues" / f"{number:02d}-t.md"

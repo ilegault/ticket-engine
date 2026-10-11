@@ -20,6 +20,10 @@ repo on noise:
    when the ticket's `Deletes tests:` line does not list that function.
 2. A `Deletes tests:` entry that is not `<test file>.py::<test name>`.
 3. No acceptance-criteria checkboxes at all: check 6 would have nothing to verify.
+4. An unticked acceptance criterion that names no test (a backticked `test_...`) and
+   carries neither `(by hand)` nor `(no test: <reason>)`. ADR 0013 rule 2: check 9 can
+   only hold a worker to the tests the ticket names, so a criterion naming none proves
+   nothing and the ticket would land hollow.
 
 Only `ready-for-agent` tickets read from a file are linted. Nothing else can be
 claimed, and a ticket with no text has nothing to judge.
@@ -38,6 +42,8 @@ _NEGATED_RE = re.compile(
 _TEST_IDENT_RE = re.compile(r"`(test_\w+)`")
 _DELETES_ENTRY_RE = re.compile(r"^[\w./-]+\.py::\w+(?:::\w+)?$")
 _CHECKBOX_RE = re.compile(r"^\s*[-*]\s*\[[ xX]\]", re.MULTILINE)
+_CRITERION_RE = re.compile(r"^[-*]\s*\[([ xX])\]\s*(.+)$")
+_EXEMPT_TAG_RE = re.compile(r"\((?:by hand|no test:[^)]+)\)", re.IGNORECASE)
 _BLOCK_START_RE = re.compile(r"^\s*(?:[-*]\s|\d+\.\s|#)")
 
 
@@ -59,6 +65,31 @@ def _blocks(text: str) -> list[str]:
     if current:
         blocks.append(" ".join(current))
     return blocks
+
+
+def _criterion_blocks(text: str) -> list[str]:
+    """The blocks in the ticket's acceptance-criteria scope: under `## Acceptance
+    criteria` when that heading exists, else everything before `## Comments`. Mirrors
+    the scope integrity check 9 reads, so lint and the gate judge the same boxes."""
+    lines = text.splitlines()
+    has_heading = any(ln.strip().lower().startswith("## acceptance criteria") for ln in lines)
+    in_scope = not has_heading
+    scoped: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        lowered = stripped.lower()
+        if lowered.startswith("## acceptance criteria"):
+            in_scope = True
+            continue
+        if stripped.startswith("## "):
+            if has_heading and in_scope:
+                break
+            if not has_heading and lowered.startswith("## comments"):
+                break
+            continue
+        if in_scope:
+            scoped.append(line)
+    return _blocks("\n".join(scoped))
 
 
 def lint_ticket(ticket: Ticket) -> list[str]:
@@ -95,6 +126,18 @@ def lint_ticket(ticket: Ticket) -> list[str]:
     if not _CHECKBOX_RE.search(text):
         findings.append(
             "has no acceptance-criteria checkboxes, so integrity check 6 has nothing to verify"
+        )
+
+    for block in _criterion_blocks(text):
+        m = _CRITERION_RE.match(block)
+        if not m or m.group(1) != " ":
+            continue
+        criterion = m.group(2).strip()
+        if _TEST_IDENT_RE.search(criterion) or _EXEMPT_TAG_RE.search(criterion):
+            continue
+        findings.append(
+            f'criterion "{criterion[:60]}" names no test: name the test that proves it, '
+            "or tag it (by hand) or (no test: <reason>)"
         )
     return findings
 

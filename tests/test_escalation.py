@@ -47,7 +47,7 @@ def make_ticket(
             f"**Runner:** any\n\n"
             f"**Auto-merge:** no\n\n"
             f"## Acceptance criteria\n\n"
-            f"- [ ] Criterion 1\n\n"
+            f"- [ ] Criterion 1 (by hand)\n\n"
             f"## Comments\n"
         )
     return Ticket(

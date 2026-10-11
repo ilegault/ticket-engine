@@ -154,3 +154,29 @@ def test_run_work_windows_sonnet_disabled_passes_none(monkeypatch):
     )
     assert seen_sonnet_drivers == []
     assert worker_kwargs["sonnet_driver"] is None
+
+
+def test_dispatch_dry_run_lists_a_criterion_with_no_named_test(tmp_path: pathlib.Path, capsys):
+    issues_dir = tmp_path / ".scratch" / "test-effort" / "issues"
+    issues_dir.mkdir(parents=True)
+    (tmp_path / ".ticket-engine.toml").write_text("", encoding="utf-8")
+    (issues_dir / "05-unnamed.md").write_text(
+        """# 05: Unnamed
+**Status:** ready-for-agent
+**Blocked by:** None
+
+## Acceptance criteria
+
+- [ ] Something is better, and nothing names the test that proves it.
+""",
+        encoding="utf-8",
+    )
+
+    assert run_dispatch_dry_run(str(tmp_path)) == 0
+
+    out = capsys.readouterr().out
+    assert "Ticket problems (an agent cannot land these as written):" in out
+    assert (
+        '05: criterion "Something is better, and nothing names the test that proves " '
+        "names no test: name the test that proves it, or tag it (by hand) or (no test: <reason>)"
+    ) in out
