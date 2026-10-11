@@ -121,7 +121,7 @@ def test_box_status_dataclass_frozen_and_aware():
         status.state = BoxState.idle  # type: ignore
 
     # Naive datetime raises ValueError
-    naive = datetime.datetime(2026, 9, 26, 3, 12, tzinfo=None)  # noqa: DTZ001
+    naive = datetime.datetime(2026, 9, 26, 3, 12, tzinfo=None)
     with pytest.raises(ValueError):
         BoxStatus(
             checked_in_at=naive,
