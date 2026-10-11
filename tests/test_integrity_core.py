@@ -1239,3 +1239,41 @@ def test_check_8_editing_an_existing_ticket_file_is_not_flagged():
     )
 
     assert not any("Check 8" in r for r in verdict.reasons)
+
+
+def test_check7_misconfigured_source_paths_holds_without_a_base_verdict():
+    base_tree = {"tests/test_a.py": "def test_existing():\n    pass\n"}
+    pr_diff = textwrap.dedent("""
+        diff --git a/tests/test_a.py b/tests/test_a.py
+        --- a/tests/test_a.py
+        +++ b/tests/test_a.py
+        @@ -1,2 +1,4 @@
+         def test_existing():
+             pass
+        +def test_a():
+        +    pass
+    """).strip() + "\n"
+    ticket = TicketParser().parse_text(
+        "# 10: T\n**Status:** done\n## Acceptance criteria\n- [x] Done\n", filename="10-t.md"
+    )
+
+    verdict = IntegrityCore().evaluate(
+        base_tree=base_tree,
+        pr_diff=pr_diff,
+        ticket=ticket,
+        base_test_results={
+            "new_tests": ["tests/test_a.py::test_a"],
+            "passed_tests": ["tests/test_a.py::test_a"],
+            "misconfigured_source_paths": ["src"],
+        },
+    )
+
+    assert verdict.verdict == Verdict.HOLD
+    cannot_run = [r for r in verdict.reasons if r.startswith("Check 7 cannot run")]
+    expected = (
+        "Check 7 cannot run: none of source_paths (src) exist in this repo, so the base run "
+        "would test the PR's own code. Set source_paths in .ticket-engine.toml to the "
+        "folder(s) that hold the code under test."
+    )
+    assert cannot_run == [expected]
+    assert not any("passed on base" in r or "Check 7 pass" in r for r in verdict.reasons)

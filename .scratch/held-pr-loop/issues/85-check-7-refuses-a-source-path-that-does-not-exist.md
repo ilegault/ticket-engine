@@ -1,6 +1,6 @@
 # 85: Check 7 says so when none of the repo's `source_paths` exist, instead of reporting "passed on base"
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Runner:** any
 
@@ -63,10 +63,10 @@ directly, as `test_check9_fails_when_a_named_test_passed_on_base` in
 `tests/test_integrity_check9.py` does. Nothing is faked except what those tests
 already fake.
 
-- [ ] **The gate names the misconfiguration.** Test `test_check7_holds_with_a_config_reason_when_no_source_path_exists` in `tests/test_integrity_runner.py`: give `_check7_repo` a `code_dir: str = "src"` parameter (default keeps every existing call unchanged) and build the repo with `code_dir="pkg"` and no `.ticket-engine.toml`; the new test imports from `pkg.lib`. Asserts the summary contains `Check 7 cannot run: none of source_paths (src) exist`, contains `HOLD`, does not contain `passed on base`, and the exit code is 0.
-- [ ] **The core holds and does not claim a base result.** Test `test_check7_misconfigured_source_paths_holds_without_a_base_verdict` in `tests/test_integrity_core.py`: `base_test_results` is a `Mapping` with `new_tests` and `passed_tests` both `["tests/test_a.py::test_a"]` and `misconfigured_source_paths=["src"]`; asserts the verdict is HOLD, one reason starts `Check 7 cannot run`, and no reason contains `passed on base`.
-- [ ] **Check 9 does not fail a PR for the gate's misconfiguration.** Test `test_check9_skips_the_base_claim_when_source_paths_are_misconfigured` in `tests/test_integrity_check9.py`: copy `test_check9_fails_when_a_named_test_passed_on_base`, add `misconfigured_source_paths=["src"]` to its base results; asserts the verdict is HOLD, not FAIL, and no reason contains `did not fail on the base code`.
-- [ ] **The dry run warns at adoption.** Test `test_dispatch_dry_run_lists_source_paths_that_do_not_exist` in `tests/test_cli.py`: one `tmp_path` repo with a `.ticket-engine.toml` and no `src/` folder, run through `run_dispatch_dry_run`; output contains `Config problems` and `none of source_paths (src) exist`. A second repo in the same test with a `src/` folder prints no `Config problems`.
+- [x] **The gate names the misconfiguration.** Test `test_check7_holds_with_a_config_reason_when_no_source_path_exists` in `tests/test_integrity_runner.py`: give `_check7_repo` a `code_dir: str = "src"` parameter (default keeps every existing call unchanged) and build the repo with `code_dir="pkg"` and no `.ticket-engine.toml`; the new test imports from `pkg.lib`. Asserts the summary contains `Check 7 cannot run: none of source_paths (src) exist`, contains `HOLD`, does not contain `passed on base`, and the exit code is 0.
+- [x] **The core holds and does not claim a base result.** Test `test_check7_misconfigured_source_paths_holds_without_a_base_verdict` in `tests/test_integrity_core.py`: `base_test_results` is a `Mapping` with `new_tests` and `passed_tests` both `["tests/test_a.py::test_a"]` and `misconfigured_source_paths=["src"]`; asserts the verdict is HOLD, one reason starts `Check 7 cannot run`, and no reason contains `passed on base`.
+- [x] **Check 9 does not fail a PR for the gate's misconfiguration.** Test `test_check9_skips_the_base_claim_when_source_paths_are_misconfigured` in `tests/test_integrity_check9.py`: copy `test_check9_fails_when_a_named_test_passed_on_base`, add `misconfigured_source_paths=["src"]` to its base results; asserts the verdict is HOLD, not FAIL, and no reason contains `did not fail on the base code`.
+- [x] **The dry run warns at adoption.** Test `test_dispatch_dry_run_lists_source_paths_that_do_not_exist` in `tests/test_cli.py`: one `tmp_path` repo with a `.ticket-engine.toml` and no `src/` folder, run through `run_dispatch_dry_run`; output contains `Config problems` and `none of source_paths (src) exist`. A second repo in the same test with a `src/` folder prints no `Config problems`.
 
 ## Gate
 
@@ -77,3 +77,5 @@ In CI order (`.github/workflows/ci.yml`):
     pytest -q
 
 ## Comments
+
+2026-10-11: Check 7 now holds with "Check 7 cannot run: none of source_paths (...) exist" when no source folder exists, instead of reporting "passed on base". Changes: `BaseTestResults.misconfigured_source_paths` and the check 7 / check 9 branches in `integrity.py`; the early return in `execute_new_tests_on_base` (`integrity_runner.py`); the "Config problems" section in `run_dispatch_dry_run` (`cli.py`). Tests: `test_check7_holds_with_a_config_reason_when_no_source_path_exists` (runner, real git repo), `test_check7_misconfigured_source_paths_holds_without_a_base_verdict` (core), `test_check9_skips_the_base_claim_when_source_paths_are_misconfigured`, `test_dispatch_dry_run_lists_source_paths_that_do_not_exist`; each was seen failing before the change. Gate: ruff clean; tests-first ok; pytest failures on this machine are the same as master's (missing tzdata for zoneinfo) plus `test_context_no_other_entries_changed`, a stale snapshot already regenerated on master. Reaches target repos only when the developer moves `v1`.

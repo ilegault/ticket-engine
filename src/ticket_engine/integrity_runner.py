@@ -406,6 +406,20 @@ def execute_new_tests_on_base(
     if unrunnable:
         logger.warning("New tests that fail on the PR's own code in the gate env: %s", unrunnable)
 
+    if runnable and not any((repo_path / sp).exists() for sp in source_paths):
+        logger.warning(
+            "None of source_paths %s exist in the repo; not running new tests on base.",
+            list(source_paths),
+        )
+        return BaseTestResults(
+            new_tests=list(new_tests),
+            passed_tests=[],
+            failed_tests=[],
+            runtime_seconds=max(0.0, time.perf_counter() - t_start),
+            unrunnable_tests=unrunnable,
+            misconfigured_source_paths=list(source_paths),
+        )
+
     passed: list[str] = []
     failed: list[str] = []
     if runnable:

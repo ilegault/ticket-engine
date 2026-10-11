@@ -180,3 +180,21 @@ def test_dispatch_dry_run_lists_a_criterion_with_no_named_test(tmp_path: pathlib
         '05: criterion "Something is better, and nothing names the test that proves " '
         "names no test: name the test that proves it, or tag it (by hand) or (no test: <reason>)"
     ) in out
+
+
+def test_dispatch_dry_run_lists_source_paths_that_do_not_exist(tmp_path: pathlib.Path, capsys):
+    missing = tmp_path / "missing"
+    (missing / ".scratch" / "e" / "issues").mkdir(parents=True)
+    (missing / ".ticket-engine.toml").write_text("", encoding="utf-8")
+    present = tmp_path / "present"
+    (present / ".scratch" / "e" / "issues").mkdir(parents=True)
+    (present / ".ticket-engine.toml").write_text("", encoding="utf-8")
+    (present / "src").mkdir()
+
+    assert run_dispatch_dry_run(str(missing)) == 0
+    out = capsys.readouterr().out
+    assert "Config problems" in out
+    assert "none of source_paths (src) exist" in out
+
+    assert run_dispatch_dry_run(str(present)) == 0
+    assert "Config problems" not in capsys.readouterr().out

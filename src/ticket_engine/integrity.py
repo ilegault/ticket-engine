@@ -74,6 +74,9 @@ class BaseTestResults:
     # New tests that did not pass on the PR's own code in the gate environment, so
     # their result on base proves nothing (missing package, missing env var, ...).
     unrunnable_tests: list[str] = field(default_factory=list)
+    # Set when none of the repo's source_paths exist: the base run would have tested
+    # the PR's own code, so the gate ran nothing on base and claims nothing about it.
+    misconfigured_source_paths: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -910,28 +913,39 @@ class IntegrityCore:
 
         # 10. Check 7: New tests must fail on base code (ADR 0001 §2.7, Ticket 05)
         failed_on_base: list[str] = []
+        misconfigured: list[str] = []
         if base_test_results is not None:
             if isinstance(base_test_results, Mapping):
                 new_tests = list(base_test_results.get("new_tests", []))
                 passed_on_base = list(base_test_results.get("passed_tests", []))
                 failed_on_base = list(base_test_results.get("failed_tests", []))
                 unrunnable = list(base_test_results.get("unrunnable_tests", []))
+                misconfigured = list(base_test_results.get("misconfigured_source_paths", []))
                 rt = float(base_test_results.get("runtime_seconds", 0.0))
             else:
                 new_tests = list(getattr(base_test_results, "new_tests", []))
                 passed_on_base = list(getattr(base_test_results, "passed_tests", []))
                 failed_on_base = list(getattr(base_test_results, "failed_tests", []))
                 unrunnable = list(getattr(base_test_results, "unrunnable_tests", []))
+                misconfigured = list(getattr(base_test_results, "misconfigured_source_paths", []))
                 rt = float(getattr(base_test_results, "runtime_seconds", 0.0))
 
-            if unrunnable:
+            if misconfigured:
+                is_holding = True
+                reasons.append(
+                    "Check 7 cannot run: none of source_paths "
+                    f"({', '.join(misconfigured)}) exist in this repo, so the base run would "
+                    "test the PR's own code. Set source_paths in .ticket-engine.toml to the "
+                    "folder(s) that hold the code under test."
+                )
+            elif unrunnable:
                 is_holding = True
                 reasons.append(
                     "Check 7 hold: new test(s) did not pass on the PR's own code in the gate "
                     "environment, so their result on base proves nothing (missing package or "
                     f"env var?): {', '.join(unrunnable)}"
                 )
-            if new_tests and not unrunnable:
+            if new_tests and not unrunnable and not misconfigured:
                 if passed_on_base:
                     is_holding = True
                     tests_str = ", ".join(passed_on_base)
@@ -950,7 +964,7 @@ class IntegrityCore:
             head_test_names = {info.func_name for info in head_tests.values()}
             failed_on_base_names = (
                 {qname.split("::")[-1] for qname in failed_on_base}
-                if base_test_results is not None
+                if base_test_results is not None and not misconfigured
                 else None
             )
             c9_problems = named_test_problems(
