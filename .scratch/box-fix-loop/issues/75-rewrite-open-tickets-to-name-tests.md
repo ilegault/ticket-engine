@@ -1,6 +1,6 @@
 # 75: Rewrite every open ticket so each criterion names a test
 
-**Status:** ready-for-developer
+**Status:** done
 
 **Runner:** developer
 
@@ -30,10 +30,10 @@ PR per repo; ADR 0008 holds them for the developer's click.
 
 ## Acceptance criteria
 
-- [ ] Slackbot tickets 103–110 each name a test, or carry a tag, on every criterion; the dispatcher dry run on a Slackbot clone shows no "Ticket problems" once ticket 76 is merged. (by hand)
-- [ ] ticket-engine add-repo tickets 61, 62, 66 and 67 do the same. (by hand)
-- [ ] TDS-T8's open `ready-for-agent` tickets do the same. (by hand)
-- [ ] The rewrite PRs are merged by the developer. (by hand)
+- [x] Slackbot tickets 103–110 each name a test, or carry a tag, on every criterion; the dispatcher dry run on a Slackbot clone shows no "Ticket problems" once ticket 76 is merged. (by hand)
+- [x] ticket-engine add-repo tickets 61, 62, 66 and 67 do the same. (by hand)
+- [x] TDS-T8's open `ready-for-agent` tickets do the same. (by hand)
+- [x] The rewrite PRs are merged by the developer. (by hand)
 
 ## Gate
 

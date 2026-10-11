@@ -35,7 +35,7 @@ Write the tests first and watch each fail before changing the docs.
   `add_repo.py` if `main` builds the parser inline, and asserts each long option
   appears in the doc); `test_no_secrets_no_names` (copy the regexes from
   `tests/test_box_setup_doc.py`).
-- [ ] **`docs/box-setup.md` loses the per-repo steps.** In
+- [ ] **`docs/box-setup.md` loses the per-repo steps.** Test `test_box_setup_doc_describes_box_cloning_and_readiness` in `tests/test_box_setup_doc.py`. In
   `## Python and the engine checkout`, replace the paragraph that tells the
   developer to clone every target repo with: the box clones listed repos into
   `projects_dir` itself; the one manual step is a single `git pull` in any clone

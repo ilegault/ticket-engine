@@ -26,23 +26,23 @@ Write the tests first and watch each fail before changing `src/`. Tests use the
 recording fake `gh`, a fake `sleep`, and monkeypatch
 `ticket_engine.add_repo.run_dispatch_dry_run`.
 
-- [ ] **It waits for the adopt merge.** For `StepKind.wait_adopt`: print
+- [ ] **It waits for the adopt merge.** Tests `test_wait_adopt_continues_when_the_pr_merges`, `test_wait_adopt_stops_when_the_pr_is_closed` and `test_wait_adopt_stops_on_keyboard_interrupt`. For `StepKind.wait_adopt`: print
   `Merge the adopt PR: https://github.com/{repo}/pull/{n}` (and the list PR's URL
   if one is open), then poll
   `gh pr view {n} --repo {repo} --json state --jq .state` every 60 s through the
   injected `sleep`. `MERGED` continues; `CLOSED` prints
   `adopt PR closed without merging` and returns 1; `KeyboardInterrupt` prints
-  `Stopped. Re-run add-repo {repo} to continue.` and returns 130. Tests for each.
-- [ ] **The ruleset.** For `CreateRulesetOp`: `gh api -X POST repos/{repo}/rulesets --input -`
+  `Stopped. Re-run add-repo {repo} to continue.` and returns 130. One test for each, named above.
+- [ ] **The ruleset.** Test `test_ruleset_posts_the_exact_json_with_one_context_per_required_check`. For `CreateRulesetOp`: `gh api -X POST repos/{repo}/rulesets --input -`
   with stdin JSON `{"name": "engine-branch-protection", "target": "branch", "enforcement": "active", "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}, "rules": [{"type": "required_status_checks", "parameters": {"strict_required_status_checks_policy": false, "required_status_checks": [{"context": "ticket-engine/integrity-gate"}, {"context": "gate / gate"}]}}]}`
   (name from `ENGINE_RULESET_NAME`; one `{"context": ...}` per entry of the op's
   `required_checks`, in order, so ticket 84's second context needs no change here). Test
   asserts the exact parsed JSON.
-- [ ] **The dry run.** For `StepKind.dry_run`: clone the repo into a temporary
+- [ ] **The dry run.** Tests `test_dry_run_step_passes_when_the_dry_run_is_clean` and `test_dry_run_step_fails_when_the_dry_run_reports_problems`. For `StepKind.dry_run`: clone the repo into a temporary
   folder as in ticket 65 and call `run_dispatch_dry_run(str(clone))` from
   `ticket_engine.cli`; a non-zero result prints
   `dispatcher dry run reported problems (see above)` and returns 1. The folder is
-  removed afterwards. Test with the monkeypatched dry run returning 0 and 1.
+  removed afterwards. One test for each, named above, with the monkeypatched dry run returning 0 and 1.
 - [ ] **The Jules script and the closing summary.** For `StepKind.jules_script`:
   print the script from `_build_jules_setup_script(python_version, install, [])`
   using the repo's merged `.ticket-engine.toml` values, under the heading
