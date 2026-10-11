@@ -195,7 +195,7 @@ def test_lint_ignores_claimed_by_box():
 **Blocked by:** None
 
 ## Acceptance criteria
-- [ ] Criteria 1
+- [ ] Criteria 1 (by hand)
 """
     parser = TicketParser()
     ticket = parser.parse_text(content, filename="01-ticket.md")

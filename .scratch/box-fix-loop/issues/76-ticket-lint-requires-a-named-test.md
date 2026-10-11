@@ -1,6 +1,6 @@
 # 76: Ticket lint: every criterion names a test or carries a tag
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Runner:** any
 
@@ -31,11 +31,11 @@ Write the tests first, in `tests/test_ticket_quality.py` beside the existing lin
 tests, and watch each fail before changing `src/`. Tickets are built from text with
 `TicketParser().parse_text`, as those tests do. Nothing is faked.
 
-- [ ] **A criterion with no named test is a finding.** Test `test_lint_flags_a_criterion_with_no_named_test`: one criterion names `test_a`, another names nothing; asserts exactly one finding, reading `criterion "<first 60 chars>" names no test: name the test that proves it, or tag it (by hand) or (no test: <reason>)`.
-- [ ] **The two tags are accepted.** Test `test_lint_accepts_by_hand_and_no_test_tags`: criteria tagged `(by hand)` and `(no test: doc-only)`; asserts no finding.
-- [ ] **A fully named ticket is clean.** Test `test_lint_accepts_a_ticket_whose_every_criterion_names_a_test`.
-- [ ] **Only `ready-for-agent` tickets and unticked boxes are judged.** Test `test_lint_ignores_ticked_boxes_and_other_statuses`: a `done` ticket with an unnamed criterion, and a `ready-for-agent` ticket whose only unnamed box is ticked; asserts no finding for either.
-- [ ] **The dry run shows it.** Test `test_dispatch_dry_run_lists_a_criterion_with_no_named_test`: a temporary repo with `.ticket-engine.toml` and one such ticket; `run_dispatch_dry_run` output contains the finding under "Ticket problems" (copy the existing dry-run test in `tests/test_cli.py`).
+- [x] **A criterion with no named test is a finding.** Test `test_lint_flags_a_criterion_with_no_named_test`: one criterion names `test_a`, another names nothing; asserts exactly one finding, reading `criterion "<first 60 chars>" names no test: name the test that proves it, or tag it (by hand) or (no test: <reason>)`.
+- [x] **The two tags are accepted.** Test `test_lint_accepts_by_hand_and_no_test_tags`: criteria tagged `(by hand)` and `(no test: doc-only)`; asserts no finding.
+- [x] **A fully named ticket is clean.** Test `test_lint_accepts_a_ticket_whose_every_criterion_names_a_test`.
+- [x] **Only `ready-for-agent` tickets and unticked boxes are judged.** Test `test_lint_ignores_ticked_boxes_and_other_statuses`: a `done` ticket with an unnamed criterion, and a `ready-for-agent` ticket whose only unnamed box is ticked; asserts no finding for either.
+- [x] **The dry run shows it.** Test `test_dispatch_dry_run_lists_a_criterion_with_no_named_test`: a temporary repo with `.ticket-engine.toml` and one such ticket; `run_dispatch_dry_run` output contains the finding under "Ticket problems" (copy the existing dry-run test in `tests/test_cli.py`).
 
 ## Gate
 
@@ -46,3 +46,5 @@ In CI order (`.github/workflows/ci.yml`):
     pytest -q
 
 ## Comments
+
+2026-10-11: `lint_ticket` now judges every unticked criterion in the acceptance scope (same scope as check 9) and flags one naming no `test_...` unless tagged `(by hand)` or `(no test: <reason>)`. The five named tests cover the five criteria (`tests/test_ticket_quality.py`, `tests/test_cli.py`). Fixtures in `test_box_core`, `test_box_worker`, `test_escalation`, `test_parser` and the lint tests were rewritten in place (tagged `(by hand)` or given a test name) so they stay lint-clean; no test deleted. Full suite: 74 failures, identical to master (missing `tzdata` for zoneinfo in this venv), none new.

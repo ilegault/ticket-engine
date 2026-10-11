@@ -227,7 +227,7 @@ TICKET_49_SHAPE = """# 49: The BOM sheet uses the lab layout
   `test_build_bom_workbook_content_and_numbers` and `test_build_bom_workbook_draft_header`
   in `tests/test_26_line_items_and_bom.py` assert the old layout. Delete those two
   functions and nothing else in that file.
-- [ ] Layout test in `tests/test_49_bom_lab_layout.py`.
+- [ ] Layout test `test_bom_lab_layout` in `tests/test_49_bom_lab_layout.py`.
 """
 
 
@@ -259,7 +259,7 @@ def test_lint_ignores_negated_and_non_test_deletions():
     text = (
         "# 16: T\n**Status:** ready-for-agent\n## Acceptance criteria\n"
         "- [ ] Do not delete `test_keep_me`; fix it.\n"
-        "- [ ] Delete the `(\"check\", \"test\")` trigger and `remove_buyer` stays.\n"
+        "- [ ] Delete the `(\"check\", \"test\")` trigger and `remove_buyer` stays. (by hand)\n"
     )
     assert lint_ticket(parse(text, number=16)) == []
 
@@ -288,7 +288,7 @@ def test_lint_only_judges_tickets_an_agent_could_claim():
 def test_dispatcher_does_not_start_a_ticket_with_lint_findings_but_starts_the_next():
     bad = parse(TICKET_49_SHAPE)
     good = parse(
-        "# 50: Good\n**Status:** ready-for-agent\n## Acceptance criteria\n- [ ] x\n", number=50
+        "# 50: Good\n**Status:** ready-for-agent\n## Acceptance criteria\n- [ ] Test `test_x` proves it.\n", number=50
     )
     result = DispatchCore().evaluate(
         WorldSnapshot(tickets=[bad, good], config=RepoConfig(concurrency=2))
@@ -336,3 +336,50 @@ def test_dry_run_prints_ticket_problems(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Ticket problems (an agent cannot land these as written):" in out
     assert "49: tells the worker to delete `test_build_bom_workbook_draft_header`" in out
+
+# --- every criterion names a test (ADR 0013 rule 2) ---------------------------------
+
+
+def _criteria_ticket(*criteria: str, status: str = "ready-for-agent") -> Ticket:
+    body = "\n".join(criteria)
+    return parse(
+        f"# 76: T\n\n**Status:** {status}\n\n## Acceptance criteria\n\n{body}\n", number=76
+    )
+
+
+def test_lint_flags_a_criterion_with_no_named_test():
+    unnamed = "**Nothing proves this one yet, and it is long enough to be cut at sixty.**"
+    ticket = _criteria_ticket(
+        "- [ ] **Named.** Test `test_a` proves it.",
+        f"- [ ] {unnamed}",
+    )
+    first_60 = unnamed[:60]
+    assert lint_ticket(ticket) == [
+        (
+            f'criterion "{first_60}" names no test: name the test that proves it, '
+            "or tag it (by hand) or (no test: <reason>)"
+        )
+    ]
+
+
+def test_lint_accepts_by_hand_and_no_test_tags():
+    ticket = _criteria_ticket(
+        "- [ ] The developer moves the tag. (by hand)",
+        "- [ ] The docs read well. (no test: doc-only)",
+    )
+    assert lint_ticket(ticket) == []
+
+
+def test_lint_accepts_a_ticket_whose_every_criterion_names_a_test():
+    ticket = _criteria_ticket(
+        "- [ ] **One.** Test `test_one` asserts it.",
+        "- [ ] **Two.** Wrapped across",
+        "  lines, test `test_two` asserts it.",
+    )
+    assert lint_ticket(ticket) == []
+
+
+def test_lint_ignores_ticked_boxes_and_other_statuses():
+    unnamed = "- [ ] Nothing names a test here."
+    assert lint_ticket(_criteria_ticket(unnamed, status="done")) == []
+    assert lint_ticket(_criteria_ticket("- [x] Nothing names a test here.")) == []
