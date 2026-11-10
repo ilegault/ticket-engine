@@ -570,9 +570,13 @@ class _ASTVisitor:
             attr = fn.attr.lower()
             if attr in ("skip", "skipif", "xfail", "skiptest"):
                 return True
-        elif isinstance(fn, ast.Name):
-            if fn.id.lower() in ("skip", "skipif", "xfail", "skiptest"):
-                return True
+        elif isinstance(fn, ast.Name) and fn.id.lower() in (
+            "skip",
+            "skipif",
+            "xfail",
+            "skiptest",
+        ):
+            return True
         return False
 
     def _count_assertions(self, tree: ast.AST) -> int:
@@ -586,9 +590,10 @@ class _ASTVisitor:
                     attr = fn.attr
                     if attr.startswith("assert") or attr in ("raises", "warns", "approx"):
                         count += 1
-                elif isinstance(fn, ast.Name):
-                    if fn.id.startswith("assert_") or fn.id == "assert_that":
-                        count += 1
+                elif isinstance(fn, ast.Name) and (
+                    fn.id.startswith("assert_") or fn.id == "assert_that"
+                ):
+                    count += 1
         return count
 
 
