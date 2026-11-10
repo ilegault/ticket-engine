@@ -5,6 +5,7 @@ on:
     branches: [master, main]
   pull_request:
     branches: [master, main]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 jobs:
   lint-and-test:

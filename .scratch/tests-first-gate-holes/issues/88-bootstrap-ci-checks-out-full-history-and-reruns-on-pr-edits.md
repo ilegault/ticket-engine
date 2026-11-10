@@ -1,6 +1,6 @@
 # 88: Bootstrap's CI template checks out full history and re-runs on PR edits and labels
 
-**Status:** in-progress
+**Status:** done
 
 **Runner:** any
 
@@ -54,14 +54,14 @@ Tests go in `tests/test_bootstrap_new.py` and call the real `new(_new_input())`,
 the file with `_written`, as `test_new_mode_produces_ci_workflow` does. Nothing is
 faked.
 
-- [ ] `test_new_mode_ci_checks_out_full_history`: the written `ci.yml` contains the
+- [x] `test_new_mode_ci_checks_out_full_history`: the written `ci.yml` contains the
   line `fetch-depth: 0`, and it appears after `uses: actions/checkout@v4` and before
   `uses: actions/setup-python@v5`.
-- [ ] `test_new_mode_ci_reruns_on_pr_edits_and_labels`: the written `ci.yml` contains
+- [x] `test_new_mode_ci_reruns_on_pr_edits_and_labels`: the written `ci.yml` contains
   `types: [opened, synchronize, reopened, edited, labeled, unlabeled]` on the line
   after `  pull_request:`.
-- [ ] `test_new_mode_produces_ci_workflow` still passes unchanged.
-- [ ] `.github/workflows/ci.yml` has the step-2 `types:` line under `pull_request:`
+- [x] `test_new_mode_produces_ci_workflow` still passes unchanged.
+- [x] `.github/workflows/ci.yml` has the step-2 `types:` line under `pull_request:`
   and still has `branches: [master, main]` there. (no test: workflow file)
 
 ## Gate
@@ -75,3 +75,11 @@ pytest -q
 ```
 
 ## Comments
+
+2026-11-10: `_CI_WORKFLOW_TEMPLATE` now has `fetch-depth: 0` under the checkout and the
+`types:` list under `pull_request:`; this repo's `ci.yml` has the same `types:` line.
+`test_new_mode_ci_checks_out_full_history` and `test_new_mode_ci_reruns_on_pr_edits_and_labels`
+(tests/test_bootstrap_new.py) were seen failing first. Gate: pytest 882 passed;
+check_tests_first OK. `ruff check .` reports 2 SIM102 errors in `src/ticket_engine/integrity.py`
+(lines 573, 589), a file this ticket does not touch: not fixed here. Needs the developer
+to move `v1` before bootstrapped repos get the new template.

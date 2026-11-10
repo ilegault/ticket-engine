@@ -370,18 +370,24 @@ All implementation work must begin with a failing test.  The gate script
   repo's own tickets.
 """
 
+# WHY: fetch-depth 0, because scripts/check_tests_first.py diffs against the PR's
+# base commit and a depth-1 checkout cannot see it. The extra pull_request types
+# re-run the check when a PR body gains a tag or a label is added (tests-first-gate-holes).
 _CI_WORKFLOW_TEMPLATE = """\
 name: CI
 
 on:
   push:
   pull_request:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
