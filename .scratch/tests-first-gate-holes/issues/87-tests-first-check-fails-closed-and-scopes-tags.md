@@ -1,6 +1,6 @@
 # 87: The tests-first check fails closed, reads `source_paths`, scopes commit tags to the files they cover, and ignores docstring-only edits
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
