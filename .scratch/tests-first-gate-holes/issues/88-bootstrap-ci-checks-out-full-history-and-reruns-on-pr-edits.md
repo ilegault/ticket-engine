@@ -78,8 +78,10 @@ pytest -q
 
 2026-11-10: `_CI_WORKFLOW_TEMPLATE` now has `fetch-depth: 0` under the checkout and the
 `types:` list under `pull_request:`; this repo's `ci.yml` has the same `types:` line.
-`test_new_mode_ci_checks_out_full_history` and `test_new_mode_ci_reruns_on_pr_edits_and_labels`
-(tests/test_bootstrap_new.py) were seen failing first. Gate: pytest 882 passed;
-check_tests_first OK. `ruff check .` reports 2 SIM102 errors in `src/ticket_engine/integrity.py`
-(lines 573, 589), a file this ticket does not touch: not fixed here. Needs the developer
-to move `v1` before bootstrapped repos get the new template.
+`test_new_mode_ci_checks_out_full_history` and
+`test_new_mode_ci_reruns_on_pr_edits_and_labels` (tests/test_bootstrap_new.py) were
+seen failing first; removing `fetch-depth: 0` from the template turns the first red
+again. Gate: pytest 891 passed; check_tests_first OK; `ruff check .` has one
+pre-existing DTZ001 in `tests/test_box_status.py` (on master, untouched). Held
+(`Auto-merge: no`). The developer must move `v1` before bootstrapped repos get the
+new template.
