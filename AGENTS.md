@@ -347,9 +347,42 @@ For the planner session. None of this is for a worker.
 <!-- ACTIVE-PLAN:START -->
 ## Active implementation plan
 
-_Written by the planning model on 2026-10-07 21:38. Implement this. If something in it is wrong, say so before changing course._
+_Written by the planning model on 2026-11-10 05:58. Implement this. If something in it is wrong, say so before changing course._
 
-# Active plan: box-fix-loop — the box fixes red CI or escalates, behind one gate list and named tests
+# Active work: tests-first gate holes (87–88, new), plus box-fix-loop below
+
+This is a pointer, not the work.
+
+## tests-first gate holes (new)
+
+- **Spec:** `.scratch/tests-first-gate-holes/spec.md`
+- **Binding ADRs:** 0001 (§2.4, §2.5), 0005, 0013. Glossary: no change.
+- **Tickets:** `.scratch/tests-first-gate-holes/issues/87`, `88`. Both held
+  (`Auto-merge: no`: a gate script and `.github/`), both leaves. Conventions:
+  `docs/agents/issue-tracker.md`.
+
+**Next:** 87 and 88 have no blockers and touch different files. Start with **87**: it is
+the canonical gate script, and RBL 105, Slackbot 149 and TDS-T8 50 wait on it being
+merged to `master`.
+
+Requirements an implementer might treat as preferences:
+
+- `scripts/check_tests_first.py` stays stdlib-only with every line at 88 characters or
+  fewer; target repos copy it unedited.
+- `normalize_path`, `categorize_files`, `find_escape_reasons`, `evaluate_tests_first`,
+  `extract_event_info` and `main` keep their signatures and default-path message text;
+  RBL's test suite imports them.
+- `code_fingerprint` and `decide_tests_first` are pure and tested without git. Git
+  tests use a real repo in `tmp_path`; no `subprocess` patching.
+- When git cannot work out the range or the changed files, the check FAILs. No fallback.
+- Check 7 will report 87's new tests pass on base (the script is under `scripts/`, not
+  `source_paths`). That hold is expected; do not bend the tests.
+
+Not in this set: adopt mode, moving `v1`, integrity check 5 (any tag still holds).
+
+---
+
+## Active plan: box-fix-loop — the box fixes red CI or escalates, behind one gate list and named tests
 
 This is a pointer, not the work. Read the spec and the tickets it names.
 
@@ -361,7 +394,7 @@ This is a pointer, not the work. Read the spec and the tickets it names.
 
 **Next:** 69, 70, 74, 79 and 82 have no blockers (75 is the developer's). Start with **70**: on its own it turns a stuck red box PR into an escalation instead of silence. Then 79 → 80 so later engine changes reach the box by themselves.
 
-## Dependency graph
+### Dependency graph
 
 - 69 → 71, 83 (held), 62
 - 70 → 71, 77, 80, 61, 62
@@ -375,7 +408,7 @@ This is a pointer, not the work. Read the spec and the tickets it names.
 - **Held:** 83 (changes `.github/`), a leaf; it reaches target repos only when the developer moves `v1`.
 - **ready-for-developer:** 75 (rewrite open tickets to name tests), 81 (switch the box to the launcher), 68.
 
-## Requirements an implementer might treat as preferences
+### Requirements an implementer might treat as preferences
 
 - `run_gate` runs **every** command; it never stops at the first failure.
 - A fix attempt is counted **before** the fix run starts and taken back only for `quota`; the count lives in `fix_attempts.json`, never in memory.
@@ -387,7 +420,7 @@ This is a pointer, not the work. Read the spec and the tickets it names.
 - `parse_box_status` keeps reading the old UTC body.
 - Tests that assert old text are **rewritten in place under the same name**; no test is deleted.
 
-## What this set does not do
+### What this set does not do
 
 - Red-CI handling for Jules PRs; the dispatcher's PR-escalation path stays unwired (82 only documents it). Keep a repo off Jules with `jules_enabled = false`.
 - The engine never edits code itself (no automatic `ruff --fix`).
