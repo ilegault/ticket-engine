@@ -1,6 +1,6 @@
 # 87: The tests-first check fails closed, reads `source_paths`, scopes commit tags to the files they cover, and ignores docstring-only edits
 
-**Status:** in-progress
+**Status:** done
 
 **Runner:** any
 
@@ -120,43 +120,43 @@ Load the script with `importlib.util.spec_from_file_location` from
 `subprocess` patching. Call `main([..., "--repo-root", str(repo)])` and read stdout
 with `capsys`; `monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)` in each.
 
-- [ ] `test_unresolvable_base_fails_closed`: a repo with one commit changing
+- [x] `test_unresolvable_base_fails_closed`: a repo with one commit changing
   `src/a.py` and no `origin/*` ref → `main` returns 1 and stdout contains
   `FAIL: cannot determine the changes to check` and `fetch-depth: 0`. A `tmp_path`
   folder that is not a git repo also returns 1 with the same text.
-- [ ] `test_commit_tag_is_read_on_a_pr_run`: an event file with a non-empty
+- [x] `test_commit_tag_is_read_on_a_pr_run`: an event file with a non-empty
   `pull_request.title` and `body` (no tag), `base.sha` = origin/master's commit,
   `head.sha` = the branch tip; the one branch commit changes code in `src/a.py` and its
   message has `[no-test-needed: bench only]` → returns 0 and stdout contains
   `bench only`.
-- [ ] `test_later_untagged_commit_is_not_covered`: commit 1 (tagged) and commit 2
+- [x] `test_later_untagged_commit_is_not_covered`: commit 1 (tagged) and commit 2
   (untagged) both change code in `src/a.py` → returns 1; stdout contains `src/a.py`
   and `untagged commit <commit 2's first 7>` and not commit 1's first 7. Second case in
   the same test: commit 1 (tagged) changes `src/a.py`, commit 2 (untagged) changes
   `src/b.py` → returns 1 and the FAIL file list names `src/b.py` and not `src/a.py`.
-- [ ] `test_docstring_and_comment_only_change_passes`: one untagged commit that only
+- [x] `test_docstring_and_comment_only_change_passes`: one untagged commit that only
   rewords a function docstring and adds a `#` comment in `src/a.py` → returns 0 and
   stdout contains `Docstring/comment-only: src/a.py`. And `test_code_fingerprint`:
   equal for two sources differing only in module, class and function docstrings and
   comments; different when a constant changes; different for `def f():\n    "d"\n`
   versus `def f():\n    pass\n`; `None` for `def f(:`.
-- [ ] `test_source_paths_come_from_engine_config`: a repo with `.ticket-engine.toml`
+- [x] `test_source_paths_come_from_engine_config`: a repo with `.ticket-engine.toml`
   holding `source_paths = ["t8_daq_system"]` and an untagged code change to
   `t8_daq_system/x.py` → returns 1 and stdout names `t8_daq_system/x.py`. A repo with
   no config and the same change under `lib/x.py` → returns 0. A config file with
   invalid TOML → returns 1 with `FAIL: cannot read .ticket-engine.toml`.
-- [ ] `test_push_to_base_branch_checks_the_last_commit`: `origin/master` equals
+- [x] `test_push_to_base_branch_checks_the_last_commit`: `origin/master` equals
   `HEAD`, and the last commit is an untagged code change to `src/a.py` → returns 1.
-- [ ] `test_files_mode_is_unchanged`: `--files docs/README.md tests/test_foo.py` → 0;
+- [x] `test_files_mode_is_unchanged`: `--files docs/README.md tests/test_foo.py` → 0;
   `--files src/x.py` → 1; `--files src/x.py tests/test_x.py` → 0; with
   `--exempt-reason r` → 0; with `--message "m [no-test-needed: n]"` → 0; with
   `--label tests-exempt` → 0. `evaluate_tests_first(["src/x.py"])` returns a message
   containing `FAIL: Application source files modified under 'src/' without
   corresponding test changes under 'tests/'`.
-- [ ] `test_script_fits_every_target_repo`: every line of
+- [x] `test_script_fits_every_target_repo`: every line of
   `scripts/check_tests_first.py` is 88 characters or fewer, and every module it imports
   (read with `ast`) is in `sys.stdlib_module_names`.
-- [ ] `AGENTS.md` §9 carries the step-8 paragraph verbatim. (no test: documentation)
+- [x] `AGENTS.md` §9 carries the step-8 paragraph verbatim. (no test: documentation)
 
 The integrity gate's check 7 swaps only `source_paths` (`src/`) back to base, and this
 file is under `scripts/`, so check 7 will report that the new tests pass on base. That
@@ -174,3 +174,16 @@ pytest -q
 ```
 
 ## Comments
+
+2026-11-10: `scripts/check_tests_first.py` rewritten (stdlib-only, every line <= 88).
+Git mode now resolves head/base/range_base and FAILs when git cannot (D1), reads
+commit tags per file with all-commits-tagged coverage (D4, D5), takes source folders
+from `.ticket-engine.toml` (D2), and treats docstring/comment-only `.py` changes as
+non-code (D3). `decide_tests_first` and `code_fingerprint` are pure. AGENTS.md §9
+paragraph replaced verbatim. Each criterion is covered by the test of the same name in
+`tests/test_check_tests_first.py`; mutation checks (any-instead-of-all coverage,
+fail-open on git error) turned tests red. Extra: a shallow repo whose `<head>~1` does
+not resolve FAILs rather than reporting "root commit". Gates: pytest 889 passed;
+tests-first OK; `ruff check .` has one pre-existing DTZ001 in
+`tests/test_box_status.py` (present on master, untouched). Check 7 is expected to
+report the new tests pass on base (script is under `scripts/`); the PR is held.

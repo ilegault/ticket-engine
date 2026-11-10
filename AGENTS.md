@@ -297,9 +297,14 @@ skill every worker in every target repo receives. In short:
    (format in the skill, §6) under `## Comments`. The brief goes in the ticket
    file, never under `.claude/`.
 
-`scripts/check_tests_first.py` fails any change to `src/` that does not also touch
-`tests/`. The escape hatches (`[no-test-needed: <reason>]`, the `tests-exempt`
-label) exist, are visible in history, and in a target repo force a merge hold.
+`scripts/check_tests_first.py` fails any change to a source folder
+(`source_paths`, default `src/`) that does not also touch `tests/`. A `.py` file
+whose code is unchanged once docstrings and comments are removed does not count.
+A tag in a commit message (`[no-test-needed: <reason>]`) covers only the files
+that commit changed, and a file is exempt only when every commit that changed it
+is tagged; a tag in the PR title or body, or the `tests-exempt` label, covers the
+whole PR. The check fails when it cannot work out what changed. Escapes are
+visible in history and in a target repo force a merge hold.
 
 ---
 
