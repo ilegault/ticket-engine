@@ -1,6 +1,6 @@
 # 88: Bootstrap's CI template checks out full history and re-runs on PR edits and labels
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
