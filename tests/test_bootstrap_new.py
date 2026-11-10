@@ -127,6 +127,23 @@ def test_new_mode_produces_ci_workflow():
     assert "check_tests_first" in content or "pytest" in content
 
 
+def test_new_mode_ci_checks_out_full_history():
+    content = _written(new(_new_input()), ".github/workflows/ci.yml")
+    checkout = content.index("uses: actions/checkout@v4")
+    depth = content.index("fetch-depth: 0")
+    setup = content.index("uses: actions/setup-python@v5")
+    assert checkout < depth < setup
+
+
+def test_new_mode_ci_reruns_on_pr_edits_and_labels():
+    content = _written(new(_new_input()), ".github/workflows/ci.yml")
+    lines = content.splitlines()
+    i = lines.index("  pull_request:")
+    assert lines[i + 1].strip() == (
+        "types: [opened, synchronize, reopened, edited, labeled, unlabeled]"
+    )
+
+
 def test_new_mode_produces_ticket_template():
     result = new(_new_input())
     content = _written(result, ".github/ISSUE_TEMPLATE/ticket.md")
