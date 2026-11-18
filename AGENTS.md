@@ -287,7 +287,9 @@ skill every worker in every target repo receives. In short:
 2. Work the frontier. Never start a ticket whose `Blocked by:` names a ticket that
    is not `done`. Never claim a `ready-for-developer` ticket.
 3. Tests first, from the acceptance criteria. Watch them fail. Then implement.
-4. Run the three gates in §1. **Zero failures before you push.**
+4. Run the three gates in §1, with `pytest` limited to the tests your change
+   touches. **Zero failures before you push.** CI runs the full suite on the PR,
+   merged with the latest `master`.
 5. **A failing test is fixed or escalated, never muted.** No `skip`, `xfail`,
    deleted or weakened assertion, loosened tolerance, narrowed input, or
    `try/except` swallowing the error.
