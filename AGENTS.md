@@ -354,85 +354,42 @@ For the planner session. None of this is for a worker.
 <!-- ACTIVE-PLAN:START -->
 ## Active implementation plan
 
-_Written by the planning model on 2026-11-10 05:58. Implement this. If something in it is wrong, say so before changing course._
+_Written by the planning model on 2026-11-19 04:29. Implement this. If something in it is wrong, say so before changing course._
 
-# Active work: tests-first gate holes (87–88, new), plus box-fix-loop below
+# Active work: Deletes tests entries for test methods (90, new), plus the open tickets below
 
 This is a pointer, not the work.
 
-## tests-first gate holes (new)
+## deletes-tests-class-methods (new)
 
-- **Spec:** `.scratch/tests-first-gate-holes/spec.md`
-- **Binding ADRs:** 0001 (§2.4, §2.5), 0005, 0013. Glossary: no change.
-- **Tickets:** `.scratch/tests-first-gate-holes/issues/87`, `88`. Both held
-  (`Auto-merge: no`: a gate script and `.github/`), both leaves. Conventions:
-  `docs/agents/issue-tracker.md`.
+- **Spec:** none. Ticket 90 carries its own evidence (RBL ticket 135, PR 205).
+- **Binding ADRs:** 0005 (decisions 1 and 2), 0001 (check 2), 0013.
+- **Glossary:** the **Deletes tests** entry in `CONTEXT.md` is reworded by ticket 90 itself.
+- **Tickets:** `.scratch/deletes-tests-class-methods/issues/90`. Conventions: `docs/agents/issue-tracker.md`.
+- **Held:** 90 is `Auto-merge: no` (it changes `CONTEXT.md` and `docs/adr/`) and is a leaf.
 
-**Next:** 87 and 88 have no blockers and touch different files. Start with **87**: it is
-the canonical gate script, and RBL 105, Slackbot 149 and TDS-T8 50 wait on it being
-merged to `master`.
+**Next:** 90 and 89 have no blockers. Start with **90**: it makes a correct PR that deletes a
+test method landable, which today fails Check 2 whenever the ticket leaves out the class name.
+89 also edits `integrity.py` and `tests/test_ticket_quality.py`, but in different functions and
+a different section of the test file. Whichever lands second merges `master` first.
 
 Requirements an implementer might treat as preferences:
 
-- `scripts/check_tests_first.py` stays stdlib-only with every line at 88 characters or
-  fewer; target repos copy it unedited.
-- `normalize_path`, `categorize_files`, `find_escape_reasons`, `evaluate_tests_first`,
-  `extract_event_info` and `main` keep their signatures and default-path message text;
-  RBL's test suite imports them.
-- `code_fingerprint` and `decide_tests_first` are pure and tested without git. Git
-  tests use a real repo in `tmp_path`; no `subprocess` patching.
-- When git cannot work out the range or the changed files, the check FAILs. No fallback.
-- Check 7 will report 87's new tests pass on base (the script is under `scripts/`, not
-  `source_paths`). That hold is expected; do not bend the tests.
+- `resolve_authorised_deletions` is pure (strings in, sets out); Check 2 calls it, and does not
+  re-implement the rule inline.
+- An exact full-name match always wins over the short `<file>::<name>` form.
+- An ambiguous short entry authorises **none** of its candidates.
+- Authorisation is still read only from the base branch's copy of the ticket.
 
-Not in this set: adopt mode, moving `v1`, integrity check 5 (any tag still holds).
+Not in this set: ticket lint messages, Check 9, the `bootstrap.py` template, `AGENTS.md`, moving `v1`.
 
----
+## Other open tickets (unchanged)
 
-## Active plan: box-fix-loop — the box fixes red CI or escalates, behind one gate list and named tests
-
-This is a pointer, not the work. Read the spec and the tickets it names.
-
-- **Spec:** `.scratch/box-fix-loop/spec.md`
-- **Binding ADRs:** 0011 (the box owns red CI on its own PRs; pre-push gate; one gate list; two required checks), 0012 (the box updates its own engine and rolls back), 0013 (every criterion is proved by a named failing test; check 9). Also 0001, 0005, 0006, 0007, 0010 where they touch the same code.
-- **New or changed glossary terms (CONTEXT.md):** Fix attempt (reworded: counted whether or not the run pushes), Fix prompt, Pre-push gate, Gate, Named test, Box launcher; Integrity gate, Box status issue, Ticket lint, Box alert reworded.
-- **Tickets:** `.scratch/box-fix-loop/issues/69`–`84`. Conventions: `docs/agents/issue-tracker.md`.
-- **Also changed in add-repo:** 61 now blocked by 70 and 80; 62 rewritten to use 69's gate runner and blocked by 69, 70, 80; 66's ruleset JSON lists every required check; 68 (developer) gains the move to the gate workflow and the two required checks.
-
-**Next:** 69, 70, 74, 79 and 82 have no blockers (75 is the developer's). Start with **70**: on its own it turns a stuck red box PR into an escalation instead of silence. Then 79 → 80 so later engine changes reach the box by themselves.
-
-### Dependency graph
-
-- 69 → 71, 83 (held), 62
-- 70 → 71, 77, 80, 61, 62
-- 71 → 72 → 73
-- 72 → 77 → 78
-- 77 → 80
-- 79 → 80 → 81 (developer), 61, 62
-- 75 (developer) → 76
-- 66 → 84
-- 74, 82: independent
-- **Held:** 83 (changes `.github/`), a leaf; it reaches target repos only when the developer moves `v1`.
-- **ready-for-developer:** 75 (rewrite open tickets to name tests), 81 (switch the box to the launcher), 68.
-
-### Requirements an implementer might treat as preferences
-
-- `run_gate` runs **every** command; it never stops at the first failure.
-- A fix attempt is counted **before** the fix run starts and taken back only for `quota`; the count lives in `fix_attempts.json`, never in memory.
-- The pre-push gate runs before a PR is opened and before every push to a branch with an open PR; a red gate pushes **nothing**. Checkpoint pushes to a branch with no PR stay ungated.
-- Gate and integrity output stays in the box log and in prompts; it never reaches a GitHub request body.
-- The local integrity run uses the repo environment's Python with the engine source on `PYTHONPATH`, and `--local` writes nothing to GitHub whatever the environment holds.
-- `launcher.py` imports only the standard library.
-- `ZoneInfo` is built inside `display_time`'s functions, never at import; `tzdata` is a Windows-only dependency.
-- `parse_box_status` keeps reading the old UTC body.
-- Tests that assert old text are **rewritten in place under the same name**; no test is deleted.
-
-### What this set does not do
-
-- Red-CI handling for Jules PRs; the dispatcher's PR-escalation path stays unwired (82 only documents it). Keep a repo off Jules with `jules_enabled = false`.
-- The engine never edits code itself (no automatic `ruff --fix`).
-- Several agy sessions at once on the box.
-- Moving the `v1` tag.
+- **named-test-lint:** 89 (no blockers).
+- **add-repo:** 61 (blocked by 70, 80), 62 (blocked by 61, 69, 70, 80), 66 (ready), 67 (blocked by 62, 66),
+  68 `ready-for-developer` (blocked by 67).
+- **box-fix-loop:** 84 (blocked by 66), 81 `ready-for-developer` (blocked by 80).
+- Specs: `.scratch/add-repo/spec.md`, `.scratch/box-fix-loop/spec.md`.
 <!-- ACTIVE-PLAN:END -->
 
 ## Implementation Protocol
