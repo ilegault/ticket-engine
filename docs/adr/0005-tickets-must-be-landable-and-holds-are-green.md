@@ -61,3 +61,11 @@ PR was stuck the same way.
   CI.
 - A lint-held ticket stays on the frontier, so the one definition of "blocked"
   (invariant 3) is unchanged. It is simply not started, and the run report says why.
+
+## Amendment, 2026-11-18: entries for test methods
+
+A test method's `Deletes tests:` entry is its pytest node ID
+`<file>.py::<Class>::<name>`. A bare `<file>.py::<name>` entry is also accepted when
+exactly one test in the file has that name, because RBL ticket 135 (PR 205) failed
+Check 2 when its base copy omitted the class names. When `<file>.py::<name>` matches
+several test methods in the file, it authorises none of them and Check 2 says so.

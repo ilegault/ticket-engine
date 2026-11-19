@@ -13,7 +13,9 @@ Checks implemented:
 - Check 2: no deleted test functions and no test file losing assertions (naming what was lost) (ADR 0001 §2.2).
   Exception (ADR 0005): tests named on the `Deletes tests:` line of the **base branch's**
   copy of the ticket may be deleted, and their own assertions do not count as lost. The
-  base copy is used so a worker can never authorise its own deletion.
+  base copy is used so a worker can never authorise its own deletion. An entry is a test's
+  full name, or `<file>::<name>` for the one test method of that name in the file; an entry
+  that fits several authorises none (RBL ticket 135).
 - Check 3: any ratchet file with a higher value than on base -> fail (ADR 0001 §2.3).
 - Check 4: PR touching .github/, gate scripts, docs/adr/, AGENTS.md, CONTEXT.md -> hold, naming paths (ADR 0001 §2.4).
 - Check 5: tests-first escape hatch used (label, commit/PR tag) -> hold (ADR 0001 §2.5).
@@ -33,7 +35,7 @@ import json
 import logging
 import pathlib
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -642,6 +644,36 @@ def find_new_test_functions(
     return new_tests
 
 
+def resolve_authorised_deletions(
+    entries: Iterable[str], base_test_names: Iterable[str]
+) -> tuple[frozenset[str], dict[str, tuple[str, ...]]]:
+    """Resolve `Deletes tests:` entries against base test node IDs.
+
+    Returns `(authorised, ambiguous)` where `authorised` contains the full base test
+    names matched by `entries` and `ambiguous` maps any short `<file>::<name>` entry
+    matching two or more test methods to its sorted candidate names.
+    """
+    base_names = frozenset(base_test_names)
+    authorised: set[str] = set()
+    ambiguous: dict[str, tuple[str, ...]] = {}
+    for raw_entry in entries:
+        entry = raw_entry.replace("\\", "/")
+        if entry in base_names:
+            authorised.add(entry)
+        elif entry.count("::") == 1:
+            file_part, test_name = entry.split("::")
+            candidates = sorted(
+                bname
+                for bname in base_names
+                if (parts := bname.split("::")) and len(parts) == 3 and parts[0] == file_part and parts[2] == test_name
+            )
+            if len(candidates) == 1:
+                authorised.add(candidates[0])
+            elif len(candidates) >= 2:
+                ambiguous[entry] = tuple(candidates)
+    return frozenset(authorised), ambiguous
+
+
 class IntegrityCore:
     """Pure evaluation core for target repo pull request integrity."""
 
@@ -710,12 +742,8 @@ class IntegrityCore:
 
         # Check 2: deleted test function or test file losing assertions.
         # ADR 0005: deletions named by the base branch's ticket are authorised.
-        authorised: set[str] = set()
-        if base_ticket:
-            authorised = {
-                e.replace("\\", "/")
-                for e in TicketParser().parse_text(base_ticket).deletes_tests
-            }
+        entries = TicketParser().parse_text(base_ticket).deletes_tests if base_ticket else []
+        authorised, ambiguous = resolve_authorised_deletions(entries, base_tests.keys())
         authorised_deleted: list[str] = []
         allowance: dict[str, int] = {}
         for qname, b_info in base_tests.items():
@@ -729,6 +757,13 @@ class IntegrityCore:
                 is_failing = True
                 reasons.append(
                     f"Check 2 fail: Deleted test function '{b_info.func_name}' in {b_info.file_path}"
+                )
+        for entry, candidates in sorted(ambiguous.items()):
+            if any(c not in head_tests for c in candidates):
+                is_failing = True
+                reasons.append(
+                    f"Check 2 fail: Deletes tests entry '{entry}' matches more than one test: "
+                    f"{', '.join(candidates)}. Write the full name of each test to delete."
                 )
         if authorised_deleted:
             reasons.append(

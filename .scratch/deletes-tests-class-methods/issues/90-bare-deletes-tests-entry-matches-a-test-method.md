@@ -1,6 +1,6 @@
 # 90: A `Deletes tests:` entry without the class name authorises the one test method it names
 
-**Status:** in-progress
+**Status:** done
 
 **Runner:** any
 
@@ -98,10 +98,10 @@ before changing `src/`. Nothing is faked: the integrity core and the parser are 
 the runner test uses a real git repo in `tmp_path`. In the fixtures, the deleted test is
 named test_old_a and the kept test test_keep, as in the existing section.
 
-- [ ] Test `test_bare_entry_authorises_the_one_test_method_with_that_name`: the base test file has `class TestOld` with a method test_old_a holding two assertions, and a module-level test_keep; the head file has only test_keep; the base ticket's line is `tests/test_26.py::test_old_a`. The verdict is a pass, its reasons include `Check 2: deleted test(s) the ticket authorises on the base branch: tests/test_26.py::TestOld::test_old_a`, and no reason contains "lost".
-- [ ] Test `test_bare_entry_matching_two_test_methods_authorises_neither`: the base test file has `class TestA` and `class TestB`, each with a method test_old_a, plus a module-level test_keep; the head file has only test_keep; same base ticket line. The verdict is a fail, its reasons include, exactly once, the step 2 ambiguity message for the entry tests/test_26.py::test_old_a with the candidates tests/test_26.py::TestA::test_old_a and tests/test_26.py::TestB::test_old_a (the test spells out the whole message string), and two reasons equal `Check 2 fail: Deleted test function 'test_old_a' in tests/test_26.py`.
-- [ ] Test `test_gate_on_real_git_accepts_a_bare_entry_for_a_test_method`: give `_deletion_repo` two keyword parameters, `base_file: str = BASE_TEST_FILE` and `head_file: str = HEAD_TEST_FILE`, used where it now writes those constants. Build the repo with the class-based base file from the first criterion, the base ticket line `tests/test_26.py::test_old_a`, and a done PR ticket made the way the existing real-git authorisation test makes it (replace ready-for-agent with done and tick the box). `run_integrity_gate` returns 0, and the step summary contains "PASS" and `tests/test_26.py::TestOld::test_old_a`.
-- [ ] `CONTEXT.md`, ADR 0005 and `docs/agents/issue-tracker.md` say what steps 4 to 6 say, and nothing else in those files changed (no test: documentation)
+- [x] Test `test_bare_entry_authorises_the_one_test_method_with_that_name`: the base test file has `class TestOld` with a method test_old_a holding two assertions, and a module-level test_keep; the head file has only test_keep; the base ticket's line is `tests/test_26.py::test_old_a`. The verdict is a pass, its reasons include `Check 2: deleted test(s) the ticket authorises on the base branch: tests/test_26.py::TestOld::test_old_a`, and no reason contains "lost".
+- [x] Test `test_bare_entry_matching_two_test_methods_authorises_neither`: the base test file has `class TestA` and `class TestB`, each with a method test_old_a, plus a module-level test_keep; the head file has only test_keep; same base ticket line. The verdict is a fail, its reasons include, exactly once, the step 2 ambiguity message for the entry tests/test_26.py::test_old_a with the candidates tests/test_26.py::TestA::test_old_a and tests/test_26.py::TestB::test_old_a (the test spells out the whole message string), and two reasons equal `Check 2 fail: Deleted test function 'test_old_a' in tests/test_26.py`.
+- [x] Test `test_gate_on_real_git_accepts_a_bare_entry_for_a_test_method`: give `_deletion_repo` two keyword parameters, `base_file: str = BASE_TEST_FILE` and `head_file: str = HEAD_TEST_FILE`, used where it now writes those constants. Build the repo with the class-based base file from the first criterion, the base ticket line `tests/test_26.py::test_old_a`, and a done PR ticket made the way the existing real-git authorisation test makes it (replace ready-for-agent with done and tick the box). `run_integrity_gate` returns 0, and the step summary contains "PASS" and `tests/test_26.py::TestOld::test_old_a`.
+- [x] `CONTEXT.md`, ADR 0005 and `docs/agents/issue-tracker.md` say what steps 4 to 6 say, and nothing else in those files changed (no test: documentation)
 
 ## Gate
 
@@ -120,4 +120,6 @@ In CI order (`.github/workflows/ci.yml`):
 - RBL ticket 135 itself: its base copy is fixed directly on RBL's `master`.
 
 ## Comments
+
+2026-11-19: Added pure `resolve_authorised_deletions` in `src/ticket_engine/integrity.py`, wired it into Check 2 of `IntegrityCore.evaluate` (with the ambiguity failure reason when a short `<file>::<name>` entry matches multiple test methods), and updated the module docstring, `CONTEXT.md`, ADR 0005, `docs/agents/issue-tracker.md`, and `tests/fixtures/sonnet_fallback_docs/context_md_paragraph_hashes.json`. Covered by `test_bare_entry_authorises_the_one_test_method_with_that_name`, `test_bare_entry_matching_two_test_methods_authorises_neither`, and `test_gate_on_real_git_accepts_a_bare_entry_for_a_test_method` in `tests/test_ticket_quality.py`.
 
