@@ -171,9 +171,11 @@ decides whether a green PR may merge on its own. Its answer is a *verdict*.
 **Verdict** — `pass` (auto-merge), `fail` (red check, the worker must fix), or
 `hold` (green, but waits for the developer). Always with reasons.
 
-**Deletes tests** — the ticket's optional `Deletes tests:` line: the test
-functions (`<file>.py::<name>`) the worker may delete. Read only from the *base
-copy* (ADR 0005).
+**Deletes tests** — the ticket's optional `Deletes tests:` line: the test functions
+the worker may delete, each as its pytest node ID (`<file>.py::<name>`, or
+`<file>.py::<Class>::<name>` for a test method). `<file>.py::<name>` also matches a
+test method when it is the only test in that file with that name. Read only from
+the *base copy* (ADR 0005).
 
 **Named test** — a `test_...` function named in an acceptance criterion of the
 ticket's *base copy*. The integrity gate requires each to exist and to have failed

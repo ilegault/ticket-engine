@@ -42,7 +42,8 @@ judges each PR unattended, so a ticket that asks for something the gate refuses 
 never land, however well it is implemented.
 
 1. **Never ask a worker to delete a test function** unless the ticket has a
-   `**Deletes tests:** <file>.py::<test>, ...` line listing each one. Prefer
+   `**Deletes tests:** <file>.py::<test>, ...` line listing each one by its pytest
+   node ID (`<file>.py::<Class>::<test>` for a test method). Prefer
    rewriting a superseded test in place (same name, asserting the new behaviour),
    which needs no line. Never ask a test file to lose assertions, except inside
    the listed tests.

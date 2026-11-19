@@ -114,6 +114,69 @@ def test_authorisation_covers_only_the_deleted_tests_own_assertions():
     assert any("lost 1 assertion(s)" in r for r in verdict.reasons), verdict.reasons
 
 
+def test_bare_entry_authorises_the_one_test_method_with_that_name():
+    base_file = (
+        "class TestOld:\n"
+        "    def test_old_a(self):\n"
+        "        assert 1 == 1\n"
+        "        assert 2 == 2\n\n\n"
+        "def test_keep():\n"
+        "    assert 3 == 3\n"
+    )
+    base = {
+        "tests/test_26.py": base_file,
+        ".scratch/bom/issues/49-t.md": "placeholder",
+    }
+    head = {"tests/test_26.py": HEAD_TEST_FILE, ".scratch/bom/issues/49-t.md": DONE_TICKET}
+    verdict = IntegrityCore().evaluate(
+        base_tree=base,
+        pr_diff=head,
+        ticket=DONE_TICKET,
+        base_ticket=AUTHORISING_TICKET,
+    )
+    assert verdict.is_pass(), verdict.reasons
+    assert (
+        "Check 2: deleted test(s) the ticket authorises on the base branch: "
+        "tests/test_26.py::TestOld::test_old_a" in verdict.reasons
+    )
+    assert not any("lost" in r for r in verdict.reasons), verdict.reasons
+
+
+def test_bare_entry_matching_two_test_methods_authorises_neither():
+    base_file = (
+        "class TestA:\n"
+        "    def test_old_a(self):\n"
+        "        assert 1 == 1\n\n\n"
+        "class TestB:\n"
+        "    def test_old_a(self):\n"
+        "        assert 2 == 2\n\n\n"
+        "def test_keep():\n"
+        "    assert 3 == 3\n"
+    )
+    base = {
+        "tests/test_26.py": base_file,
+        ".scratch/bom/issues/49-t.md": "placeholder",
+    }
+    head = {"tests/test_26.py": HEAD_TEST_FILE, ".scratch/bom/issues/49-t.md": DONE_TICKET}
+    verdict = IntegrityCore().evaluate(
+        base_tree=base,
+        pr_diff=head,
+        ticket=DONE_TICKET,
+        base_ticket=AUTHORISING_TICKET,
+    )
+    assert verdict.is_fail(), verdict.reasons
+    ambiguous_msg = (
+        "Check 2 fail: Deletes tests entry 'tests/test_26.py::test_old_a' "
+        "matches more than one test: tests/test_26.py::TestA::test_old_a, "
+        "tests/test_26.py::TestB::test_old_a. Write the full name of each test to delete."
+    )
+    assert verdict.reasons.count(ambiguous_msg) == 1, verdict.reasons
+    assert (
+        verdict.reasons.count("Check 2 fail: Deleted test function 'test_old_a' in tests/test_26.py")
+        == 2
+    ), verdict.reasons
+
+
 # --- runner: base ticket read from git, and holds are green -------------------------
 
 
@@ -126,16 +189,23 @@ def _commit(repo: pathlib.Path, msg: str) -> None:
     _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", msg)
 
 
-def _deletion_repo(tmp_path: pathlib.Path, base_ticket: str, pr_ticket: str) -> pathlib.Path:
+def _deletion_repo(
+    tmp_path: pathlib.Path,
+    base_ticket: str,
+    pr_ticket: str,
+    *,
+    base_file: str = BASE_TEST_FILE,
+    head_file: str = HEAD_TEST_FILE,
+) -> pathlib.Path:
     repo = tmp_path / "repo"
     (repo / "tests").mkdir(parents=True)
     (repo / ".scratch/bom/issues").mkdir(parents=True)
-    (repo / "tests/test_26.py").write_text(BASE_TEST_FILE, encoding="utf-8")
+    (repo / "tests/test_26.py").write_text(base_file, encoding="utf-8")
     (repo / ".scratch/bom/issues/49-t.md").write_text(base_ticket, encoding="utf-8")
     _git(repo, "init", "-q", "-b", "master")
     _commit(repo, "base")
     _git(repo, "checkout", "-q", "-b", "pr")
-    (repo / "tests/test_26.py").write_text(HEAD_TEST_FILE, encoding="utf-8")
+    (repo / "tests/test_26.py").write_text(head_file, encoding="utf-8")
     (repo / ".scratch/bom/issues/49-t.md").write_text(pr_ticket, encoding="utf-8")
     _commit(repo, "pr")
     return repo
@@ -150,6 +220,31 @@ def test_gate_on_real_git_reads_the_authorisation_from_the_base_branch(tmp_path)
     assert code == 0, text
     assert "PASS" in text
     assert "tests/test_26.py::test_old_a" in text
+
+
+def test_gate_on_real_git_accepts_a_bare_entry_for_a_test_method(tmp_path):
+    base_file = (
+        "class TestOld:\n"
+        "    def test_old_a(self):\n"
+        "        assert 1 == 1\n"
+        "        assert 2 == 2\n\n\n"
+        "def test_keep():\n"
+        "    assert 3 == 3\n"
+    )
+    done = AUTHORISING_TICKET.replace("ready-for-agent", "done").replace("- [ ]", "- [x]")
+    repo = _deletion_repo(
+        tmp_path,
+        base_ticket=AUTHORISING_TICKET,
+        pr_ticket=done,
+        base_file=base_file,
+        head_file=HEAD_TEST_FILE,
+    )
+    summary = tmp_path / "s.md"
+    code = run_integrity_gate(repo_path=repo, base_ref="master", step_summary_path=summary)
+    text = summary.read_text(encoding="utf-8")
+    assert code == 0, text
+    assert "PASS" in text
+    assert "tests/test_26.py::TestOld::test_old_a" in text
 
 
 def test_gate_on_real_git_fails_when_only_the_pr_adds_the_authorisation(tmp_path):
