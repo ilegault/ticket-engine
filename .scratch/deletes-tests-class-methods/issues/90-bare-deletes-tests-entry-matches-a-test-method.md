@@ -1,6 +1,6 @@
 # 90: A `Deletes tests:` entry without the class name authorises the one test method it names
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
