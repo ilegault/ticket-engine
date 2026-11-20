@@ -354,38 +354,34 @@ For the planner session. None of this is for a worker.
 <!-- ACTIVE-PLAN:START -->
 ## Active implementation plan
 
-_Written by the planning model on 2026-11-19 04:29. Implement this. If something in it is wrong, say so before changing course._
+_Written by the planning model on 2026-11-20 18:19. Implement this. If something in it is wrong, say so before changing course._
 
-# Active work: Deletes tests entries for test methods (90, new), plus the open tickets below
+# Active work: un-red master (91, new), then land 89, plus the open tickets below
 
 This is a pointer, not the work.
 
-## deletes-tests-class-methods (new)
+## glossary-freeze-test (new)
 
-- **Spec:** none. Ticket 90 carries its own evidence (RBL ticket 135, PR 205).
-- **Binding ADRs:** 0005 (decisions 1 and 2), 0001 (check 2), 0013.
-- **Glossary:** the **Deletes tests** entry in `CONTEXT.md` is reworded by ticket 90 itself.
-- **Tickets:** `.scratch/deletes-tests-class-methods/issues/90`. Conventions: `docs/agents/issue-tracker.md`.
-- **Held:** 90 is `Auto-merge: no` (it changes `CONTEXT.md` and `docs/adr/`) and is a leaf.
+- **Spec:** none. Ticket 91 carries its own evidence (master red since 95279cc).
+- **Binding ADRs:** 0005 (the ticket's `Deletes tests:` line authorises its one deletion).
+- **Glossary:** unchanged. Ticket 91 must not edit `CONTEXT.md`.
+- **Tickets:** `.scratch/glossary-freeze-test/issues/91`. Conventions: `docs/agents/issue-tracker.md`.
+- **Auto-merge:** yes. It touches only `tests/`.
 
-**Next:** 90 and 89 have no blockers. Start with **90**: it makes a correct PR that deletes a
-test method landable, which today fails Check 2 whenever the ticket leaves out the class name.
-89 also edits `integrity.py` and `tests/test_ticket_quality.py`, but in different functions and
-a different section of the test file. Whichever lands second merges `master` first.
+**Next:** **91** first. `master` has been red since 95279cc: the CONTEXT.md paragraph-freeze test
+from ticket 43 fails on any glossary edit, so every PR's CI fails until 91 lands. Then **89**:
+its PR (#89) is already open and green locally. After 91 merges, update that PR's branch from
+`master` (a plain re-run reuses the old commit and stays red).
 
 Requirements an implementer might treat as preferences:
 
-- `resolve_authorised_deletions` is pure (strings in, sets out); Check 2 calls it, and does not
-  re-implement the rule inline.
-- An exact full-name match always wins over the short `<file>::<name>` form.
-- An ambiguous short entry authorises **none** of its candidates.
-- Authorisation is still read only from the base branch's copy of the ticket.
-
-Not in this set: ticket lint messages, Check 9, the `bootstrap.py` template, `AGENTS.md`, moving `v1`.
+- 91 deletes exactly the one test its `Deletes tests:` line names, plus the imports, constant and
+  fixture only that test used. The other two tests in that file stay byte-for-byte unchanged.
+- 91 does not regenerate the hash fixture as a fix.
 
 ## Other open tickets (unchanged)
 
-- **named-test-lint:** 89 (no blockers).
+- **named-test-lint:** 89 (no blockers; PR #89 open, waiting on green `master`).
 - **add-repo:** 61 (blocked by 70, 80), 62 (blocked by 61, 69, 70, 80), 66 (ready), 67 (blocked by 62, 66),
   68 `ready-for-developer` (blocked by 67).
 - **box-fix-loop:** 84 (blocked by 66), 81 `ready-for-developer` (blocked by 80).
