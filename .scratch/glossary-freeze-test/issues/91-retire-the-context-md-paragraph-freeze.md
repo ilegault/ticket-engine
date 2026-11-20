@@ -1,6 +1,6 @@
 # 91: Retire the CONTEXT.md paragraph freeze left over from ticket 43
 
-**Status:** in-progress
+**Status:** done
 
 **Runner:** any
 
@@ -54,11 +54,11 @@ The test names in this ticket are written without backticks on purpose: check 9 
 every backticked test name in a criterion as a new test this PR must add, and this
 ticket adds none.
 
-- [ ] The paragraph-freeze test is gone from tests/test_sonnet_fallback_docs.py, and the hashes fixture and its directory are deleted. (no test: the deletion is the change; check 2 verifies it against the Deletes tests line)
-- [ ] The other two tests in tests/test_sonnet_fallback_docs.py (the Quota reserve one and the Local worker one) are unchanged and pass when pytest runs that file. (no test: existing tests, run on the touched file)
-- [ ] `ruff check .` reports no unused import in tests/test_sonnet_fallback_docs.py. (no test: ruff gate)
-- [ ] No other file references context_md_paragraph_hashes.json or HASHES_PATH; `grep -rn "context_md_paragraph_hashes\|HASHES_PATH" src tests scripts` prints nothing. (by hand)
-- [ ] The rest of the suite still passes on the current master CONTEXT.md. (no test: CI's full suite)
+- [x] The paragraph-freeze test is gone from tests/test_sonnet_fallback_docs.py, and the hashes fixture and its directory are deleted. (no test: the deletion is the change; check 2 verifies it against the Deletes tests line)
+- [x] The other two tests in tests/test_sonnet_fallback_docs.py (the Quota reserve one and the Local worker one) are unchanged and pass when pytest runs that file. (no test: existing tests, run on the touched file)
+- [x] `ruff check .` reports no unused import in tests/test_sonnet_fallback_docs.py. (no test: ruff gate)
+- [x] No other file references context_md_paragraph_hashes.json or HASHES_PATH; `grep -rn "context_md_paragraph_hashes\|HASHES_PATH" src tests scripts` prints nothing. (by hand)
+- [x] The rest of the suite still passes on the current master CONTEXT.md. (no test: CI's full suite)
 
 ## Gate
 
@@ -80,3 +80,9 @@ looks like: ruff clean, the tests-first script exits 0, and pytest reports 2 pas
 - Editing `CONTEXT.md` or the two new ADRs from commit 95279cc.
 
 ## Comments
+
+### 2026-11-20 — Completed
+
+- Deleted `test_context_no_other_entries_changed` and its unused imports/constants (`import hashlib`, `import json`, `HASHES_PATH`, `_EDITED_PARAGRAPH_PREFIXES`) from `tests/test_sonnet_fallback_docs.py`, leaving `CONTEXT_PATH`, `_paragraphs`, and the other two tests unchanged.
+- Deleted `tests/fixtures/sonnet_fallback_docs/context_md_paragraph_hashes.json` and the `tests/fixtures/sonnet_fallback_docs/` directory.
+- Verified `ruff check .`, `python scripts/check_tests_first.py`, `pytest -q tests/test_sonnet_fallback_docs.py` (2 passed), and searched `src`, `tests`, `scripts` for `context_md_paragraph_hashes` / `HASHES_PATH` (no matches).

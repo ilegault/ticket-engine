@@ -10,24 +10,10 @@ same shape `tests/test_phase2_docs.py` uses for ticket 34.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CONTEXT_PATH = ROOT / "CONTEXT.md"
-HASHES_PATH = (
-    pathlib.Path(__file__).parent
-    / "fixtures"
-    / "sonnet_fallback_docs"
-    / "context_md_paragraph_hashes.json"
-)
-
-# Paragraphs (split on a blank line) that this ticket is authorised to change.
-_EDITED_PARAGRAPH_PREFIXES = (
-    "**Quota reserve**",
-    "**Worker** — anything that implements a ticket",
-)
 
 
 def _paragraphs() -> list[str]:
@@ -53,21 +39,3 @@ def test_context_local_worker_names_sonnet_fallback():
     )
     assert "Sonnet" in worker_entry
     assert "one ticket, one PR" in worker_entry
-
-
-def test_context_no_other_entries_changed():
-    """Every glossary paragraph other than the two edited ones is unchanged."""
-    paragraphs = _paragraphs()
-    snapshot = json.loads(HASHES_PATH.read_text(encoding="utf-8"))
-
-    assert len(paragraphs) == snapshot["total_paragraphs"]
-
-    for index, paragraph in enumerate(paragraphs):
-        if any(paragraph.startswith(prefix) for prefix in _EDITED_PARAGRAPH_PREFIXES):
-            continue
-        expected_hash = snapshot["hashes"][str(index)]
-        actual_hash = hashlib.sha256(paragraph.encode("utf-8")).hexdigest()
-        assert actual_hash == expected_hash, (
-            f"CONTEXT.md paragraph {index} changed outside this ticket's scope: "
-            f"{paragraph[:80]!r}"
-        )
