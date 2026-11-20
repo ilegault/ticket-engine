@@ -24,6 +24,12 @@ repo on noise:
    carries neither `(by hand)` nor `(no test: <reason>)`. ADR 0013 rule 2: check 9 can
    only hold a worker to the tests the ticket names, so a criterion naming none proves
    nothing and the ticket would land hollow.
+5. An unticked acceptance criterion that names a path-qualified test
+   (`<file>.py::<name>`) instead of a bare `test_...`: check 9 reads only bare
+   backticked names.
+6. An unticked acceptance criterion that names a test already in `existing_tests`
+   without saying it rewrites that test. WHY: RBL ticket 87 escalated when a criterion
+   cited an existing test as prior art, which check 9 then required to fail on base.
 
 Only `ready-for-agent` tickets read from a file are linted. Nothing else can be
 claimed, and a ticket with no text has nothing to judge.
@@ -33,6 +39,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
+from ticket_engine.integrity import _REWRITE_WORD_RE
 from ticket_engine.parser import Ticket
 
 _DELETE_WORD_RE = re.compile(r"\b(delete|deletes|remove|removes)\b", re.IGNORECASE)
@@ -40,6 +47,7 @@ _NEGATED_RE = re.compile(
     r"\b(do not|don't|dont|never|not|must not|mustn't)\s+(delete|remove)\b", re.IGNORECASE
 )
 _TEST_IDENT_RE = re.compile(r"`(test_\w+)`")
+_PATH_QUALIFIED_RE = re.compile(r"`([\w./-]+\.py::(?:\w+::)?(test_\w+))`")
 _DELETES_ENTRY_RE = re.compile(r"^[\w./-]+\.py::\w+(?:::\w+)?$")
 _CHECKBOX_RE = re.compile(r"^\s*[-*]\s*\[[ xX]\]", re.MULTILINE)
 _CRITERION_RE = re.compile(r"^[-*]\s*\[([ xX])\]\s*(.+)$")
@@ -92,7 +100,10 @@ def _criterion_blocks(text: str) -> list[str]:
     return _blocks("\n".join(scoped))
 
 
-def lint_ticket(ticket: Ticket) -> list[str]:
+def lint_ticket(
+    ticket: Ticket,
+    existing_tests: frozenset[str] | None = None,
+) -> list[str]:
     """Reasons an agent cannot land this ticket as written. [] means none found."""
     text = ticket.raw_text or ""
     # No text means the ticket was not read from a file (an in-memory record); there
@@ -133,7 +144,23 @@ def lint_ticket(ticket: Ticket) -> list[str]:
         if not m or m.group(1) != " ":
             continue
         criterion = m.group(2).strip()
-        if _TEST_IDENT_RE.search(criterion) or _EXEMPT_TAG_RE.search(criterion):
+        path_matches = _PATH_QUALIFIED_RE.findall(criterion)
+        for whole_match, test_name in path_matches:
+            findings.append(
+                f'criterion "{criterion[:60]}" names `{whole_match}`: check 9 reads only '
+                f"a bare backticked test name, so write `{test_name}` and give the file in words"
+            )
+        bare_names = _TEST_IDENT_RE.findall(criterion)
+        if existing_tests is not None and not _REWRITE_WORD_RE.search(criterion):
+            for name in bare_names:
+                if name in existing_tests:
+                    findings.append(
+                        f'criterion "{criterion[:60]}" names `{name}`, which already exists, '
+                        "so it cannot fail on the base code and check 9 will fail the PR: "
+                        f"name the new test that proves it, say the criterion rewrites `{name}`, "
+                        f"or move `{name}` out of the criterion"
+                    )
+        if bare_names or path_matches or _EXEMPT_TAG_RE.search(criterion):
             continue
         findings.append(
             f'criterion "{criterion[:60]}" names no test: name the test that proves it, '
@@ -142,11 +169,14 @@ def lint_ticket(ticket: Ticket) -> list[str]:
     return findings
 
 
-def lint_tickets(tickets: Sequence[Ticket]) -> dict[int, list[str]]:
+def lint_tickets(
+    tickets: Sequence[Ticket],
+    existing_tests: frozenset[str] | None = None,
+) -> dict[int, list[str]]:
     """Findings by ticket number, only for tickets that have any."""
     out: dict[int, list[str]] = {}
     for t in tickets:
-        found = lint_ticket(t)
+        found = lint_ticket(t, existing_tests=existing_tests)
         if found:
             out[t.number] = found
     return out

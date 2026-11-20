@@ -19,10 +19,12 @@ import logging
 import os
 import pathlib
 import sys
+from collections.abc import Sequence
 
 from ticket_engine.config import load_repo_config
 from ticket_engine.dispatch import DispatchCore, StartTicketAction, WorldSnapshot
 from ticket_engine.github import GitHubClient
+from ticket_engine.integrity import collect_test_names
 from ticket_engine.jules import JulesClient
 from ticket_engine.live_dispatch import LiveDispatcher
 from ticket_engine.parser import Ticket, TicketParser
@@ -47,6 +49,23 @@ def load_tickets_from_path(repo_path: pathlib.Path) -> list[Ticket]:
             tickets.append(parser.parse_file(file_path))
 
     return tickets
+
+
+def _read_test_files(repo_path: pathlib.Path, test_paths: Sequence[str]) -> dict[str, str]:
+    files: dict[str, str] = {}
+    for test_root in test_paths:
+        root = repo_path / test_root
+        if not root.is_dir():
+            continue
+        for py_file in root.rglob("*.py"):
+            if not py_file.is_file():
+                continue
+            try:
+                content = py_file.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            files[py_file.relative_to(repo_path).as_posix()] = content
+    return files
 
 
 def run_dispatch_dry_run(path_str: str, concurrency_limit: int = 2) -> int:
@@ -89,7 +108,11 @@ def run_dispatch_dry_run(path_str: str, concurrency_limit: int = 2) -> int:
     else:
         print("  (none)")
 
-    problems = lint_tickets(tickets)
+    existing_tests = collect_test_names(
+        _read_test_files(repo_path, config.test_paths),
+        test_paths=config.test_paths,
+    )
+    problems = lint_tickets(tickets, existing_tests=existing_tests)
     if problems:
         print("\nTicket problems (an agent cannot land these as written):")
         for num in sorted(problems):

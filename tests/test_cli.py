@@ -198,3 +198,39 @@ def test_dispatch_dry_run_lists_source_paths_that_do_not_exist(tmp_path: pathlib
 
     assert run_dispatch_dry_run(str(present)) == 0
     assert "Config problems" not in capsys.readouterr().out
+
+
+def test_dispatch_dry_run_lists_a_criterion_naming_an_existing_test(
+    tmp_path: pathlib.Path, capsys
+):
+    issues_dir = tmp_path / ".scratch" / "test-effort" / "issues"
+    issues_dir.mkdir(parents=True)
+    (tmp_path / ".ticket-engine.toml").write_text("", encoding="utf-8")
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_old_file.py").write_text("def test_old():\n    pass\n", encoding="utf-8")
+
+    criterion = "Prior art: `test_old` proves it."
+    (issues_dir / "06-existing.md").write_text(
+        f"""# 06: Existing
+**Status:** ready-for-agent
+**Blocked by:** None
+
+## Acceptance criteria
+
+- [ ] {criterion}
+""",
+        encoding="utf-8",
+    )
+
+    assert run_dispatch_dry_run(str(tmp_path)) == 0
+
+    out = capsys.readouterr().out
+    assert "Ticket problems (an agent cannot land these as written):" in out
+    expected = (
+        f'06: criterion "{criterion[:60]}" names `test_old`, which already exists, '
+        "so it cannot fail on the base code and check 9 will fail the PR: "
+        "name the new test that proves it, say the criterion rewrites `test_old`, "
+        "or move `test_old` out of the criterion"
+    )
+    assert expected in out

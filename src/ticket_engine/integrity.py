@@ -41,7 +41,6 @@ from enum import Enum
 from typing import Any
 
 from ticket_engine.parser import Ticket, TicketParser
-from ticket_engine.ticket_lint import _blocks
 
 logger = logging.getLogger(__name__)
 
@@ -599,6 +598,34 @@ class _ASTVisitor:
         return count
 
 
+def _is_under_test_paths(path: str, test_paths: Sequence[str]) -> bool:
+    test_dirs = tuple(
+        p.replace("\\", "/").strip().lstrip("/").rstrip("/") + "/" for p in test_paths
+    )
+    norm = path.replace("\\", "/").strip().lstrip("/")
+    return norm.endswith(".py") and any(norm.startswith(td) for td in test_dirs)
+
+
+def collect_test_names(
+    files: Mapping[str, str],
+    test_paths: Sequence[str] = ("tests",),
+) -> frozenset[str]:
+    """Collect every test function or method name under `test_paths`.
+
+    Shares `_is_under_test_paths` and `_ASTVisitor` with Check 9 so ticket lint
+    and Check 9 agree on what counts as a test.
+    """
+    names: set[str] = set()
+    for path, content in files.items():
+        if not _is_under_test_paths(path, test_paths):
+            continue
+        visitor = _ASTVisitor(path.replace("\\", "/"), content)
+        visitor.parse()
+        for info in visitor.tests.values():
+            names.add(info.func_name)
+    return frozenset(names)
+
+
 def find_new_test_functions(
     base_tree: Mapping[str, str],
     pr_diff: str | Mapping[str, str],
@@ -614,14 +641,12 @@ def find_new_test_functions(
     else:
         head_tree = parse_and_apply_diff(base_tree, pr_diff)
 
-    test_dirs = tuple(p.replace("\\", "/").strip().lstrip("/").rstrip("/") + "/" for p in test_paths)
-
-    def is_test_file(path: str) -> bool:
-        norm = path.replace("\\", "/").strip().lstrip("/")
-        return norm.endswith(".py") and any(norm.startswith(td) for td in test_dirs)
-
-    base_test_files = {p.replace("\\", "/"): c for p, c in base_tree.items() if is_test_file(p)}
-    head_test_files = {p.replace("\\", "/"): c for p, c in head_tree.items() if is_test_file(p)}
+    base_test_files = {
+        p.replace("\\", "/"): c for p, c in base_tree.items() if _is_under_test_paths(p, test_paths)
+    }
+    head_test_files = {
+        p.replace("\\", "/"): c for p, c in head_tree.items() if _is_under_test_paths(p, test_paths)
+    }
 
     base_visitors = {p: _ASTVisitor(p, c) for p, c in base_test_files.items()}
     for v in base_visitors.values():
@@ -1132,6 +1157,8 @@ def named_test_problems(
 
         if in_scope:
             in_scope_lines.append(line)
+
+    from ticket_engine.ticket_lint import _blocks
 
     blocks = _blocks("\n".join(in_scope_lines))
     problems: list[str] = []

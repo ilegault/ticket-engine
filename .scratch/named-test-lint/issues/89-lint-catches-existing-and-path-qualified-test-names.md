@@ -1,6 +1,6 @@
 # 89: Ticket lint catches a criterion that names an existing test or a path-qualified test
 
-**Status:** in-progress
+**Status:** done
 
 **Runner:** any
 
@@ -76,11 +76,11 @@ the dry-run test uses a real temporary repo. Fixture test names (test_old, test_
 test_x and so on) are written here without backticks on purpose: check 9 treats every
 backticked test name in a criterion as a test this PR must add.
 
-- [ ] Test `test_lint_flags_a_criterion_naming_an_existing_test` in `tests/test_ticket_quality.py`: a `ready-for-agent` ticket whose only criterion names an existing test (fixture name test_old, backticked in the fixture text), linted with existing_tests holding test_old, gives exactly one finding, equal to the 2b message for test_old; the same ticket linted with `existing_tests=None` gives no finding.
-- [ ] Test `test_lint_accepts_an_existing_test_the_criterion_rewrites` in `tests/test_ticket_quality.py`: a criterion that says it rewrites test_old in place (fixture text: Rewrite, then test_old in backticks, then in place), linted with existing_tests holding test_old, gives no finding.
-- [ ] Test `test_lint_flags_a_path_qualified_test_name` in `tests/test_ticket_quality.py`: a criterion whose only test reference is the path-qualified tests/test_x.py::test_new (backticked in the fixture text) gives exactly one finding, equal to the 2a message for that match and test_new, and no "names no test" finding.
-- [ ] Test `test_collect_test_names_reads_module_and_class_tests` in `tests/test_integrity_check9.py`: collect_test_names given a tests/test_a.py module (a module-level test_x, a class TestY with method test_z, and a plain helper) and a src/test_q.py module (a test_q), with test_paths ("tests",), returns exactly test_x and test_z.
-- [ ] Test `test_dispatch_dry_run_lists_a_criterion_naming_an_existing_test` in `tests/test_cli.py`: a temporary repo with `.ticket-engine.toml`, a tests/test_old_file.py defining test_old, and one `ready-for-agent` ticket whose criterion names test_old in backticks; `run_dispatch_dry_run` returns 0 and its output has the 2b finding under "Ticket problems".
+- [x] Test `test_lint_flags_a_criterion_naming_an_existing_test` in `tests/test_ticket_quality.py`: a `ready-for-agent` ticket whose only criterion names an existing test (fixture name test_old, backticked in the fixture text), linted with existing_tests holding test_old, gives exactly one finding, equal to the 2b message for test_old; the same ticket linted with `existing_tests=None` gives no finding.
+- [x] Test `test_lint_accepts_an_existing_test_the_criterion_rewrites` in `tests/test_ticket_quality.py`: a criterion that says it rewrites test_old in place (fixture text: Rewrite, then test_old in backticks, then in place), linted with existing_tests holding test_old, gives no finding.
+- [x] Test `test_lint_flags_a_path_qualified_test_name` in `tests/test_ticket_quality.py`: a criterion whose only test reference is the path-qualified tests/test_x.py::test_new (backticked in the fixture text) gives exactly one finding, equal to the 2a message for that match and test_new, and no "names no test" finding.
+- [x] Test `test_collect_test_names_reads_module_and_class_tests` in `tests/test_integrity_check9.py`: collect_test_names given a tests/test_a.py module (a module-level test_x, a class TestY with method test_z, and a plain helper) and a src/test_q.py module (a test_q), with test_paths ("tests",), returns exactly test_x and test_z.
+- [x] Test `test_dispatch_dry_run_lists_a_criterion_naming_an_existing_test` in `tests/test_cli.py`: a temporary repo with `.ticket-engine.toml`, a tests/test_old_file.py defining test_old, and one `ready-for-agent` ticket whose criterion names test_old in backticks; `run_dispatch_dry_run` returns 0 and its output has the 2b finding under "Ticket problems".
 
 ## Gate
 
@@ -100,4 +100,6 @@ In CI order (`.github/workflows/ci.yml`):
 - No ticket in any target repo is rewritten here.
 
 ## Comments
+
+2026-11-20: Implemented `collect_test_names` (sharing `_is_under_test_paths` and `_ASTVisitor` with Check 9) in `integrity.py`, added existing-test and path-qualified-test checks to `lint_ticket` / `lint_tickets` in `ticket_lint.py`, and wired `run_dispatch_dry_run` in `cli.py` to collect test names from `config.test_paths`. Covered by all five named tests in `tests/test_ticket_quality.py`, `tests/test_integrity_check9.py`, and `tests/test_cli.py`; `ruff check .`, `check_tests_first.py`, and the 10-file test selection (272 tests) passed.
 

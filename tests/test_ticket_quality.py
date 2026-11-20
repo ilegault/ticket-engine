@@ -478,3 +478,34 @@ def test_lint_ignores_ticked_boxes_and_other_statuses():
     unnamed = "- [ ] Nothing names a test here."
     assert lint_ticket(_criteria_ticket(unnamed, status="done")) == []
     assert lint_ticket(_criteria_ticket("- [x] Nothing names a test here.")) == []
+
+
+def test_lint_flags_a_criterion_naming_an_existing_test():
+    criterion = "Prior art: `test_old` proves the layout."
+    ticket = _criteria_ticket(f"- [ ] {criterion}")
+    expected = (
+        f'criterion "{criterion[:60]}" names `test_old`, which already exists, '
+        "so it cannot fail on the base code and check 9 will fail the PR: "
+        "name the new test that proves it, say the criterion rewrites `test_old`, "
+        "or move `test_old` out of the criterion"
+    )
+    assert lint_ticket(ticket, existing_tests=frozenset({"test_old"})) == [expected]
+    assert lint_ticket(ticket, existing_tests=None) == []
+
+
+def test_lint_accepts_an_existing_test_the_criterion_rewrites():
+    ticket = _criteria_ticket("- [ ] Rewrite `test_old` in place to assert the new behavior.")
+    assert lint_ticket(ticket, existing_tests=frozenset({"test_old"})) == []
+
+
+def test_lint_flags_a_path_qualified_test_name():
+    criterion = "The widget works (`tests/test_x.py::test_new`)."
+    ticket = _criteria_ticket(f"- [ ] {criterion}")
+    expected = (
+        f'criterion "{criterion[:60]}" names `tests/test_x.py::test_new`: '
+        "check 9 reads only a bare backticked test name, so write `test_new` "
+        "and give the file in words"
+    )
+    findings = lint_ticket(ticket)
+    assert findings == [expected]
+    assert not any("names no test" in f for f in findings)
