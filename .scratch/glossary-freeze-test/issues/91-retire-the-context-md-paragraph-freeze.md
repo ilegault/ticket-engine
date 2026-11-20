@@ -1,6 +1,6 @@
 # 91: Retire the CONTEXT.md paragraph freeze left over from ticket 43
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
