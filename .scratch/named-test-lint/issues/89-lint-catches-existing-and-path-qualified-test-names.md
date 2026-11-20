@@ -1,6 +1,6 @@
 # 89: Ticket lint catches a criterion that names an existing test or a path-qualified test
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Runner:** any
 
