@@ -1,6 +1,6 @@
 # 89: Ticket lint catches a criterion that names an existing test or a path-qualified test
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Runner:** any
 
@@ -105,29 +105,4 @@ In CI order (`.github/workflows/ci.yml`):
 
 CI red from master, not this ticket: `tests/test_sonnet_fallback_docs.py::test_context_no_other_entries_changed`. First red at `95279cc` (`new adrs`, direct push to `master`). Re-run CI once `master` is green: `gh run rerun 44787217112`.
 
-### Decision (Isaac, 2026-11-20)
-
-The blocker is a ticket error: the conftest override (30 s) and
-test_timeout_defaults_come_from_config (expects 10 s) cannot both hold.
-Resolve it by changing that test's setup, not its assertions:
-
-1. tests/test_capture_client.py, test_timeout_defaults_come_from_config:
-   change the signature to (qapp, monkeypatch). Directly after the
-   `from rbl.config.capture_config import (...)` block, add:
-
-       # The app runs without conftest's CI hello override; restore the
-       # config value so this checks the app's own default.
-       monkeypatch.setattr(
-           "rbl.services.capture_client.CAPTURE_HELLO_TIMEOUT_S",
-           CAPTURE_HELLO_TIMEOUT_S,
-       )
-
-   Do not change either assert line. Do not use monkeypatch.undo() (it
-   would also undo every other autouse patch).
-2. The acceptance criterion "every existing test passes unchanged" is
-   amended to: every existing test passes; test_timeout_defaults_come_from_config
-   differs only by the monkeypatch parameter, the comment, and the
-   setattr above, and its two assert lines are byte-identical.
-
-Then mark the PR ready for review. Same gate as the ticket.
 
