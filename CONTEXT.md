@@ -254,3 +254,21 @@ the box status issue; Jules may overflow onto it.
 **Secrets file** — `secrets.env` on the developer's machine, outside every repo.
 The bootstrap reads it and writes each value into the target repo's GitHub
 secrets. The required keys are `JULES_API_KEY` and `PIPELINE_TOKEN`.
+
+---
+
+## What a worker reads
+
+**Orientation** — what a *worker* reads before touching code: the *standing
+rules*, the ticket, the ADRs the ticket names, the glossary entries for the
+ticket's domain words, and the *routed docs* for the paths the ticket touches.
+Not the whole repo's documentation.
+
+**Standing rules** — the part of a repo's `AGENTS.md` loaded into every session.
+Only rules where a single miss does real damage: muting or deleting a test,
+breaking a hardware safety limit, committing to the default branch or leaking a
+name or secret, breaking the layering rule. Everything else is a *routed doc*.
+
+**Routed doc** — a document under `docs/agents/` that a worker reads only when
+its ticket touches the area the doc covers. `AGENTS.md` names which paths route
+to which doc.
