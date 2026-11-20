@@ -16,6 +16,7 @@ from ticket_engine.integrity import (
     BaseTestResults,
     IntegrityCore,
     Verdict,
+    collect_test_names,
     named_test_problems,
 )
 from ticket_engine.parser import TicketParser
@@ -390,3 +391,21 @@ def test_check9_skips_the_base_claim_when_source_paths_are_misconfigured():
 
     assert verdict.verdict == Verdict.HOLD
     assert not any("did not fail on the base code" in r for r in verdict.reasons)
+
+
+def test_collect_test_names_reads_module_and_class_tests():
+    files = {
+        "tests/test_a.py": textwrap.dedent("""
+            def helper():
+                pass
+
+            def test_x():
+                pass
+
+            class TestY:
+                def test_z(self):
+                    pass
+        """),
+        "src/test_q.py": "def test_q():\n    pass\n",
+    }
+    assert collect_test_names(files, test_paths=("tests",)) == frozenset({"test_x", "test_z"})
