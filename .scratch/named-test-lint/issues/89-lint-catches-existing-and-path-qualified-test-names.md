@@ -1,6 +1,6 @@
 # 89: Ticket lint catches a criterion that names an existing test or a path-qualified test
 
-**Status:** done
+**Status:** ready-for-agent
 
 **Runner:** any
 
@@ -104,4 +104,30 @@ In CI order (`.github/workflows/ci.yml`):
 2026-11-20: Implemented `collect_test_names` (sharing `_is_under_test_paths` and `_ASTVisitor` with Check 9) in `integrity.py`, added existing-test and path-qualified-test checks to `lint_ticket` / `lint_tickets` in `ticket_lint.py`, and wired `run_dispatch_dry_run` in `cli.py` to collect test names from `config.test_paths`. Covered by all five named tests in `tests/test_ticket_quality.py`, `tests/test_integrity_check9.py`, and `tests/test_cli.py`; `ruff check .`, `check_tests_first.py`, and the 10-file test selection (272 tests) passed.
 
 CI red from master, not this ticket: `tests/test_sonnet_fallback_docs.py::test_context_no_other_entries_changed`. First red at `95279cc` (`new adrs`, direct push to `master`). Re-run CI once `master` is green: `gh run rerun 44787217112`.
+
+### Decision (Isaac, 2026-11-20)
+
+The blocker is a ticket error: the conftest override (30 s) and
+test_timeout_defaults_come_from_config (expects 10 s) cannot both hold.
+Resolve it by changing that test's setup, not its assertions:
+
+1. tests/test_capture_client.py, test_timeout_defaults_come_from_config:
+   change the signature to (qapp, monkeypatch). Directly after the
+   `from rbl.config.capture_config import (...)` block, add:
+
+       # The app runs without conftest's CI hello override; restore the
+       # config value so this checks the app's own default.
+       monkeypatch.setattr(
+           "rbl.services.capture_client.CAPTURE_HELLO_TIMEOUT_S",
+           CAPTURE_HELLO_TIMEOUT_S,
+       )
+
+   Do not change either assert line. Do not use monkeypatch.undo() (it
+   would also undo every other autouse patch).
+2. The acceptance criterion "every existing test passes unchanged" is
+   amended to: every existing test passes; test_timeout_defaults_come_from_config
+   differs only by the monkeypatch parameter, the comment, and the
+   setattr above, and its two assert lines are byte-identical.
+
+Then mark the PR ready for review. Same gate as the ticket.
 
