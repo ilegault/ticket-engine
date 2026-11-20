@@ -103,3 +103,5 @@ In CI order (`.github/workflows/ci.yml`):
 
 2026-11-20: Implemented `collect_test_names` (sharing `_is_under_test_paths` and `_ASTVisitor` with Check 9) in `integrity.py`, added existing-test and path-qualified-test checks to `lint_ticket` / `lint_tickets` in `ticket_lint.py`, and wired `run_dispatch_dry_run` in `cli.py` to collect test names from `config.test_paths`. Covered by all five named tests in `tests/test_ticket_quality.py`, `tests/test_integrity_check9.py`, and `tests/test_cli.py`; `ruff check .`, `check_tests_first.py`, and the 10-file test selection (272 tests) passed.
 
+CI red from master, not this ticket: `tests/test_sonnet_fallback_docs.py::test_context_no_other_entries_changed`. First red at `95279cc` (`new adrs`, direct push to `master`). Re-run CI once `master` is green: `gh run rerun 44787217112`.
+
